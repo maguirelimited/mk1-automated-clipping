@@ -1,0 +1,13 @@
+[
+  {
+    "funnel_id": "business_podcasts_001",
+    "angle": "business founder podcasts",
+    "source_type": "youtube_channels",
+    "sources": [
+      "https://www.youtube.com/@TheDiaryOfACEO/videos"
+    ],
+    "min_duration_minutes": 25,
+    "max_duration_minutes": 180,
+    "active": true
+  }
+]

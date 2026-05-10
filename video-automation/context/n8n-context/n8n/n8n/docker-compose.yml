@@ -1,0 +1,41 @@
+# =============================================================================
+# Copy this file to your n8n project as docker-compose.yml (e.g. ~/n8n/n8n/).
+# Then: docker compose down && docker compose up -d
+#
+# /files/input and /files/output exist ONLY inside the container. They map to
+# your real folders: <mk0.3>/input and <mk0.3>/output on the Mac — there is no
+# literal "files" directory you create on the host.
+#
+# If n8n says a path under /files/input is "not writable":
+#   - Ensure the host folders exist and Docker Desktop file sharing includes them.
+#   - Relax permissions on the host, e.g. chmod 775 on input/ and output/
+#     (the container runs as user "node", typically UID 1000).
+#
+# Optional: in the same directory as this compose file, add a .env with:
+#   MK03_ROOT=/Users/anthonymaguire/video-automation/mk0.3
+#   WEBHOOK_URL=https://your-ngrok-url/...
+# =============================================================================
+
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    ports:
+      - "5678:5678"
+    env_file:
+      - .env
+    environment:
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      # Set your public webhook base URL here or duplicate as WEBHOOK_URL in .env
+      - WEBHOOK_URL=https://yadiel-foundationary-distinctly.ngrok-free.dev
+      - N8N_SECURE_COOKIE=false
+    # Lets workflows reach services on the host (e.g. Flask on :5050). Needed on Docker Engine Linux; harmless on Docker Desktop.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - /Users/anthonymaguire/.n8n:/home/node/.n8n:rw
+      # Host paths (left) — override base with MK03_ROOT in .env (no trailing slash)
+      - ${MK03_ROOT:-/Users/anthonymaguire/video-automation/mk0.3}/input:/files/input:rw
+      - ${MK03_ROOT:-/Users/anthonymaguire/video-automation/mk0.3}/output:/files/output:rw
+    restart: unless-stopped

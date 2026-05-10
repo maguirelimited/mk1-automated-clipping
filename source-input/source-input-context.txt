@@ -1,0 +1,545 @@
+# Mk1 Automated Input Module Coding Objectives
+
+## Objective
+
+Build a standalone automated input module that can be triggered by n8n through an HTTP request.
+
+The module should run one configured podcast input funnel, find one valid non-duplicate longform video, download it, validate it, store it in a ready input location, and return a clear response.
+
+The module must stay separate from the clipping/video automation system.
+
+## Required Behaviour
+
+When triggered, the module must:
+
+1. Load the requested funnel configuration.
+2. Check only the approved sources listed in that funnel.
+3. Find candidate longform podcast-style videos.
+4. Skip anything already used.
+5. Select the newest valid non-duplicate candidate.
+6. Download exactly one video.
+7. Validate the downloaded file.
+8. Store it in the ready input folder.
+9. Return a clear HTTP response to n8n.
+
+One run must never download more than one video.
+
+If no valid video is available, the module should return a clean no-input response and stop.
+
+## Required API
+
+Create one main HTTP endpoint:
+
+`POST /run-funnel`
+
+Expected request body:
+
+```json
+{
+  "funnel_id": "business_podcasts_001"
+}
+```
+
+Successful response when a video is found:
+
+```json
+{
+  "success": true,
+  "status": "input_ready",
+  "funnel_id": "business_podcasts_001",
+  "video_path": "data/inputs/ready/business_podcasts_001/source.mp4",
+  "source_url": "https://youtube.com/...",
+  "title": "Example Episode Title"
+}
+```
+
+Response when no valid input exists:
+
+```json
+{
+  "success": true,
+  "status": "no_input_available",
+  "funnel_id": "business_podcasts_001",
+  "reason": "No valid non-duplicate video found"
+}
+```
+
+Failure response:
+
+```json
+{
+  "success": false,
+  "status": "failed",
+  "funnel_id": "business_podcasts_001",
+  "error": "Clear error message"
+}
+```
+
+## Required Funnel Config
+
+Use a simple config file for funnels.
+
+For mk1, each funnel only needs:
+
+```json
+{
+  "funnel_id": "business_podcasts_001",
+  "angle": "business founder podcasts",
+  "source_type": "youtube_channels",
+  "sources": [
+    "https://youtube.com/@examplechannel1",
+    "https://youtube.com/@examplechannel2"
+  ],
+  "min_duration_minutes": 25,
+  "max_duration_minutes": 180,
+  "active": true
+}
+```
+
+Do not add batch settings.
+
+Do not add `max_downloads_per_run`.
+
+The single-download rule should be enforced by the module itself.
+
+## Required Files / Modules
+
+Create a clean standalone module structure:
+
+```text
+input_service/
+  app.py
+  config/
+    funnels.json
+  input_service/
+    funnel_loader.py
+    source_checker.py
+    candidate_filter.py
+    duplicate_store.py
+    downloader.py
+    media_validator.py
+    storage.py
+  data/
+    inputs/
+      ready/
+      rejected/
+    state/
+      seen_urls.json
+```
+
+Keep the module independent from the existing clipping pipeline.
+
+Do not import clipping, transcription, selection, or video automation code.
+
+## Module Responsibilities
+
+### `app.py`
+
+Expose the HTTP endpoint.
+
+It should receive the `funnel_id`, call the input module logic, and return a clear JSON response.
+
+### `funnel_loader.py`
+
+Load funnel config by `funnel_id`.
+
+Reject inactive or missing funnels clearly.
+
+### `source_checker.py`
+
+Check the approved sources from the funnel.
+
+For mk1, only support YouTube longform podcast channels.
+
+It should return candidate videos with basic metadata:
+
+* title
+* source URL
+* source/channel
+* duration if available
+* publish/upload date if available
+
+### `candidate_filter.py`
+
+Filter candidates using simple deterministic rules.
+
+A candidate is valid only if:
+
+* it comes from an approved source
+* it is within the funnel duration range
+* it is not already used
+* it is not obviously a Short, trailer, highlight, or clip
+
+Do not use AI scoring.
+
+Do not search outside the approved sources.
+
+### `duplicate_store.py`
+
+Track used videos.
+
+For mk1, use a simple JSON state file:
+
+```text
+data/state/seen_urls.json
+```
+
+The system should check source URLs or video IDs before download.
+
+After a successful download and validation, mark the video as used.
+
+### `downloader.py`
+
+Download one selected video.
+
+The downloader should stop after one successful valid download.
+
+It should not support batch mode.
+
+### `media_validator.py`
+
+Validate the downloaded media.
+
+Minimum checks:
+
+* file exists
+* file size is greater than zero
+* duration can be read
+* duration fits the funnel limits
+* file appears usable for downstream clipping
+
+If validation fails, reject the file and return a clear error or no-input result.
+
+### `storage.py`
+
+Store the successful video in the ready input location.
+
+Use a simple predictable path:
+
+```text
+data/inputs/ready/<funnel_id>/source.mp4
+```
+
+If replacing an old ready input, do it safely and deliberately.
+
+The output should be easy for n8n or the clipping system to find.
+
+## Required Flow
+
+The main internal function should behave like this:
+
+```text
+run_funnel(funnel_id)
+  load funnel
+  check approved sources
+  build candidate list
+  sort candidates newest first
+  for each candidate:
+      skip if duplicate
+      skip if invalid duration/type
+      try download
+      validate file
+      if valid:
+          store as ready input
+          mark as seen
+          return input_ready
+      if invalid:
+          reject and try next candidate
+  return no_input_available
+```
+
+Even if many candidates exist, the function must return immediately after the first successful valid download.
+
+## Integration Boundary
+
+The input module should not directly run transcription, clip selection, clipping, or uploading.
+
+n8n handles orchestration.
+
+Expected mk1 chain:
+
+```text
+n8n daily trigger
+→ POST /run-funnel
+→ if status = input_ready, n8n triggers clipping automation
+→ clipping automation processes returned video_path
+→ n8n handles upload flow
+```
+
+## Error Handling Requirements
+
+The module should fail clearly, not silently.
+
+Handle these cases:
+
+* missing funnel ID
+* unknown funnel ID
+* inactive funnel
+* no approved sources
+* source checking failure
+* no valid candidate
+* duplicate-only candidates
+* download failure
+* validation failure
+* storage failure
+
+Every response should be valid JSON.
+
+## Mk1 Non-Goals
+
+Do not build:
+
+* batch downloading
+* multi-video queues
+* scheduling inside the module
+* AI content ranking
+* broad content discovery
+* database storage
+* analytics dashboard
+* full manifest/reporting system
+* multi-platform support
+* clipping automation
+* transcription
+* upload logic
+
+## Definition of Done
+
+The module is complete for mk1 when:
+
+* n8n can trigger it through `POST /run-funnel`
+* one funnel can be loaded from config
+* the module checks only approved YouTube podcast sources
+* it finds a valid non-duplicate longform video
+* it downloads no more than one video per run
+* it validates the file
+* it stores the file in the ready input folder
+* it records the video as seen
+* it returns either `input_ready`, `no_input_available`, or `failed`
+* the clipping automation can be triggered separately using the returned `video_path`
+
+
+# Mk1 Automated Input Module Build Checklist
+
+## Goal
+
+Build a standalone input module that can be triggered by n8n and outputs **one ready longform podcast video** if a valid non-duplicate video is available.
+
+The module must stay separate from the clipping/video automation system.
+
+---
+
+## 1. Create the standalone input module
+
+* [ ] Create a separate input module folder.
+* [ ] Do not place this logic inside the existing video automation pipeline.
+* [ ] Do not import transcription, clipping, clip selection, or upload logic.
+* [ ] The module should only handle finding, downloading, validating, and storing one input video.
+
+---
+
+## 2. Create the HTTP trigger endpoint
+
+* [ ] Create a server endpoint called `POST /run-funnel`.
+* [ ] The endpoint should accept a `funnel_id`.
+* [ ] The endpoint should run only the requested funnel.
+* [ ] The endpoint should return JSON every time.
+* [ ] The endpoint should be usable from an n8n HTTP Request node.
+
+---
+
+## 3. Create the funnel config file
+
+* [ ] Create a simple funnel config file.
+
+* [ ] Add one test podcast funnel.
+
+* [ ] The funnel should include only:
+
+  * [ ] `funnel_id`
+  * [ ] `angle`
+  * [ ] `source_type`
+  * [ ] `sources`
+  * [ ] `min_duration_minutes`
+  * [ ] `max_duration_minutes`
+  * [ ] `active`
+
+* [ ] Do not add batch settings.
+
+* [ ] Do not add scheduling settings.
+
+* [ ] Do not add AI scoring settings.
+
+* [ ] Do not add advanced metadata settings.
+
+---
+
+## 4. Load the requested funnel
+
+* [ ] Read the `funnel_id` from the HTTP request.
+* [ ] Find the matching funnel in the config.
+* [ ] Return a clear failure response if the funnel does not exist.
+* [ ] Return a clear failure response if the funnel is inactive.
+* [ ] Return a clear failure response if the funnel has no approved sources.
+
+---
+
+## 5. Check approved podcast sources
+
+* [ ] Only check sources listed in the funnel config.
+* [ ] Do not search the wider web.
+* [ ] Do not discover random new channels.
+* [ ] For mk1, only support YouTube podcast-style longform sources.
+* [ ] Return a list of candidate videos from those sources.
+
+Each candidate should have at least:
+
+* [ ] title
+* [ ] source URL or video ID
+* [ ] source/channel
+* [ ] duration if available
+* [ ] upload/publish date if available
+
+---
+
+## 6. Filter candidates
+
+* [ ] Remove videos below the minimum duration.
+* [ ] Remove videos above the maximum duration.
+* [ ] Remove videos that are already marked as used.
+* [ ] Avoid obvious Shorts.
+* [ ] Avoid obvious trailers.
+* [ ] Avoid obvious highlights.
+* [ ] Avoid obvious clips.
+* [ ] Sort remaining candidates newest first.
+
+Do not use AI ranking in mk1.
+
+---
+
+## 7. Add duplicate tracking
+
+* [ ] Create a simple duplicate store.
+* [ ] Track used source URLs or video IDs.
+* [ ] Before downloading, check whether the candidate has already been used.
+* [ ] After a successful download and validation, mark the video as used.
+* [ ] Do not mark failed downloads as used.
+* [ ] Do not mark failed validation videos as used.
+
+---
+
+## 8. Enforce the single-download rule
+
+* [ ] The module must download at most one video per run.
+* [ ] Once one valid video is successfully downloaded and validated, stop immediately.
+* [ ] Do not continue checking for more downloads after success.
+* [ ] Do not add batch mode.
+* [ ] Do not process multiple videos in one trigger.
+
+---
+
+## 9. Download the selected video
+
+* [ ] Try to download the newest valid non-duplicate candidate.
+* [ ] Save it to a temporary/incoming location first.
+* [ ] If download fails, try the next valid candidate.
+* [ ] If no candidate downloads successfully, return `no_input_available` or a clear failure depending on the cause.
+
+---
+
+## 10. Validate the downloaded media
+
+* [ ] Check that the file exists.
+* [ ] Check that the file is not empty.
+* [ ] Check that the duration can be read.
+* [ ] Check that the duration fits the funnel limits.
+* [ ] Check that the media is usable for downstream clipping.
+* [ ] If validation fails, reject the file.
+* [ ] If validation fails, do not mark the source as used.
+* [ ] If validation fails, try the next candidate if one exists.
+
+---
+
+## 11. Store the ready input
+
+* [ ] Store the successful video in the ready input location.
+* [ ] Use a simple predictable location.
+* [ ] The ready video should be easy for n8n or the clipping system to pass forward.
+* [ ] Return the ready video path in the HTTP response.
+* [ ] Keep storage simple for mk1.
+* [ ] Do not build a database.
+* [ ] Do not build a full manifest/reporting system yet.
+
+---
+
+## 12. Return the correct response
+
+If a valid video is found:
+
+* [ ] Return `success: true`.
+* [ ] Return `status: input_ready`.
+* [ ] Return the `funnel_id`.
+* [ ] Return the ready `video_path`.
+* [ ] Return the `source_url`.
+* [ ] Return the video `title`.
+
+If no valid video is found:
+
+* [ ] Return `success: true`.
+* [ ] Return `status: no_input_available`.
+* [ ] Return the `funnel_id`.
+* [ ] Return a clear reason.
+
+If the run fails:
+
+* [ ] Return `success: false`.
+* [ ] Return `status: failed`.
+* [ ] Return the `funnel_id` if available.
+* [ ] Return a clear error message.
+
+---
+
+## 13. Keep the n8n boundary clean
+
+* [ ] n8n triggers the input module.
+* [ ] The input module returns either `input_ready`, `no_input_available`, or `failed`.
+* [ ] If `input_ready`, n8n triggers the clipping automation separately.
+* [ ] The input module must not trigger transcription itself.
+* [ ] The input module must not trigger clipping itself.
+* [ ] The input module must not upload clips.
+
+---
+
+## 14. Do not build these in mk1
+
+* [ ] Do not build batch downloading.
+* [ ] Do not build multi-video queues.
+* [ ] Do not build scheduling inside the module.
+* [ ] Do not build AI content ranking.
+* [ ] Do not build broad content discovery.
+* [ ] Do not build database storage.
+* [ ] Do not build an analytics dashboard.
+* [ ] Do not build a full reporting system.
+* [ ] Do not build multi-platform support.
+* [ ] Do not build transcription.
+* [ ] Do not build clipping.
+* [ ] Do not build upload logic.
+
+---
+
+## 15. Definition of done
+
+The module is complete for mk1 when:
+
+* [ ] n8n can call `POST /run-funnel`.
+* [ ] The module can load one podcast funnel from config.
+* [ ] The module checks only approved sources.
+* [ ] The module finds valid longform podcast candidates.
+* [ ] The module avoids duplicates.
+* [ ] The module downloads no more than one video per run.
+* [ ] The module validates the downloaded video.
+* [ ] The module stores the video in the ready input location.
+* [ ] The module marks successful videos as used.
+* [ ] The module returns `input_ready` when a video is ready.
+* [ ] The module returns `no_input_available` when no valid video exists.
+* [ ] The module returns `failed` when something breaks.
+* [ ] The clipping automation can be triggered separately using the returned `video_path`.

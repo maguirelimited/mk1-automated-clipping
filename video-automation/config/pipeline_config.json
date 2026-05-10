@@ -1,0 +1,19 @@
+{
+  "paths": {
+    "input_folder": "input",
+    "output_folder": "output",
+    "temp_folder": "temp",
+    "jobs_folder": "jobs"
+  },
+  "selection": {
+    "min_clip_duration_sec": 10,
+    "max_clip_duration_sec": 30,
+    "target_clip_duration_sec": 20,
+    "max_overlap_sec": 2
+  },
+  "models": {
+    "whisper_model": "tiny",
+    "selection_model": "gpt-4o-mini"
+  },
+  "caption_enabled": true
+}

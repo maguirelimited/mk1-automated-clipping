@@ -1,0 +1,77 @@
+PROJECT GOAL
+Convert raw long-form content into the maximum number of high quality short-form clips automatically with AI-guided selection.
+
+CURRENT PIPELINE TARGET
+- Active implementation is `mk0.4`.
+- Flask server orchestrates upload, processing, clipping, and output delivery.
+
+WHERE `mk0.4` IS NAMED (this file + code)
+- **This document:** lines under CURRENT PIPELINE TARGET; paths in CURRENT SYSTEM FLOW (`mk0.4/input`, `mk0.4/temp`, `mk0.4/output`); `GET /output` clip root; ERROR HANDLING example JSON `"pipeline": "mk0.4"`; FILE STRUCTURE root `/mk0.4`.
+- **Runtime:** `video-automation/server/app.py` defines `PIPELINE_NAME = "mk0.4"` — success and error API bodies include `"pipeline": "mk0.4"`; `/healthz` and `/doctor` echo the same string.
+
+CURRENT SYSTEM FLOW
+1. Upload video via `POST /upload` (multipart form with `video_file`).
+2. Server writes video to `mk0.4/input`.
+3. Trigger `POST /process` with JSON `{ "video": "<filename>", "selection": {...} }`.
+4. `transcribe_video.py` runs Whisper and writes transcript JSON to `mk0.4/temp`.
+5. `select_clip.py` calls OpenAI (`gpt-4o-mini`) to pick candidate clips.
+6. `pipeline_utils.py` normalizes, validates, ranks, deduplicates, and overlap-limits segments.
+7. `clip_video.py` cuts each segment with FFmpeg and writes clips to `mk0.4/output`.
+8. Server returns `success` + `clips` payload.
+
+KEY COMPONENTS
+- `scripts/transcribe_video.py`: Whisper transcription script with JSON success/error envelope output.
+- `scripts/select_clip.py`: LLM selection script with post-processing and envelope output.
+- `scripts/clip_video.py`: FFmpeg clipping script with envelope output (also prints output path first for compatibility).
+- `scripts/pipeline_utils.py`: shared parsing, validation, ranking, dedupe, overlap trim, and envelope helpers.
+- `server/app.py`: API endpoints and subprocess orchestration with compatibility parsing for script envelopes.
+
+SCRIPT CONTRACT (CURRENT)
+- All scripts now expose `main(argv) -> int` and callable core functions.
+- Success envelope (stdout JSON line): `{ "ok": true, "script": "<name>", ... }`.
+- Error envelope (stderr JSON line): `{ "ok": false, "script": "<name>", "error": "..." }`.
+- Backward compatibility preserved where required by server parsing:
+  - `clip_video.py` still prints output file path on stdout before envelope JSON.
+  - `select_clip.py` still prints clips JSON array on stdout before envelope JSON.
+
+PIPELINE UTILS NOTES
+- Timestamp parsing supports `HH:MM:SS`, `MM:SS`, `SS`, including fractional seconds.
+- JSON extraction fallback now handles object/array ordering more safely.
+- Object extraction is string-aware (braces inside quoted text no longer break parsing).
+- Segment post-processing was decomposed into helper phases for maintainability.
+- Overlap enforcement checks against accepted timeline end and preserves fractional precision when adjusting start times.
+
+HTTP API (FLASK)
+- `POST /upload`: stores uploaded file and returns saved path metadata.
+- `POST /process`: runs pipeline using stored input file and optional selection policy.
+- `POST /process-inline`: compatibility path for inline/base64 or multipart processing in one call.
+- `GET /output/<clip_file>`: serves generated clips from `mk0.4/output`.
+
+ERROR HANDLING (SERVER)
+- Returns `{ "success": false, "error": "<message>", "pipeline": "mk0.4" }` on failures.
+- Handles key failure classes: missing input, transcription failure, invalid selection output, no valid clips, and clipping failure.
+- Server can parse both new script envelopes and legacy plain stdout/stderr output.
+
+OPERATIONAL TRADE-OFFS
+- FFmpeg uses `-ss` + `-t` with stream copy (`-c copy`) so duration matches selected clip span.
+- Pipeline remains synchronous and file-system based (`input`, `temp`, `output`).
+
+SECURITY / CONFIG
+- `OPENAI_API_KEY` is read from environment in `select_clip.py`.
+
+CURRENT FOCUS
+
+
+FILE STRUCTURE
+/mk0.4
+  /input
+  /output
+  /scripts
+    pipeline_utils.py
+    transcribe_video.py
+    select_clip.py
+    clip_video.py
+  /server
+    app.py
+  /temp
+  /context

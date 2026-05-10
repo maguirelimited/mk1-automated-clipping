@@ -1,0 +1,40 @@
+{
+  "job_id": "job_20260428T140230Z_1afc0711",
+  "input_video_path": "/Users/anthonymaguire/video-automation/mk0.3/input/videoplayback (1).mp4",
+  "input_video_name": "videoplayback (1).mp4",
+  "video_duration_sec": 2249.177687,
+  "transcript_path": "/Users/anthonymaguire/video-automation/mk0.3/jobs/videoplayback (1)_job_20260428T140230Z_1afc0711/transcript.json",
+  "selection_path": "/Users/anthonymaguire/video-automation/mk0.3/jobs/videoplayback (1)_job_20260428T140230Z_1afc0711/selection.json",
+  "status": "success",
+  "created_at": "2026-04-28T14:02:30.611126+00:00",
+  "completed_at": "2026-04-28T14:08:00.833182+00:00",
+  "errors": [],
+  "warnings": [],
+  "stage_timings_ms": {
+    "transcription_ms": 318445,
+    "selection_ms": 11384,
+    "clipping_ms": 171,
+    "total_ms": 330232
+  },
+  "clips": [
+    {
+      "start": "00:08:20",
+      "end": "00:08:37",
+      "clip_path": "/Users/anthonymaguire/video-automation/mk0.3/output/videoplayback (1)_clip_01_4e1f0330.mp4",
+      "job_clip_path": "/Users/anthonymaguire/video-automation/mk0.3/jobs/videoplayback (1)_job_20260428T140230Z_1afc0711/clips/videoplayback (1)_clip_01_4e1f0330.mp4",
+      "clip_file": "videoplayback (1)_clip_01_4e1f0330.mp4",
+      "clip_url": "/output/videoplayback (1)_clip_01_4e1f0330.mp4",
+      "duration_sec": 17.0,
+      "title": "The Decline of Literacy",
+      "hook": "People today have reading levels far below what par is for their grade.",
+      "caption": "Is literacy on the decline?\nLet's explore the alarming trends in education.",
+      "scores": {
+        "hook_strength": 9.0,
+        "clarity_standalone": 9.0,
+        "engagement_potential": 9.0,
+        "minimal_filler": 9.0
+      },
+      "reason": "This clip highlights a critical issue regarding education and literacy, making it a compelling standalone point."
+    }
+  ]
+}

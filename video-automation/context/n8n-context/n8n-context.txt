@@ -1,0 +1,2 @@
+this file contains a copy of my n8n local setup with docker
+(this is not where i run it from and should only be used as context)
