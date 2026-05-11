@@ -86,7 +86,19 @@ def create_app() -> Flask:
         except Exception as exc:
             _check("yt-dlp", False, repr(exc))
 
+        cookies_browser = os.environ.get("YT_DLP_COOKIES_FROM_BROWSER", "").strip()
         cookies_raw = os.environ.get("YT_DLP_COOKIES_PATH", "").strip()
+        if cookies_browser:
+            _check(
+                "yt_dlp_cookie_mode",
+                True,
+                f"browser:{cookies_browser.split(':', 1)[0]}",
+            )
+        elif cookies_raw:
+            _check("yt_dlp_cookie_mode", True, "cookies.txt")
+        else:
+            _check("yt_dlp_cookie_mode", True, "none")
+
         if cookies_raw:
             cp = Path(cookies_raw).expanduser()
             _check(
@@ -100,6 +112,15 @@ def create_app() -> Flask:
                 True,
                 "YT_DLP_COOKIES_PATH unset (optional; helps with YouTube bot checks)",
             )
+
+        js_runtime = os.environ.get("YT_DLP_JS_RUNTIME", "").strip().lower()
+        use_deno = os.environ.get("YT_DLP_USE_DENO", "").strip().lower()
+        deno_enabled = js_runtime == "deno" or use_deno in {"1", "true", "yes", "on", "deno"}
+        _check(
+            "yt_dlp_js_runtime",
+            True,
+            "deno" if deno_enabled else "yt-dlp default",
+        )
 
         for name, path in (
             ("root", paths.ROOT),

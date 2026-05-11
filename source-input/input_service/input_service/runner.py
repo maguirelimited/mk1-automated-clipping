@@ -114,29 +114,64 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
     response (``input_ready`` / ``no_input_available`` / ``failed``).
     """
     paths.ensure_dirs()
+    log.info("Funnel started: funnel_id=%s", funnel_id)
 
     # ---- load funnel ------------------------------------------------------
     try:
         funnel: Funnel = load_funnel(funnel_id)
+        log.info(
+            "Funnel loaded: funnel_id=%s sources=%s duration_min=%s-%s max_downloads=%s",
+            funnel.funnel_id,
+            len(funnel.source_configs),
+            funnel.min_duration_minutes,
+            funnel.max_duration_minutes,
+            funnel.max_downloads_per_run,
+        )
     except FunnelNotFoundError as exc:
+        log.info("Final funnel status: funnel_id=%s status=failed error=unknown_funnel", funnel_id)
         return _failed(funnel_id, f"unknown_funnel: {exc}")
     except FunnelInactiveError as exc:
+        log.info("Final funnel status: funnel_id=%s status=failed error=inactive_funnel", funnel_id)
         return _failed(funnel_id, f"inactive_funnel: {exc}")
     except FunnelInvalidError as exc:
+        log.info("Final funnel status: funnel_id=%s status=failed error=invalid_funnel", funnel_id)
         return _failed(funnel_id, f"invalid_funnel: {exc}")
     except FunnelError as exc:  # safety net
+        log.info("Final funnel status: funnel_id=%s status=failed error=funnel_error", funnel_id)
         return _failed(funnel_id, f"funnel_error: {exc}")
 
     # ---- check sources ----------------------------------------------------
     try:
-        candidates = check_sources(funnel.source_configs)
+        candidates = check_sources(
+            funnel.source_configs,
+            max_candidates=max(1, funnel.max_downloads_per_run * 5),
+        )
+        log.info(
+            "Candidate videos found: funnel_id=%s count=%s",
+            funnel.funnel_id,
+            len(candidates),
+        )
     except SourceCheckError as exc:
+        log.info(
+            "Final funnel status: funnel_id=%s status=failed error=source_check_failed reason=%s",
+            funnel.funnel_id,
+            exc,
+        )
         return _failed(funnel.funnel_id, f"source_check_failed: {exc}")
     except Exception as exc:  # pragma: no cover - last-resort guard
         log.exception("Unexpected source check error")
+        log.info(
+            "Final funnel status: funnel_id=%s status=failed error=source_check_failed reason=%s",
+            funnel.funnel_id,
+            exc,
+        )
         return _failed(funnel.funnel_id, f"source_check_failed: {exc}")
 
     if not candidates:
+        log.info(
+            "Final funnel status: funnel_id=%s status=no_input_available reason=no_candidates",
+            funnel.funnel_id,
+        )
         return _no_input(funnel, "No candidate videos found in approved sources.")
 
     # ---- filter + sort ----------------------------------------------------
@@ -150,22 +185,59 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
             reason = "No valid non-duplicate video found."
         else:
             reason = "No candidate videos passed the filter."
+        log.info(
+            "Candidate filter result: funnel_id=%s valid=0 rejected=%s reason=%s",
+            funnel.funnel_id,
+            len(rejected),
+            reason,
+        )
+        log.info(
+            "Final funnel status: funnel_id=%s status=no_input_available reason=%s",
+            funnel.funnel_id,
+            reason,
+        )
         return _no_input(funnel, reason)
+    log.info(
+        "Candidate filter result: funnel_id=%s valid=%s rejected=%s",
+        funnel.funnel_id,
+        len(valid),
+        len(rejected),
+    )
 
     # ---- download / validate / store loop --------------------------------
     last_error: str | None = None
 
     for cand in valid:
+        log.info(
+            "Selected candidate URL: funnel_id=%s url=%s title=%s duration_seconds=%s",
+            funnel.funnel_id,
+            cand.url,
+            cand.title,
+            cand.duration_seconds,
+        )
         try:
             dl = download_candidate(cand, funnel_id=funnel.funnel_id)
         except DownloadFailed as exc:
             log.warning("Download failed for %s: %s", cand.url, exc)
+            log.info(
+                "Download failure reason: funnel_id=%s url=%s reason=%s",
+                funnel.funnel_id,
+                cand.url,
+                exc,
+            )
             last_error = f"download_failed: {exc}"
             continue
         except Exception as exc:  # pragma: no cover - last-resort guard
             log.exception("Unexpected download error for %s", cand.url)
+            log.info(
+                "Download failure reason: funnel_id=%s url=%s reason=%s",
+                funnel.funnel_id,
+                cand.url,
+                exc,
+            )
             last_error = f"download_failed: {exc}"
             continue
+        log.info("Download success path: funnel_id=%s path=%s", funnel.funnel_id, dl.file_path)
 
         # validate
         try:
@@ -186,6 +258,11 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
             ready_path = store_ready(dl.file_path, funnel.funnel_id)
         except StorageError as exc:
             log.error("Storage failed for %s: %s", dl.file_path, exc)
+            log.info(
+                "Final funnel status: funnel_id=%s status=failed error=storage_failed reason=%s",
+                funnel.funnel_id,
+                exc,
+            )
             return _failed(funnel.funnel_id, f"storage_failed: {exc}")
 
         ready_path = ready_path.resolve()
@@ -205,11 +282,27 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
             # The video is on disk and ready; surface the success but include a note.
             payload = _success(funnel, ready_path, cand)
             payload["warning"] = f"seen_store_update_failed: {exc}"
+            log.info(
+                "Final funnel status: funnel_id=%s status=input_ready video_path=%s warning=%s",
+                funnel.funnel_id,
+                ready_path,
+                payload["warning"],
+            )
             return payload
 
+        log.info(
+            "Final funnel status: funnel_id=%s status=input_ready video_path=%s",
+            funnel.funnel_id,
+            ready_path,
+        )
         return _success(funnel, ready_path, cand)
 
     # Every valid candidate failed download or validation.
+    log.info(
+        "Final funnel status: funnel_id=%s status=no_input_available reason=%s",
+        funnel.funnel_id,
+        last_error or "No valid non-duplicate video found.",
+    )
     return _no_input(
         funnel,
         last_error or "No valid non-duplicate video found.",

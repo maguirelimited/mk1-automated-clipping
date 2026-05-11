@@ -18,7 +18,7 @@ except Exception:  # pragma: no cover - import-time guard for missing dep
     YoutubeDL = None  # type: ignore[assignment]
     DownloadError = Exception  # type: ignore[assignment,misc]
 
-from .yt_dlp_cookies import resolve_yt_dlp_cookiefile
+from .yt_dlp_cookies import apply_yt_dlp_auth_runtime_options
 
 
 log = logging.getLogger(__name__)
@@ -90,9 +90,8 @@ def _flat_extract(url: str, max_items: int) -> dict[str, Any]:
         "ignoreerrors": True,
         "playlist_items": f"1-{max_items}",
     }
-    cookiefile = resolve_yt_dlp_cookiefile()
-    if cookiefile:
-        opts["cookiefile"] = cookiefile
+    opts = apply_yt_dlp_auth_runtime_options(opts)
+    log.info("Checking source with yt-dlp: url=%s max_items=%s", url, max_items)
     with YoutubeDL(opts) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
@@ -184,6 +183,7 @@ def _hydrate_metadata(candidate: Candidate) -> Candidate:
         "skip_download": True,
         "ignoreerrors": True,
     }
+    opts = apply_yt_dlp_auth_runtime_options(opts)
     try:
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(candidate.url, download=False)
@@ -222,6 +222,7 @@ def check_sources(
     *,
     max_per_source: int = DEFAULT_MAX_VIDEOS_PER_SOURCE,
     hydrate_missing_duration: bool = True,
+    max_candidates: int | None = None,
 ) -> list[Candidate]:
     """Return candidate videos found across all approved ``sources``.
 
@@ -230,8 +231,11 @@ def check_sources(
     """
     results: list[Candidate] = []
     failures: list[tuple[str, str]] = []
+    target_candidates = max(1, int(max_candidates)) if max_candidates else None
 
     for raw_source in sources:
+        if target_candidates and len(results) >= target_candidates:
+            break
         if isinstance(raw_source, str):
             configured_url = raw_source
             source_type = "youtube_channels"
@@ -257,6 +261,13 @@ def check_sources(
             continue
 
         source_url = _normalise_source_url(configured_url, source_type)
+        log.info(
+            "Source being checked: source_id=%s type=%s url=%s max_items=%s",
+            source_id or "<legacy>",
+            source_type,
+            source_url,
+            local_max,
+        )
         try:
             info = _flat_extract(source_url, max_items=local_max)
         except SourceCheckError as exc:
@@ -264,6 +275,7 @@ def check_sources(
             failures.append((source_url, str(exc)))
             continue
 
+        source_count = 0
         for entry in _entries(info):
             cand = _entry_to_candidate(
                 entry,
@@ -288,6 +300,15 @@ def check_sources(
                 }
             )
             results.append(cand)
+            source_count += 1
+            if target_candidates and len(results) >= target_candidates:
+                break
+        log.info(
+            "Candidate videos found for source_id=%s: %s (total_so_far=%s)",
+            source_id or "<legacy>",
+            source_count,
+            len(results),
+        )
 
     if not results and failures:
         # Every source failed -> propagate as a single error.
@@ -303,9 +324,12 @@ def check_sources(
             if not bool(cand.extra.get("hydrate_missing_duration", True)):
                 hydrated.append(cand)
             elif cand.duration_seconds is None or not cand.upload_date:
+                log.info("Hydrating candidate metadata: url=%s", cand.url)
                 hydrated.append(_hydrate_metadata(cand))
             else:
                 hydrated.append(cand)
         results = hydrated
+
+    log.info("Candidate source check complete: candidates=%s", len(results))
 
     return results

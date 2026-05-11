@@ -5,8 +5,8 @@ path on success. The caller (``runner.run_funnel``) is responsible for
 validating, then moving the file into the ready location, then marking it
 as seen. We never download more than one video here.
 
-If ``YT_DLP_COOKIES_PATH`` points to a Netscape ``cookies.txt`` file, it is
-passed to yt-dlp (helps with YouTube bot challenges). See ``yt_dlp_cookies``.
+If configured, yt-dlp can use browser cookies, Netscape cookies.txt, and Deno
+for YouTube bot / n-challenge handling. See ``yt_dlp_cookies``.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ except Exception:  # pragma: no cover
 
 from . import paths
 from .source_checker import Candidate
-from .yt_dlp_cookies import resolve_yt_dlp_cookiefile
+from .yt_dlp_cookies import apply_yt_dlp_auth_runtime_options
 
 
 log = logging.getLogger(__name__)
@@ -80,10 +80,14 @@ def download_candidate(candidate: Candidate, *, funnel_id: str) -> DownloadResul
         except OSError:
             pass
 
-    opts = _ydl_options(tmp_dir, candidate.video_id)
-    cookiefile = resolve_yt_dlp_cookiefile()
-    if cookiefile:
-        opts["cookiefile"] = cookiefile
+    opts = apply_yt_dlp_auth_runtime_options(_ydl_options(tmp_dir, candidate.video_id))
+    log.info(
+        "Download started: funnel_id=%s url=%s video_id=%s tmp_dir=%s",
+        funnel_id,
+        candidate.url,
+        candidate.video_id,
+        tmp_dir,
+    )
 
     try:
         with YoutubeDL(opts) as ydl:
@@ -106,4 +110,5 @@ def download_candidate(candidate: Candidate, *, funnel_id: str) -> DownloadResul
         mp4 = [m for m in matches if m.suffix.lower() == ".mp4"]
         file_path = mp4[0] if mp4 else max(matches, key=lambda p: p.stat().st_size)
 
+    log.info("Download succeeded: funnel_id=%s path=%s", funnel_id, file_path)
     return DownloadResult(file_path=file_path, candidate=candidate)
