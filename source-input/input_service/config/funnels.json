@@ -1,0 +1,91 @@
+[
+  {
+    "funnel_id": "business_podcasts_001",
+    "angle": "business founder podcasts",
+    "source_type": "youtube_channels",
+    "pipeline_profile": "business_podcasts_001",
+    "sources": [
+      {
+        "source_id": "diary_of_a_ceo",
+        "label": "The Diary Of A CEO",
+        "source_type": "youtube_channel",
+        "url": "https://www.youtube.com/@TheDiaryOfACEO/videos",
+        "active": true,
+        "max_videos_per_source": 25,
+        "hydrate_missing_duration": true,
+        "title_blocklist": [
+          "shorts",
+          "short",
+          "clip",
+          "clips",
+          "highlight",
+          "highlights",
+          "trailer",
+          "teaser",
+          "preview",
+          "compilation"
+        ]
+      }
+    ],
+    "min_duration_minutes": 25,
+    "max_duration_minutes": 180,
+    "max_downloads_per_run": 1,
+    "posting_config": {
+      "enabled": false,
+      "mode": "manual_review",
+      "platforms": [],
+      "default_caption_style": "business-insight",
+      "hashtags": [
+        "business",
+        "founders",
+        "entrepreneurship"
+      ],
+      "requires_human_approval": true
+    },
+    "analytics_config": {
+      "enabled": false,
+      "event_namespace": "business_podcasts_001",
+      "webhook_url": "",
+      "track_fields": [
+        "source_url",
+        "clip_count",
+        "posting_status"
+      ]
+    },
+    "active": true
+  },
+  {
+    "funnel_id": "template_youtube_podcast_001",
+    "angle": "copy this inactive template for a new YouTube podcast funnel",
+    "source_type": "youtube_channels",
+    "pipeline_profile": "template_youtube_podcast_001",
+    "sources": [
+      {
+        "source_id": "replace_me",
+        "label": "Replace Me Channel",
+        "source_type": "youtube_channel",
+        "url": "https://www.youtube.com/@ReplaceMe/videos",
+        "active": false,
+        "max_videos_per_source": 25,
+        "hydrate_missing_duration": true
+      }
+    ],
+    "min_duration_minutes": 20,
+    "max_duration_minutes": 180,
+    "max_downloads_per_run": 1,
+    "posting_config": {
+      "enabled": false,
+      "mode": "manual_review",
+      "platforms": [],
+      "hashtags": [],
+      "requires_human_approval": true
+    },
+    "analytics_config": {
+      "enabled": false,
+      "event_namespace": "template_youtube_podcast_001",
+      "webhook_url": "",
+      "track_fields": []
+    },
+    "active": false
+  }
+]

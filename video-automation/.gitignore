@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+
+# Local job artifacts (regenerated per run)
+jobs/
+temp/
+output/
+input/
+
+# Editor / env
+.env
+*.log

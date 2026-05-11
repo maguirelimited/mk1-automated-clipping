@@ -1,0 +1,30 @@
+{
+  "defaults": {
+    "pipeline_profile": "business_podcasts_001"
+  },
+  "paths": {
+    "input_folder": "input",
+    "output_folder": "output",
+    "temp_folder": "temp",
+    "jobs_folder": "jobs",
+    "analytics_folder": "analytics"
+  },
+  "selection": {
+    "max_clips": 8,
+    "min_clip_duration_sec": 30,
+    "max_clip_duration_sec": 60,
+    "target_clip_duration_sec": 45,
+    "max_overlap_sec": 2
+  },
+  "models": {
+    "whisper_model": "tiny",
+    "selection_model": "gpt-4o-mini"
+  },
+  "caption_enabled": true,
+  "chunking": {
+    "enabled": true,
+    "threshold_sec": 3600,
+    "chunk_target_sec": 1200,
+    "max_clips_per_chunk": 5
+  }
+}

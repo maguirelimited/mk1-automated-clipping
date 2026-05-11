@@ -1,0 +1,203 @@
+# Automated source-input service — current implementation (VAmk0.4)
+
+Standalone Flask service under **`automated-content/VAmk0.4/source-input/input_service/`**. It fulfills the original Mk1 funnel contract: triggered over HTTP (e.g. by n8n), fetch **exactly one** valid long-form input per run from configured source definitions, dedupe via local state, validate, atomically publish to **`data/inputs/ready/<funnel_id>/source.mp4`**, return structured JSON plus funnel metadata for downstream orchestration.
+
+**Boundary:** Does **not** run transcription, clip selection, FFmpeg, or uploads. **`video-automation/server/app.py`** (clipping pipeline) is a separate process and directory tree.
+
+
+## Behaviour (as coded)
+
+When **`POST /run-funnel`** runs:
+
+1. Load funnel **`funnel_id`** from **`config/funnels.json`** (**`CONFIG_DIR`**; reject missing / inactive / invalid). Funnel config is the source of truth for source URLs, channel-specific rules, **`pipeline_profile`**, **`posting_config`**, and **`analytics_config`**.
+2. Resolve candidates only from active **`sources`** on that funnel (no broad discovery). Source entries may be strings for legacy compatibility or objects with **`source_id`**, **`source_type`**, **`url`**, **`max_videos_per_source`**, **`hydrate_missing_duration`**, and title filters.
+3. Filter with deterministic rules (**`candidate_filter`** + **`duplicate_store`**): duration window, source/funnel title allow/block lists, duplicates, heuristic rejection of shorts/trailers/etc. (**no AI ranking**).
+4. Sort survivors newest-first, iterate in order.
+5. For each candidate: **`download_candidate`** → **`validate_media`** → **`store_ready`**; on validation failure **`reject_file`** moves artifacts under **`data/inputs/rejected/<funnel_id>/`** with optional reason sidecar.
+6. On first fully successful path: **mark seen only after validated store** (**`duplicate_store.mark_seen`**), return **`input_ready`**.
+7. If every candidate fails or none qualify: return **`no_input_available`** (**`success: true`**, HTTP **`200`**) with the same funnel runtime metadata so n8n can continue routing consistently.
+8. Unexpected funnel/config/source errors map to **`failed`** (**`success: false`**, HTTP **`500`** for outcomes other than **`no_input_available`** / **`already_running`**).
+
+**Concurrency:** single-flight global lock (**`threading.Lock`**). A second **`POST /run-funnel`** while one is running returns HTTP **`409`** with **`{ "success": false, "status": "already_running", "funnel_id": "...", "error": "..." }`**.
+
+
+## HTTP API
+
+**Base URL / port:** Flask **`app.run`** defaults **`INPUT_SERVICE_HOST=127.0.0.1`**, **`INPUT_SERVICE_PORT=5060`** (**`INPUT_SERVICE_DEBUG`** optional).
+
+### `POST /run-funnel`
+
+**Body (JSON):**
+```json
+{ "funnel_id": "business_podcasts_001" }
+```
+
+**Success — video ready**
+```json
+{
+  "success": true,
+  "status": "input_ready",
+  "funnel_id": "business_podcasts_001",
+  "video_path": "/absolute/path/to/data/inputs/ready/business_podcasts_001/source.mp4",
+  "source_url": "https://www.youtube.com/watch?v=...",
+  "title": "Episode title",
+  "pipeline_profile": "business_podcasts_001",
+  "posting_config": { "enabled": false, "mode": "manual_review" },
+  "analytics_config": { "enabled": false, "event_namespace": "business_podcasts_001" }
+}
+```
+
+**Success — nothing to ingest**
+```json
+{
+  "success": true,
+  "status": "no_input_available",
+  "funnel_id": "business_podcasts_001",
+  "reason": "Clear human-readable reason"
+}
+```
+
+**Failure**
+```json
+{
+  "success": false,
+  "status": "failed",
+  "funnel_id": "business_podcasts_001",
+  "error": "Machine-readable / diagnostic message"
+}
+```
+
+**Concurrency**
+```json
+{
+  "success": false,
+  "status": "already_running",
+  "funnel_id": "business_podcasts_001",
+  "error": "another run is already in progress"
+}
+```
+(Returned with HTTP **`409`**.)
+
+
+### `GET /funnels`
+
+Returns validated funnel manifests for ops/onboarding. Query **`include_inactive=0`** hides inactive templates.
+
+```json
+{
+  "success": true,
+  "status": "funnels_ready",
+  "funnels": [
+    {
+      "funnel_id": "business_podcasts_001",
+      "pipeline_profile": "business_podcasts_001",
+      "sources": [{ "source_id": "diary_of_a_ceo", "source_type": "youtube_channel" }],
+      "posting_config": { "enabled": false },
+      "analytics_config": { "enabled": false }
+    }
+  ]
+}
+```
+
+### `GET /healthz`
+
+```json
+{ "ok": true, "service": "input_service" }
+```
+
+### `GET /doctor`
+
+Checks runtime readiness: **ffmpeg**, **ffprobe**, **yt-dlp import**, expected
+data/config paths, and `funnels.json` validation. Returns HTTP **`500`** if any
+check fails.
+
+
+## Configuration & environment
+
+| Variable | Role |
+|---------|------|
+| **`INPUT_SERVICE_ROOT`** | Overrides project root (**default:** parent of **`input_service` package**, i.e. the folder containing **`app.py`**, **`config/`**, **`data/`**). |
+| **`INPUT_SERVICE_SECRET`** | Optional. If non-empty, requires header **`X-Input-Service-Secret`** matching; else **`401`**. |
+| **`INPUT_SERVICE_LOG_LEVEL`** | Python logging level (default **`INFO`**). |
+
+**Funnels file:** **`config/funnels.json`** — array of objects; each funnel includes **`funnel_id`**, **`angle`**, **`source_type`**, **`pipeline_profile`**, **`sources`**, duration bounds, **`posting_config`**, **`analytics_config`**, and **`active`**.
+
+**Source entries:** Existing string URLs still work. Preferred shape:
+```json
+{
+  "source_id": "diary_of_a_ceo",
+  "label": "The Diary Of A CEO",
+  "source_type": "youtube_channel",
+  "url": "https://www.youtube.com/@TheDiaryOfACEO/videos",
+  "active": true,
+  "max_videos_per_source": 25,
+  "hydrate_missing_duration": true,
+  "title_blocklist": ["clip", "short", "preview"],
+  "title_allowlist": []
+}
+```
+
+**Supported source types:** **`youtube_channel` / `youtube_channels`**, **`youtube_playlist` / `youtube_playlists`**, and **`yt_dlp_collection`**. Non-YouTube future source types should be added through this adapter boundary, not by branching the runner.
+
+**Batching:** **`max_downloads_per_run`** is accepted for clarity but mk0.4 enforces **`1`**. Scale-out should use queues/workers in mk1 rather than hidden loop changes here.
+
+
+## Filesystem layout (relative to **`INPUT_SERVICE_ROOT`**)
+
+```
+input_service/
+  app.py                         # Flask app factory + `/run-funnel`, `/healthz`
+  config/
+    funnels.json
+  input_service/                 # Python package
+    paths.py                     # ROOT, READY_DIR, SEEN_FILE, env overrides
+    runner.py                    # run_funnel() orchestration (exports single entry)
+    funnel_loader.py             # rich funnel/source/posting/analytics schema
+    source_checker.py            # source-type adapter boundary over yt-dlp
+    candidate_filter.py          # funnel/source-specific deterministic filters
+    duplicate_store.py           # persisted state JSON
+    downloader.py
+    media_validator.py
+    storage.py                   # atomic ready slot + rejects
+    __init__.py
+  data/
+    inputs/
+      ready/<funnel_id>/source.mp4
+      rejected/<funnel_id>/...
+    state/
+      seen_urls.json             # duplicate tracking (URLs / ids)
+      run.lock                   # optional path constant (locking is in-process)
+    tmp/<funnel_id>/             # transient downloads per funnel
+```
+
+**`DuplicateStore`** reads/writes **`data/state/seen_urls.json`** (path from **`paths.SEEN_FILE`**).
+
+
+## Integration with the clipping pipeline (`video-automation`)
+
+The clipping server **`POST /process`** takes **`video`** as a basename only; that file must already exist under the clipping server’s **`input/`** directory (see **`video-automation/context/system-context.txt`**). It does **not** ingest arbitrary absolute **`input_ready`** **`video_path`** values from another host or root without a prior copy/move into **`input/`**.
+
+Recommended orchestration after **`input_ready`:**
+
+1. **Copy or move** (or NFS/shared volume) **`source.mp4`** into **`video-automation/input/`** under a deterministic name (**e.g. keep `source.mp4` per funnel/job**).
+2. Call **`POST /upload`** **or** go straight to **`POST /process`** with **`{ "video": "<that basename>", "pipeline_profile": "<pipeline_profile from input_ready>" }`**. In normal operation n8n should not send clip-duration overrides; funnel behaviour lives in repo catalogs.
+
+Alternatively **`POST /process-inline`** may stream the blob if **`allow_blocking_inline`** is explicitly set (**long-running**, see system context).
+
+Both services remain **deployable independently**; n8n (or equivalent) owns ordering and retries.
+
+
+## Non-goals (unchanged intent)
+
+Still **not** implemented here: batch queues, scheduler inside service, AI ranking beyond deterministic channel/source rules, relational DB dashboards, transcription/clipping/upload, or non-yt-dlp source implementations. The runner now has a source-type boundary and manifest endpoint so those additions do not require funnel-specific refactors.
+
+## Deployment / operations
+
+Repo-level deployment artifacts live under **`automated-content/VAmk0.4/deploy/`**:
+
+- **`deploy/README.md`**: portable setup/runbook.
+- **`deploy/scripts/bootstrap.sh`**: creates venvs, installs requirements, creates runtime dirs, copies `.env.example`.
+- **`deploy/scripts/run-input-service.sh`**: starts this service after sourcing **`.env`**.
+- **`deploy/scripts/doctor.sh`**: calls both source-input and video-automation doctor endpoints.
+
+This service’s env template is **`input_service/.env.example`**.

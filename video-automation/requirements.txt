@@ -1,0 +1,9 @@
+# Runtime dependencies for video-automation/
+#
+# Whisper is intentionally NOT pinned here — it is invoked as a CLI subprocess
+# (see scripts/transcribe_video.py: subprocess.run(["whisper", ...])), so it
+# must be available on PATH at runtime, not as a Python import in this venv.
+# ffmpeg/ffprobe are also runtime PATH dependencies (no python wrapper used).
+
+flask>=3.0,<4.0
+openai>=2.0,<3.0

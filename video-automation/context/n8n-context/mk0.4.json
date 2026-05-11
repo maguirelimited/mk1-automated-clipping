@@ -1,0 +1,482 @@
+{
+  "name": "mk0.4",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        256
+      ],
+      "id": "cdcfce69-28f2-4105-a941-a2a3429f474a",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:5060/run-funnel",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"funnel_id\": \"business_podcasts_001\"\n}",
+        "options": {
+          "timeout": 1800000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        64,
+        256
+      ],
+      "id": "17d4676c-a2e7-4468-85a3-ade7a10251a2",
+      "name": "Run Input Funnel"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "20002974-4654-487e-b85b-a575e8671668",
+              "leftValue": "={{ $json.status}}",
+              "rightValue": "input_ready",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        288,
+        256
+      ],
+      "id": "4e7f4e64-9545-4789-956a-832304104ccd",
+      "name": "Input Ready?"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "41c25fb9-734d-4b0b-a1bd-2d14aaa1c9aa",
+              "name": "status",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "aea3184d-2a80-40f3-a6d7-c6d3e3810be1",
+              "name": "reason",
+              "value": "",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        512,
+        352
+      ],
+      "id": "2dcb7d9e-4962-418e-ae47-f1737ae5246e",
+      "name": "Stop"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "2c458725-5179-4d23-810b-9c74becd42a4",
+              "leftValue": "={{$json.success}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1184,
+        160
+      ],
+      "id": "ddbb4c27-4f64-4d1b-b946-7f0289431c3f",
+      "name": "Success?"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a2eae6dd-096c-4679-a2d6-7890c3bc35d5",
+              "name": "error",
+              "value": "={{ $json.error }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1408,
+        352
+      ],
+      "id": "66a72d46-d344-4627-b206-1302a7d3f745",
+      "name": "Process Error Output"
+    },
+    {
+      "parameters": {
+        "operation": "move",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $('Search files and folders').item.json.id }}",
+          "mode": "id"
+        },
+        "driveId": {
+          "__rl": true,
+          "value": "My Drive",
+          "mode": "list",
+          "cachedResultName": "My Drive",
+          "cachedResultUrl": "https://drive.google.com/drive/my-drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "1CxPUsjDZViduOoY6zjWem4cLlUHisWaw",
+          "mode": "list",
+          "cachedResultName": "processed_archive",
+          "cachedResultUrl": "https://drive.google.com/drive/folders/1CxPUsjDZViduOoY6zjWem4cLlUHisWaw"
+        }
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1408,
+        160
+      ],
+      "id": "f4669639-1c9c-4f9f-9687-e651705990f7",
+      "name": "Move file",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "r2y7OEeWlvKFf1NB",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:5050/process",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ video: $json.video, selection: { max_clips: 3, min_duration_sec: 10, max_duration_sec: 30, max_overlap_sec: 3, include_reasons: true, include_clip_metadata: true } }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 1200000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        960,
+        160
+      ],
+      "id": "b18fd5e0-fa8c-4dcc-b839-bd229ba86be1",
+      "name": "Begin Process"
+    },
+    {
+      "parameters": {
+        "jsCode": "const processItem = $json || {};\nconst clips = Array.isArray(processItem.clips) ? processItem.clips : [];\nconst outputFolderId = '1O9_97jhjC__NU-Vu4yk5CMVh9ZDKvlT1'; // clips_out\n\nif (!processItem.success) {\n  throw new Error(`Pipeline failed: ${processItem.error || 'unknown error'}`);\n}\nif (clips.length === 0) {\n  throw new Error('Pipeline returned success but no clips array/items were found.');\n}\n\nreturn clips.map((clip, index) => {\n  const fileName = clip.clip_file || (String(clip.clip_path || '').split('/').pop()) || `clip_${index + 1}.mp4`;\n  const clipUrl = clip.clip_url || `/output/${fileName}`;\n  return {\n    json: {\n      run_id: processItem.run_id,\n      source_video: processItem.source_video,\n      video_basename: processItem.video_basename,\n      folder_id: outputFolderId,\n      clip_file: fileName,\n      download_url: `http://host.docker.internal:5050${clipUrl}`,\n      title: clip.title,\n      hook: clip.hook,\n      caption: clip.caption,\n      start: clip.start,\n      end: clip.end,\n      duration_sec: clip.duration_sec,\n    },\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1408,
+        -32
+      ],
+      "id": "274efd1a-1bfa-481e-bcbd-35ce507bfe1a",
+      "name": "Expand clips for upload"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.download_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 1200000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1632,
+        -32
+      ],
+      "id": "9b10e04d-fc8d-4045-be59-2284ab90cb70",
+      "name": "Fetch clip binary"
+    },
+    {
+      "parameters": {
+        "name": "={{ $json.clip_file }}",
+        "driveId": {
+          "__rl": true,
+          "value": "My Drive",
+          "mode": "list",
+          "cachedResultName": "My Drive",
+          "cachedResultUrl": "https://drive.google.com/drive/my-drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "={{ $json.folder_id }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1856,
+        -32
+      ],
+      "id": "219f9f9f-c3d0-42b8-b8f0-6cd746816673",
+      "name": "Upload clip to Drive",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "r2y7OEeWlvKFf1NB",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e183e9ee-96c8-4d5a-b5c6-3f9847ed43f4",
+              "name": "video",
+              "value": "={{ $json.video_path }}",
+              "type": "string"
+            },
+            {
+              "id": "c55ce579-b6e3-4424-aa9a-31b25aee0ebe",
+              "name": "selection.max_clips",
+              "value": 12,
+              "type": "number"
+            },
+            {
+              "id": "7a71895d-8ee4-4816-9b7b-aa3c48add6b8",
+              "name": "selection.min_duration_sec",
+              "value": 30,
+              "type": "number"
+            },
+            {
+              "id": "6188bb66-338f-4390-bf8d-9b7b7ccd4348",
+              "name": "selection.max_duration_sec",
+              "value": 60,
+              "type": "number"
+            },
+            {
+              "id": "2316f20b-9d0c-4a27-8ad3-25cf5d04621c",
+              "name": "selection.max_overlap_sec",
+              "value": 3,
+              "type": "number"
+            },
+            {
+              "id": "997d1103-a136-4f56-8dcb-636acea34e24",
+              "name": "selection.include_reasons",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "4b84e49b-2b87-4b4b-a886-cf4ea858ca7e",
+              "name": "selection.include_clip_metadata",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "80fb4fcf-3884-4cf9-bf38-15c1729ae83c",
+              "name": "n8n.webhook_url",
+              "value": "https://yadiel-foundationary-distinctly.ngrok-free.dev/webhook/clip-receiver",
+              "type": "string"
+            },
+            {
+              "id": "907a2e73-442a-4555-ab42-c1ea6f4d0b3c",
+              "name": "n8n.include_files",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "f14f6742-7f96-44d2-9750-e2f4e0b7cb4f",
+              "name": "n8n.fail_on_error",
+              "value": false,
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        736,
+        160
+      ],
+      "id": "aa0705aa-8370-4f6c-b488-8874a0c591ad",
+      "name": "Set Request"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Run Input Funnel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Input Funnel": {
+      "main": [
+        [
+          {
+            "node": "Input Ready?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input Ready?": {
+      "main": [
+        [
+          {
+            "node": "Set Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Success?": {
+      "main": [
+        [
+          {
+            "node": "Expand clips for upload",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Move file",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Process Error Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Begin Process": {
+      "main": [
+        [
+          {
+            "node": "Success?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand clips for upload": {
+      "main": [
+        [
+          {
+            "node": "Fetch clip binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch clip binary": {
+      "main": [
+        [
+          {
+            "node": "Upload clip to Drive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Request": {
+      "main": [
+        [
+          {
+            "node": "Begin Process",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "42573227-a8c4-4039-8957-98d410aed760",
+  "meta": {
+    "instanceId": "23d5d45b275ee21664699b1e8a11e29a5e1b16c929c1d2476f4d2938af167e0c"
+  },
+  "id": "eedjQbfEZcY7Czkp",
+  "tags": []
+}
