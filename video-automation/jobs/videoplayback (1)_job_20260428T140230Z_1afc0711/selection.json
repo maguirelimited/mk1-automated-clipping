@@ -1,0 +1,20 @@
+{
+  "clips": [
+    {
+      "start": "00:08:20",
+      "end": "00:08:37",
+      "reason": "This clip highlights a critical issue regarding education and literacy, making it a compelling standalone point.",
+      "title": "The Decline of Literacy",
+      "hook": "People today have reading levels far below what par is for their grade.",
+      "caption": "Is literacy on the decline?\nLet's explore the alarming trends in education.",
+      "scores": {
+        "hook_strength": 9.0,
+        "clarity_standalone": 9.0,
+        "engagement_potential": 9.0,
+        "minimal_filler": 9.0
+      },
+      "duration_sec": 17.0
+    }
+  ],
+  "validation_warnings": []
+}
