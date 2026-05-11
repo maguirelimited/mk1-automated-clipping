@@ -1,2 +1,15 @@
 
 .DS_Store
+.DS_Store
+*.log
+.env
+**/.env
+**/.DS_Store
+video-automation/context/n8n-context/n8n/n8n/n8n_data/
+video-automation/jobs/
+video-automation/input/
+video-automation/output/
+video-automation/temp/
+source-input/input_service/data/tmp/
+source-input/input_service/data/inputs/ready/
+source-input/input_service/data/inputs/rejected/
