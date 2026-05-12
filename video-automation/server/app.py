@@ -162,6 +162,13 @@ def _selection_subprocess_http_status(detail: str | None) -> int:
     return 500
 
 
+class SelectorCallError(RuntimeError):
+    def __init__(self, message: str, details: str, *, status_code: int):
+        super().__init__(message)
+        self.details = details
+        self.status_code = status_code
+
+
 def _fail(message: str, *, log_detail=None, status_code=500):
     if log_detail is not None:
         print(f"[process] {message}: {log_detail}", flush=True)
@@ -208,6 +215,373 @@ def _parse_script_envelope(text: str) -> dict[str, object] | None:
         if isinstance(parsed, dict) and "ok" in parsed and "script" in parsed:
             return parsed
     return None
+
+
+def _selector_prompt_stats_from_output(raw_out: str) -> dict[str, object] | None:
+    envelope = _parse_script_envelope(raw_out)
+    if envelope and isinstance(envelope.get("selector_prompt"), dict):
+        return dict(envelope["selector_prompt"])
+    return None
+
+
+_SELECTOR_HARD_MAX_TRANSCRIPT_CHARS = 120_000
+_SELECTOR_HARD_MAX_SEGMENT_LINES = 500
+_SELECTOR_SAFE_MAX_TRANSCRIPT_CHARS = 90_000
+_SELECTOR_SAFE_MAX_SEGMENT_LINES = 450
+
+
+def _format_selector_ts(total_sec: float) -> str:
+    total = max(0.0, float(total_sec))
+    h = int(total // 3600)
+    m = int((total % 3600) // 60)
+    s = total % 60
+    return f"{h:02d}:{m:02d}:{s:06.3f}"
+
+
+def _timed_transcript_segments(transcript_payload: dict[str, Any]) -> list[dict[str, object]]:
+    segments = transcript_payload.get("segments")
+    if not isinstance(segments, list):
+        return []
+    out: list[dict[str, object]] = []
+    for row in segments:
+        if not isinstance(row, dict):
+            continue
+        try:
+            start = float(row.get("start"))
+            end = float(row.get("end"))
+        except (TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        out.append({"start": start, "end": end, "text": str(row.get("text") or "").strip()})
+    return out
+
+
+def _selector_line_chars(segment: dict[str, object], *, window_start_sec: float = 0.0) -> int:
+    start = float(segment["start"]) - float(window_start_sec)
+    end = float(segment["end"]) - float(window_start_sec)
+    text = str(segment.get("text") or "").strip() or "(no voiced text)"
+    return len(f"[{_format_selector_ts(start)} -> {_format_selector_ts(end)}] {text}") + 1
+
+
+def _selector_prompt_budget(segments: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "segment_count": len(segments),
+        "estimated_prompt_chars": sum(_selector_line_chars(seg) for seg in segments),
+        "safe_max_transcript_chars": _SELECTOR_SAFE_MAX_TRANSCRIPT_CHARS,
+        "safe_max_segment_lines": _SELECTOR_SAFE_MAX_SEGMENT_LINES,
+        "hard_max_transcript_chars": _SELECTOR_HARD_MAX_TRANSCRIPT_CHARS,
+        "hard_max_segment_lines": _SELECTOR_HARD_MAX_SEGMENT_LINES,
+    }
+
+
+def _plan_selector_windows(transcript_payload: dict[str, Any]) -> tuple[list[dict[str, object]], dict[str, object]]:
+    segments = _timed_transcript_segments(transcript_payload)
+    budget = _selector_prompt_budget(segments)
+    if (
+        len(segments) <= _SELECTOR_SAFE_MAX_SEGMENT_LINES
+        and int(budget["estimated_prompt_chars"]) <= _SELECTOR_SAFE_MAX_TRANSCRIPT_CHARS
+    ):
+        window = {
+            "index": 0,
+            "start_sec": float(segments[0]["start"]) if segments else 0.0,
+            "end_sec": float(segments[-1]["end"]) if segments else 0.0,
+            "segments": segments,
+            "uses_original_transcript": True,
+        }
+        return [window], {**budget, "window_count": 1, "segmented": False}
+
+    windows: list[dict[str, object]] = []
+    current: list[dict[str, object]] = []
+    current_chars = 0
+    current_start = 0.0
+    for segment in segments:
+        if not current:
+            current_start = float(segment["start"])
+            current_chars = 0
+        next_chars = _selector_line_chars(segment, window_start_sec=current_start)
+        would_exceed_lines = len(current) >= _SELECTOR_SAFE_MAX_SEGMENT_LINES
+        would_exceed_chars = current_chars + next_chars > _SELECTOR_SAFE_MAX_TRANSCRIPT_CHARS
+        if current and (would_exceed_lines or would_exceed_chars):
+            windows.append(
+                {
+                    "index": len(windows),
+                    "start_sec": current_start,
+                    "end_sec": float(current[-1]["end"]),
+                    "segments": current,
+                    "uses_original_transcript": False,
+                    "estimated_prompt_chars": current_chars,
+                }
+            )
+            current = []
+            current_start = float(segment["start"])
+            current_chars = 0
+            next_chars = _selector_line_chars(segment, window_start_sec=current_start)
+        current.append(segment)
+        current_chars += next_chars
+    if current:
+        windows.append(
+            {
+                "index": len(windows),
+                "start_sec": current_start,
+                "end_sec": float(current[-1]["end"]),
+                "segments": current,
+                "uses_original_transcript": False,
+                "estimated_prompt_chars": current_chars,
+            }
+        )
+    return windows, {**budget, "window_count": len(windows), "segmented": len(windows) > 1}
+
+
+def _write_selector_window_transcript(
+    window: dict[str, object],
+    *,
+    temp_root: str,
+    filename: str,
+    job_id: str,
+) -> str:
+    window_start = float(window["start_sec"])
+    local_segments: list[dict[str, object]] = []
+    texts: list[str] = []
+    for idx, segment in enumerate(window.get("segments") or []):
+        if not isinstance(segment, dict):
+            continue
+        start = max(0.0, float(segment["start"]) - window_start)
+        end = max(start, float(segment["end"]) - window_start)
+        text = str(segment.get("text") or "").strip()
+        if text:
+            texts.append(text)
+        local_segments.append({"id": idx, "start": start, "end": end, "text": text})
+    path = os.path.abspath(
+        os.path.join(temp_root, f"{filename}_{job_id}_selector_w{int(window['index']):03d}.json")
+    )
+    write_json(
+        path,
+        {
+            "text": " ".join(texts).strip(),
+            "segments": local_segments,
+            "duration": max(0.001, float(window["end_sec"]) - window_start),
+        },
+    )
+    return path
+
+
+def _run_selector_subprocess(
+    *,
+    script_select: str,
+    transcript_path: str,
+    selection_options: dict[str, object],
+    selector_max_clips: int,
+    min_duration_sec: float,
+    max_duration_sec: float,
+    max_overlap_sec: float,
+    video_duration_sec: float | None,
+    label: str,
+) -> tuple[list[dict], dict[str, object] | None]:
+    result = subprocess.run(
+        [PYTHON, script_select, transcript_path, json.dumps(selection_options)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        details = result.stderr or result.stdout
+        raise SelectorCallError(
+            f"Selection failed for {label}",
+            details,
+            status_code=_selection_subprocess_http_status(str(details)),
+        )
+    raw_out = result.stdout.strip()
+    try:
+        segments = _parse_segments_from_selector_output(
+            raw_out,
+            selector_max_clips=selector_max_clips,
+            min_duration_sec=min_duration_sec,
+            max_duration_sec=max_duration_sec,
+            max_overlap_sec=max_overlap_sec,
+            video_duration_sec=video_duration_sec,
+        )
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise SelectorCallError(
+            f"Invalid selection output JSON ({label})",
+            str(exc),
+            status_code=500,
+        ) from exc
+    return segments, _selector_prompt_stats_from_output(raw_out)
+
+
+def _record_selector_prompt_warning(
+    *,
+    warnings: list[dict[str, object]],
+    label: str,
+    prompt_stats: dict[str, object] | None,
+) -> bool:
+    if not prompt_stats:
+        return False
+    truncated = bool(prompt_stats.get("truncated_by_segment_limit")) or bool(
+        prompt_stats.get("truncated_by_char_limit")
+    )
+    if truncated:
+        warnings.append(
+            categorize_error(
+                "selection",
+                "selector_prompt_truncated",
+                "Selector prompt guardrail was hit; transcript coverage may be incomplete for this window.",
+                {"selector_call": label, "selector_prompt": prompt_stats},
+            )
+        )
+    return truncated
+
+
+def _select_candidates_from_transcript(
+    *,
+    script_select: str,
+    transcript_path: str,
+    transcript_payload: dict[str, Any],
+    temp_root: str,
+    filename: str,
+    job_id: str,
+    max_clips: int,
+    min_duration_sec: float,
+    max_duration_sec: float,
+    max_overlap_sec: float,
+    include_reasons: bool,
+    include_clip_metadata: bool,
+    selection_model_used: str,
+    source_video_duration_sec: float,
+    selector_video_duration_sec: float,
+    base_timeline_offset_sec: float = 0.0,
+    selector_window_paths: list[str] | None = None,
+    warnings: list[dict[str, object]] | None = None,
+    context_label: str = "transcript",
+    allow_empty_segmented_windows: bool = True,
+) -> tuple[list[dict], dict[str, object]]:
+    warnings_ref = warnings if warnings is not None else []
+    planned_windows, plan = _plan_selector_windows(transcript_payload)
+    candidates: list[dict] = []
+    selector_calls: list[dict[str, object]] = []
+    prompt_truncation_count = 0
+    empty_window_count = 0
+    segmented = bool(plan.get("segmented"))
+    for window in planned_windows:
+        window_index = int(window["index"])
+        window_start = float(window["start_sec"])
+        window_end = float(window["end_sec"])
+        use_original = bool(window.get("uses_original_transcript")) and not segmented
+        call_path = transcript_path
+        timeline_offset = float(base_timeline_offset_sec)
+        selector_duration = float(selector_video_duration_sec)
+        if not use_original:
+            call_path = _write_selector_window_transcript(
+                window,
+                temp_root=temp_root,
+                filename=filename,
+                job_id=job_id,
+            )
+            if selector_window_paths is not None:
+                selector_window_paths.append(call_path)
+            timeline_offset = float(base_timeline_offset_sec) + window_start
+            selector_duration = max(0.001, window_end - window_start)
+
+        label = f"{context_label}:window_{window_index}"
+        opts: dict[str, object] = {
+            "max_clips": max_clips,
+            "min_duration_sec": min_duration_sec,
+            "max_duration_sec": max_duration_sec,
+            "max_overlap_sec": max_overlap_sec,
+            "video_duration_sec": selector_duration,
+            "include_reasons": include_reasons,
+            "include_clip_metadata": include_clip_metadata,
+            "selection_model": selection_model_used,
+        }
+        if timeline_offset > 0 or not use_original:
+            opts["timeline_offset_sec"] = timeline_offset
+            opts["is_chunk_slice"] = True
+        try:
+            part, prompt_stats = _run_selector_subprocess(
+                script_select=script_select,
+                transcript_path=call_path,
+                selection_options=opts,
+                selector_max_clips=max_clips,
+                min_duration_sec=min_duration_sec,
+                max_duration_sec=max_duration_sec,
+                max_overlap_sec=max_overlap_sec,
+                video_duration_sec=source_video_duration_sec,
+                label=label,
+            )
+        except SelectorCallError as exc:
+            if (
+                allow_empty_segmented_windows
+                and segmented
+                and "SELECTOR_REJECTED_AFTER_POSTFILTER" in str(exc.details)
+            ):
+                empty_window_count += 1
+                warnings_ref.append(
+                    categorize_error(
+                        "selection",
+                        "selector_window_empty",
+                        "No clips survived selector post-filter for this transcript window.",
+                        {"selector_call": label, "details": exc.details},
+                    )
+                )
+                selector_calls.append(
+                    {
+                        "label": label,
+                        "window_index": window_index,
+                        "candidate_count": 0,
+                        "empty": True,
+                        "start_sec": window_start,
+                        "end_sec": window_end,
+                    }
+                )
+                continue
+            raise
+        if _record_selector_prompt_warning(
+            warnings=warnings_ref, label=label, prompt_stats=prompt_stats
+        ):
+            prompt_truncation_count += 1
+        candidates.extend(part)
+        selector_calls.append(
+            {
+                "label": label,
+                "window_index": window_index,
+                "candidate_count": len(part),
+                "start_sec": window_start,
+                "end_sec": window_end,
+                "timeline_offset_sec": timeline_offset,
+                "selector_duration_sec": selector_duration,
+                "used_original_transcript": use_original,
+                "selector_prompt": prompt_stats,
+            }
+        )
+    summary = {
+        **plan,
+        "context_label": context_label,
+        "selector_call_count": len(selector_calls),
+        "candidate_count": len(candidates),
+        "prompt_truncation_count": prompt_truncation_count,
+        "empty_window_count": empty_window_count,
+        "windows": selector_calls,
+    }
+    return candidates, summary
+
+
+def _aggregate_selector_candidates(
+    candidates: list[dict],
+    *,
+    max_clips: int,
+    min_duration_sec: float,
+    max_duration_sec: float,
+    max_overlap_sec: float,
+    video_duration_sec: float | None,
+) -> list[dict]:
+    return postprocess_segments(
+        candidates,
+        max_clips=max_clips,
+        min_duration_sec=min_duration_sec,
+        max_duration_sec=max_duration_sec,
+        max_overlap_sec=max_overlap_sec,
+        video_duration_sec=video_duration_sec,
+    )
 
 
 def _resolve_input_video_path(video_name: str) -> tuple[str, str]:
@@ -544,6 +918,7 @@ def _job_debug_summary(job_dir: str, report: dict[str, Any]) -> dict[str, object
         "artifacts": _job_artifacts(job_dir),
         "transcript_stats": _transcript_stats(job_dir),
         "selection_summary": _selection_summary(job_dir),
+        "selector": report.get("selector") or {},
         "policy_resolution": report.get("policy_resolution") or {},
         "chunked": report.get("chunked", False),
         "chunking": report.get("chunking"),
@@ -820,6 +1195,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any]):
 
     chunk_scratch_dirs: list[str] = []
     chunk_sidecar_whisper_paths: list[str] = []
+    selector_window_paths: list[str] = []
 
     maybe_copy(video_path, job["input_copy_path"])
 
@@ -905,63 +1281,65 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any]):
             write_json(job["normalized_transcript_path"], transcript_payload)
 
             t1 = time.perf_counter()
-            result = subprocess.run(
-                [
-                    PYTHON,
-                    script_select,
-                    transcript_path,
-                    json.dumps(
-                        {
-                            "max_clips": max_clips,
-                            "min_duration_sec": min_duration_sec,
-                            "max_duration_sec": max_duration_sec,
-                            "max_overlap_sec": max_overlap_sec,
-                            "video_duration_sec": report["video_duration_sec"],
-                            "include_reasons": include_reasons,
-                            "include_clip_metadata": include_clip_metadata,
-                            "selection_model": selection_model_used,
-                        }
-                    ),
-                ],
-                capture_output=True,
-                text=True,
-            )
-            stage_ms["selection_ms"] = int((time.perf_counter() - t1) * 1000)
-            if result.returncode != 0:
+            try:
+                candidate_segments, selector_summary = _select_candidates_from_transcript(
+                    script_select=script_select,
+                    transcript_path=transcript_path,
+                    transcript_payload=transcript_payload,
+                    temp_root=temp_root,
+                    filename=filename,
+                    job_id=job["job_id"],
+                    max_clips=max_clips,
+                    min_duration_sec=min_duration_sec,
+                    max_duration_sec=max_duration_sec,
+                    max_overlap_sec=max_overlap_sec,
+                    include_reasons=include_reasons,
+                    include_clip_metadata=include_clip_metadata,
+                    selection_model_used=selection_model_used,
+                    source_video_duration_sec=float(report["video_duration_sec"]),
+                    selector_video_duration_sec=float(report["video_duration_sec"]),
+                    selector_window_paths=selector_window_paths,
+                    warnings=warnings,
+                    context_label="full_transcript",
+                    allow_empty_segmented_windows=True,
+                )
+                if selector_summary.get("segmented"):
+                    processed_segments = _aggregate_selector_candidates(
+                        candidate_segments,
+                        max_clips=max_clips,
+                        min_duration_sec=min_duration_sec,
+                        max_duration_sec=max_duration_sec,
+                        max_overlap_sec=max_overlap_sec,
+                        video_duration_sec=report["video_duration_sec"],
+                    )
+                else:
+                    processed_segments = candidate_segments
+            except SelectorCallError as exc:
                 err = categorize_error(
                     "selection",
                     "selection_error",
-                    "Selection failed",
-                    result.stderr or result.stdout,
+                    str(exc),
+                    exc.details,
                 )
                 report["errors"] = [err]
                 report["status"] = "failed"
                 return _fail(
                     "Selection failed",
                     log_detail=err["details"],
-                    status_code=_selection_subprocess_http_status(str(err.get("details", ""))),
+                    status_code=exc.status_code,
                 )
-
-            raw_out = result.stdout.strip()
-            try:
-                processed_segments = _parse_segments_from_selector_output(
-                    raw_out,
-                    selector_max_clips=max_clips,
-                    min_duration_sec=min_duration_sec,
-                    max_duration_sec=max_duration_sec,
-                    max_overlap_sec=max_overlap_sec,
-                    video_duration_sec=report["video_duration_sec"],
-                )
-            except (ValueError, json.JSONDecodeError) as e:
+            except ValueError as e:
                 err = categorize_error(
                     "selection_validation",
                     "selection_error",
-                    "Invalid selection output JSON",
+                    "Invalid aggregated selection segments",
                     str(e),
                 )
                 report["errors"] = [err]
                 report["status"] = "failed"
                 return _fail("Invalid selection output", log_detail=str(e), status_code=500)
+            stage_ms["selection_ms"] = int((time.perf_counter() - t1) * 1000)
+            report["selector"] = selector_summary
 
         else:
             report["chunked"] = True
@@ -1092,6 +1470,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any]):
 
             t1 = time.perf_counter()
             combined_segments: list[dict] = []
+            chunk_selector_summaries: list[dict[str, object]] = []
             for idx, (start_sec, dur_sec) in enumerate(specs):
                 whisper_path_chunk = zip_paths_offsets[idx][0]
                 chunk_vid = os.path.join(
@@ -1130,68 +1509,63 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any]):
                         log_detail=str(exc),
                         status_code=422,
                     )
-                sel_opts = {
-                    "max_clips": per_chunk_budget,
-                    "min_duration_sec": min_duration_sec,
-                    "max_duration_sec": max_duration_sec,
-                    "max_overlap_sec": max_overlap_sec,
-                    "video_duration_sec": chunk_dur,
-                    "include_reasons": include_reasons,
-                    "include_clip_metadata": include_clip_metadata,
-                    "selection_model": selection_model_used,
-                    "timeline_offset_sec": float(start_sec),
-                    "is_chunk_slice": True,
-                }
-                result = subprocess.run(
-                    [
-                        PYTHON,
-                        script_select,
-                        whisper_path_chunk,
-                        json.dumps(sel_opts),
-                    ],
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode != 0:
+                try:
+                    part, selector_summary = _select_candidates_from_transcript(
+                        script_select=script_select,
+                        transcript_path=whisper_path_chunk,
+                        transcript_payload=slice_payload,
+                        temp_root=temp_root,
+                        filename=f"{filename}_c{idx:03d}",
+                        job_id=job["job_id"],
+                        max_clips=per_chunk_budget,
+                        min_duration_sec=min_duration_sec,
+                        max_duration_sec=max_duration_sec,
+                        max_overlap_sec=max_overlap_sec,
+                        include_reasons=include_reasons,
+                        include_clip_metadata=include_clip_metadata,
+                        selection_model_used=selection_model_used,
+                        source_video_duration_sec=float(report["video_duration_sec"]),
+                        selector_video_duration_sec=float(chunk_dur),
+                        base_timeline_offset_sec=float(start_sec),
+                        selector_window_paths=selector_window_paths,
+                        warnings=warnings,
+                        context_label=f"video_chunk_{idx}",
+                        allow_empty_segmented_windows=True,
+                    )
+                except SelectorCallError as exc:
                     err = categorize_error(
                         "selection",
                         "selection_error",
                         f"Selection failed for chunk {idx}",
-                        result.stderr or result.stdout,
+                        exc.details,
                     )
                     report["errors"] = [err]
                     report["status"] = "failed"
                     return _fail(
                         "Selection failed (chunked)",
                         log_detail=err["details"],
-                        status_code=_selection_subprocess_http_status(str(err.get("details", ""))),
+                        status_code=exc.status_code,
                     )
-                raw_out = result.stdout.strip()
-                try:
-                    part = _parse_segments_from_selector_output(
-                        raw_out,
-                        selector_max_clips=per_chunk_budget,
-                        min_duration_sec=min_duration_sec,
-                        max_duration_sec=max_duration_sec,
-                        max_overlap_sec=max_overlap_sec,
-                        video_duration_sec=chunk_dur,
-                    )
-                except (ValueError, json.JSONDecodeError) as e:
-                    err = categorize_error(
-                        "selection_validation",
-                        "selection_error",
-                        f"Invalid selection output JSON (chunk {idx})",
-                        str(e),
-                    )
-                    report["errors"] = [err]
-                    report["status"] = "failed"
-                    return _fail("Invalid selection output", log_detail=str(e), status_code=500)
                 combined_segments.extend(part)
+                chunk_selector_summaries.append(selector_summary)
 
             stage_ms["selection_ms"] = int((time.perf_counter() - t1) * 1000)
+            report["selector"] = {
+                "segmented": True,
+                "mode": "video_chunks",
+                "chunk_count": len(chunk_selector_summaries),
+                "selector_call_count": sum(
+                    int(s.get("selector_call_count") or 0) for s in chunk_selector_summaries
+                ),
+                "candidate_count": len(combined_segments),
+                "prompt_truncation_count": sum(
+                    int(s.get("prompt_truncation_count") or 0) for s in chunk_selector_summaries
+                ),
+                "chunks": chunk_selector_summaries,
+            }
 
             try:
-                processed_segments = postprocess_segments(
+                processed_segments = _aggregate_selector_candidates(
                     combined_segments,
                     max_clips=max_clips,
                     min_duration_sec=min_duration_sec,
@@ -2093,6 +2467,18 @@ def process_inline():
                 print(
                     "[process-inline_cleanup] Removing temp upload failed:",
                     tmp_path,
+                    repr(exc),
+                    flush=True,
+                )
+        for wpath in selector_window_paths:
+            try:
+                abs_w = os.path.abspath(wpath)
+                if abs_w.startswith(temp_root + os.sep) and os.path.isfile(abs_w):
+                    os.remove(abs_w)
+            except Exception as exc:
+                print(
+                    "[pipeline_cleanup] Removing selector window transcript failed:",
+                    wpath,
                     repr(exc),
                     flush=True,
                 )
