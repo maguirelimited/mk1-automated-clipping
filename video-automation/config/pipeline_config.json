@@ -12,8 +12,8 @@
   "selection": {
     "max_clips": 8,
     "min_clip_duration_sec": 30,
-    "max_clip_duration_sec": 60,
-    "target_clip_duration_sec": 45,
+    "max_clip_duration_sec": 120,
+    "target_clip_duration_sec": 60,
     "max_overlap_sec": 2
   },
   "models": {
@@ -26,5 +26,8 @@
     "threshold_sec": 3600,
     "chunk_target_sec": 1200,
     "max_clips_per_chunk": 5
+  },
+  "artifact_retention": {
+    "temp_policy": "default"
   }
 }

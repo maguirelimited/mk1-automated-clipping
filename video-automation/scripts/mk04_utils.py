@@ -49,11 +49,28 @@ def ensure_paths(config: dict[str, Any]) -> dict[str, str]:
     return resolved
 
 
-def ffprobe_duration_sec(path: str) -> float | None:
+DEFAULT_FFPROBE_TIMEOUT_SEC = 30
+
+
+def ffprobe_run(
+    ffprobe_argv: list[str],
+    *,
+    timeout_sec: int = DEFAULT_FFPROBE_TIMEOUT_SEC,
+) -> subprocess.CompletedProcess[str]:
+    """Run ffprobe with consistent capture settings (shared by all probes)."""
+    return subprocess.run(
+        ["ffprobe", *ffprobe_argv],
+        capture_output=True,
+        text=True,
+        timeout=timeout_sec,
+    )
+
+
+def ffprobe_duration_sec(path: str, *, timeout_sec: int = DEFAULT_FFPROBE_TIMEOUT_SEC) -> float | None:
+    """Return container ``format.duration`` as float, or ``None`` if unreadable."""
     try:
-        p = subprocess.run(
+        p = ffprobe_run(
             [
-                "ffprobe",
                 "-v",
                 "error",
                 "-show_entries",
@@ -62,15 +79,79 @@ def ffprobe_duration_sec(path: str) -> float | None:
                 "default=noprint_wrappers=1:nokey=1",
                 path,
             ],
-            capture_output=True,
-            text=True,
-            timeout=30,
+            timeout_sec=timeout_sec,
         )
         if p.returncode != 0 or not (p.stdout or "").strip():
             return None
         return float((p.stdout or "").strip())
     except Exception:
         return None
+
+
+def ffprobe_demux_json(path: str, *, timeout_sec: int = DEFAULT_FFPROBE_TIMEOUT_SEC) -> dict[str, Any]:
+    """JSON demux probe (format + streams) used for clip output validation."""
+    p = ffprobe_run(
+        [
+            "-v",
+            "error",
+            "-hide_banner",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            path,
+        ],
+        timeout_sec=timeout_sec,
+    )
+    if p.returncode != 0:
+        tail = (p.stderr or "").strip() or (p.stdout or "").strip()
+        raise RuntimeError(
+            f"CLIP_REJECTED ffprobe_demux_failed: {(tail[:800] + ('…' if len(tail) > 800 else ''))}"
+        )
+    try:
+        data = json.loads(p.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "CLIP_REJECTED ffprobe_json_invalid: demux probe output was not JSON"
+        ) from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("CLIP_REJECTED ffprobe_json_invalid: expected JSON object root")
+    return data
+
+
+def resolve_whisper_model_for_transcription(config: dict[str, Any] | None = None) -> str:
+    """Resolve Whisper CLI ``--model`` name.
+
+    Precedence: ``WHISPER_MODEL`` environment variable (set by the Flask worker
+    from resolved policy) > ``config['models']['whisper_model']`` > ``tiny``.
+
+    Tradeoffs (rule of thumb): ``tiny`` is fastest and lowest resource use but
+    weaker transcription and segment timestamps; ``base`` / ``small`` improve
+    boundary quality at higher CPU/GPU cost; larger models scale cost steeply.
+    """
+    env_m = (os.environ.get("WHISPER_MODEL") or "").strip()
+    if env_m:
+        return env_m
+    cfg = config if isinstance(config, dict) else load_config()
+    models = cfg.get("models") if isinstance(cfg.get("models"), dict) else {}
+    raw = str(models.get("whisper_model") or "").strip()
+    return raw or "tiny"
+
+
+def effective_temp_cleanup_policy(config: dict[str, Any]) -> str:
+    """Return ``temp_policy`` for intermediate artifact cleanup.
+
+    - ``default``: remove temp/input scratch files after every run (historical behaviour).
+    - ``retain_on_failure``: skip removal when the job ended with ``status=failed``.
+    - ``debug_retain_all``: never remove listed scratch artifacts (disk-heavy).
+    """
+    ar = config.get("artifact_retention")
+    if not isinstance(ar, dict):
+        return "default"
+    raw = str(ar.get("temp_policy") or "default").strip().lower()
+    if raw in ("default", "retain_on_failure", "debug_retain_all"):
+        return raw
+    return "default"
 
 
 def categorize_error(stage: str, category: str, message: str, details: Any = None) -> dict[str, Any]:

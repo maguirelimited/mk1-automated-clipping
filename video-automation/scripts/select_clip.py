@@ -1,7 +1,6 @@
 import json
 import os
 import sys
-import time
 from openai import OpenAI
 
 from pipeline_utils import (
@@ -17,6 +16,7 @@ from mk04_utils import (
     normalize_transcript_payload,
     require_timed_transcript_payload,
 )
+from pipeline_debug_ndjson import write_debug_mode
 
 _SELECTION_SYSTEM_INTRO = """You are an expert short-form video editor. You choose clips that would perform well as standalone posts (TikTok, Reels, Shorts).
 
@@ -34,27 +34,6 @@ def _build_selection_system(min_duration_sec: float, max_duration_sec: float) ->
 
 _MAX_TRANSCRIPT_CHARS = 120_000
 _MAX_SEGMENT_LINES = 500
-DEBUG_MODE_LOG_PATH = os.environ.get("DEBUG_MODE_LOG_PATH", "").strip()
-DEBUG_MODE_SESSION_ID = "c9492c"
-
-
-def _debug_mode_log(hypothesis_id: str, location: str, message: str, data: dict):
-    if not DEBUG_MODE_LOG_PATH:
-        return
-    payload = {
-        "sessionId": DEBUG_MODE_SESSION_ID,
-        "runId": "select-clip",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with open(DEBUG_MODE_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload) + "\n")
-    except Exception:
-        pass
 
 
 def _format_ts(total_sec: float) -> str:
@@ -65,17 +44,18 @@ def _format_ts(total_sec: float) -> str:
     return f"{h:02d}:{m:02d}:{s:06.3f}"
 
 
-def _load_transcript(path: str) -> str:
+def _load_transcript_with_stats(path: str) -> tuple[str, dict[str, object]]:
     payload = normalize_transcript_payload(path)
     require_timed_transcript_payload(payload)
     segments = payload.get("segments")
     timestamped_lines: list[str] = []
+    timestamped_lines_available = 0
     if not isinstance(segments, list):
         raise ValueError(
             "TIMESTAMP_TRANSCRIPT_REJECTED segments_invalid: segments must be a non-empty list."
         )
 
-    for row in segments[:_MAX_SEGMENT_LINES]:
+    for row in segments:
         if not isinstance(row, dict):
             continue
         try:
@@ -87,7 +67,9 @@ def _load_transcript(path: str) -> str:
             continue
         text = str(row.get("text") or "").strip()
         label = text if text else "(no voiced text)"
-        timestamped_lines.append(f"[{_format_ts(start)} -> {_format_ts(end)}] {label}")
+        timestamped_lines_available += 1
+        if len(timestamped_lines) < _MAX_SEGMENT_LINES:
+            timestamped_lines.append(f"[{_format_ts(start)} -> {_format_ts(end)}] {label}")
 
     if not timestamped_lines:
         raise ValueError(
@@ -96,23 +78,40 @@ def _load_transcript(path: str) -> str:
         )
 
     transcript = "\n".join(timestamped_lines)
+    chars_before_truncation = len(transcript)
+    truncated_by_chars = len(transcript) > _MAX_TRANSCRIPT_CHARS
     if len(transcript) > _MAX_TRANSCRIPT_CHARS:
         transcript = (
             transcript[:_MAX_TRANSCRIPT_CHARS]
             + "\n\n[Transcript truncated for length; select only from visible timestamped lines.]"
         )
-    _debug_mode_log(
+    stats: dict[str, object] = {
+        "max_transcript_chars": _MAX_TRANSCRIPT_CHARS,
+        "max_segment_lines": _MAX_SEGMENT_LINES,
+        "segments_count": len(payload.get("segments") or []),
+        "timestamped_lines_available": timestamped_lines_available,
+        "timestamped_lines_used": len(timestamped_lines),
+        "chars_before_truncation": chars_before_truncation,
+        "returned_text_chars": len(transcript),
+        "truncated_by_segment_limit": timestamped_lines_available > len(timestamped_lines),
+        "truncated_by_char_limit": truncated_by_chars,
+    }
+    write_debug_mode(
+        "select-clip",
         "H1-untimed-transcript",
         "select_clip.py:_load_transcript",
         "loaded transcript payload characteristics",
         {
             "has_text": isinstance(payload.get("full_text"), str),
             "has_segments": isinstance(payload.get("segments"), list),
-            "segments_count": len(payload.get("segments") or []),
-            "returned_text_chars": len(transcript),
-            "timestamped_lines_used": len(timestamped_lines),
+            **stats,
         },
     )
+    return transcript, stats
+
+
+def _load_transcript(path: str) -> str:
+    transcript, _ = _load_transcript_with_stats(path)
     return transcript
 
 
@@ -268,7 +267,8 @@ Transcript:
 
     payload = parse_selection_payload(output)
     # #region agent log
-    _debug_mode_log(
+    write_debug_mode(
+        "select-clip",
         "H7-model-output-shape",
         "select_clip.py:_select_segments",
         "model output parse summary",
@@ -285,7 +285,8 @@ Transcript:
     # #endregion
     segments = normalize_segments(payload)
     # #region agent log
-    _debug_mode_log(
+    write_debug_mode(
+        "select-clip",
         "H7-model-output-shape",
         "select_clip.py:_select_segments",
         "normalized segments before postprocess",
@@ -313,7 +314,8 @@ Transcript:
     if timeline_offset_sec > 0:
         processed = shift_segments_wallclock(processed, timeline_offset_sec)
     # #region agent log
-    _debug_mode_log(
+    write_debug_mode(
+        "select-clip",
         "H2-model-invented-timestamps",
         "select_clip.py:_select_segments",
         "selection output timestamp range",
@@ -325,7 +327,8 @@ Transcript:
     )
     # #endregion
     # #region agent log
-    _debug_mode_log(
+    write_debug_mode(
+        "select-clip",
         "H6-overfiltered-postprocess",
         "select_clip.py:_select_segments",
         "segments after postprocess",
@@ -343,7 +346,9 @@ Transcript:
     return processed
 
 
-def run_selection(transcript_path: str, selection_options: dict | None = None) -> list[dict]:
+def run_selection_with_metadata(
+    transcript_path: str, selection_options: dict | None = None
+) -> tuple[list[dict], dict[str, object]]:
     path = os.path.abspath(transcript_path)
     if not os.path.exists(path):
         raise ValueError(f"Transcript file not found: {path}")
@@ -353,8 +358,13 @@ def run_selection(transcript_path: str, selection_options: dict | None = None) -
         raise ValueError("OPENAI_API_KEY is not set. Export it before running selection.")
     client = OpenAI(api_key=_api_key)
 
-    transcript = _load_transcript(path)
-    return _select_segments(transcript, selection_options or {}, client)
+    transcript, prompt_stats = _load_transcript_with_stats(path)
+    return _select_segments(transcript, selection_options or {}, client), prompt_stats
+
+
+def run_selection(transcript_path: str, selection_options: dict | None = None) -> list[dict]:
+    processed, _ = run_selection_with_metadata(transcript_path, selection_options)
+    return processed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -365,8 +375,8 @@ def main(argv: list[str] | None = None) -> int:
         selection_options = {}
         if len(args) >= 2:
             selection_options = json.loads(args[1])
-        processed = run_selection(args[0], selection_options)
-        print(make_script_success("select_clip", clips=processed))
+        processed, prompt_stats = run_selection_with_metadata(args[0], selection_options)
+        print(make_script_success("select_clip", clips=processed, selector_prompt=prompt_stats))
         return 0
     except Exception as e:
         print(f"[ERROR] Selection failed: {e}", file=sys.stderr)

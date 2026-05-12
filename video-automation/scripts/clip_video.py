@@ -1,21 +1,21 @@
-import json
 import math
 import os
 import subprocess
 import sys
-import time
 import uuid
 from datetime import timedelta
 
 from pipeline_utils import make_script_error, make_script_success, validate_segment_times
-from mk04_utils import ensure_paths, ffprobe_duration_sec, load_config
+from mk04_utils import ensure_paths, ffprobe_demux_json, ffprobe_duration_sec, load_config
+from pipeline_debug_ndjson import write_debug_mode
 
 
 SCRIPT_NAME = "clip_video"
 FFMPEG_TIMEOUT_SEC = 120
 CLIP_DECODE_PROBE_TIMEOUT_SEC = 90
-DEBUG_MODE_LOG_PATH = os.environ.get("DEBUG_MODE_LOG_PATH", "").strip()
-DEBUG_MODE_SESSION_ID = "c9492c"
+
+# Tests patch this symbol; implementation lives in ``mk04_utils.ffprobe_demux_json``.
+_ffprobe_demux_json = ffprobe_demux_json
 
 
 def clip_duration_tolerance_sec(expected_duration_sec: float) -> tuple[float, float]:
@@ -30,56 +30,6 @@ def clip_duration_tolerance_sec(expected_duration_sec: float) -> tuple[float, fl
     min_d = max(0.55, exp * 0.62)
     max_d = exp * 1.10 + 0.75
     return (min_d, max_d)
-
-
-def _debug_mode_log(hypothesis_id: str, location: str, message: str, data: dict):
-    if not DEBUG_MODE_LOG_PATH:
-        return
-    payload = {
-        "sessionId": DEBUG_MODE_SESSION_ID,
-        "runId": "clip-video",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with open(DEBUG_MODE_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload) + "\n")
-    except Exception:
-        pass
-
-
-def _ffprobe_demux_json(path: str, *, timeout_sec: int = 30) -> dict:
-    p = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-hide_banner",
-            "-print_format",
-            "json",
-            "-show_format",
-            "-show_streams",
-            path,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=timeout_sec,
-    )
-    if p.returncode != 0:
-        tail = (p.stderr or "").strip() or (p.stdout or "").strip()
-        raise RuntimeError(
-            f"CLIP_REJECTED ffprobe_demux_failed: {(tail[:800] + ('…' if len(tail) > 800 else ''))}"
-        )
-    try:
-        data = json.loads(p.stdout or "{}")
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("CLIP_REJECTED ffprobe_json_invalid: demux probe output was not JSON") from exc
-    if not isinstance(data, dict):
-        raise RuntimeError("CLIP_REJECTED ffprobe_json_invalid: expected JSON object root")
-    return data
 
 
 def _first_video_stream(demux: dict) -> dict | None:
@@ -219,7 +169,8 @@ def _assert_clip_output_matches_request(output_path: str, expected_duration_sec:
         "format": fmt_out,
     }
 
-    _debug_mode_log(
+    write_debug_mode(
+        "clip-video",
         "H5-clip-output-validated",
         "clip_video.py:_assert_clip_output_matches_request",
         "clip passes demux/size/duration/decode checks",

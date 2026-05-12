@@ -3,7 +3,7 @@
 # Then: docker compose down && docker compose up -d
 #
 # /files/input and /files/output exist ONLY inside the container. They map to
-# your real folders: <mk0.3>/input and <mk0.3>/output on the Mac — there is no
+# your real folders: <repo>/video-automation/input and .../output on the host — there is no
 # literal "files" directory you create on the host.
 #
 # If n8n says a path under /files/input is "not writable":
@@ -12,7 +12,9 @@
 #     (the container runs as user "node", typically UID 1000).
 #
 # Optional: in the same directory as this compose file, add a .env with:
-#   MK03_ROOT=/Users/anthonymaguire/video-automation/mk0.3
+#   MK04_ROOT=/path/to/VAmk0.4/video-automation
+#   # Legacy alias still honored if MK04_ROOT is unset:
+#   # MK03_ROOT=/path/to/old/checkout
 #   WEBHOOK_URL=https://your-ngrok-url/...
 # =============================================================================
 
@@ -35,7 +37,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - /Users/anthonymaguire/.n8n:/home/node/.n8n:rw
-      # Host paths (left) — override base with MK03_ROOT in .env (no trailing slash)
-      - ${MK03_ROOT:-/Users/anthonymaguire/video-automation/mk0.3}/input:/files/input:rw
-      - ${MK03_ROOT:-/Users/anthonymaguire/video-automation/mk0.3}/output:/files/output:rw
+      # Host paths (left) — prefer MK04_ROOT in .env; MK03_ROOT is legacy fallback (no trailing slash)
+      - ${MK04_ROOT:-${MK03_ROOT:-/path/to/VAmk0.4/video-automation}}/input:/files/input:rw
+      - ${MK04_ROOT:-${MK03_ROOT:-/path/to/VAmk0.4/video-automation}}/output:/files/output:rw
     restart: unless-stopped

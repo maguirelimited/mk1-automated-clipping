@@ -9,6 +9,7 @@ import time
 import mimetypes
 import re
 import shutil
+from datetime import datetime
 from typing import Any
 from urllib import request as urlrequest
 from urllib.error import HTTPError, URLError
@@ -40,46 +41,34 @@ from pipeline_utils import (
 from mk04_utils import (
     categorize_error,
     create_job_paths,
+    effective_temp_cleanup_policy,
     ensure_paths,
     ffprobe_duration_sec,
     load_config,
     maybe_copy,
     normalize_transcript_payload,
     require_timed_transcript_payload,
+    resolve_paths,
     validate_and_repair_selection,
     write_json,
     write_review,
     now_iso,
 )
+from pipeline_debug_ndjson import (
+    write_debug_agent,
+    write_debug_main,
+    write_debug_mode,
+    write_diagnostic,
+)
 
 app = Flask(__name__)
 PYTHON = sys.executable
+# Stable identifier returned in JSON (`pipeline`, `/healthz`); keep unchanged for integrations.
 PIPELINE_NAME = "mk0.4"
-DEBUG_LOG_PATH = os.environ.get("DEBUG_LOG_PATH", "").strip()
-DEBUG_SESSION_ID = "04601b"
-AGENT_DEBUG_LOG_PATH = os.environ.get("AGENT_DEBUG_LOG_PATH", "").strip()
-AGENT_DEBUG_SESSION_ID = "35c21b"
-DEBUG_MODE_LOG_PATH = os.environ.get("DEBUG_MODE_LOG_PATH", "").strip()
-DEBUG_MODE_SESSION_ID = "c9492c"
 
 
 def _debug_log(hypothesis_id: str, location: str, message: str, data: dict):
-    if not DEBUG_LOG_PATH:
-        return
-    payload = {
-        "sessionId": DEBUG_SESSION_ID,
-        "runId": PIPELINE_NAME,
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload) + "\n")
-    except Exception:
-        pass
+    write_debug_main(PIPELINE_NAME, hypothesis_id, location, message, data)
 
 
 def _agent_debug_log(
@@ -89,22 +78,7 @@ def _agent_debug_log(
     message: str,
     data: dict[str, object],
 ):
-    if not AGENT_DEBUG_LOG_PATH:
-        return
-    payload = {
-        "sessionId": AGENT_DEBUG_SESSION_ID,
-        "runId": run_id,
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with open(AGENT_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload) + "\n")
-    except Exception:
-        pass
+    write_debug_agent(run_id, hypothesis_id, location, message, data)
 
 
 def _debug_mode_log(
@@ -114,46 +88,14 @@ def _debug_mode_log(
     message: str,
     data: dict[str, object],
 ):
-    if not DEBUG_MODE_LOG_PATH:
-        return
-    payload = {
-        "sessionId": DEBUG_MODE_SESSION_ID,
-        "runId": run_id,
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with open(DEBUG_MODE_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload) + "\n")
-    except Exception:
-        pass
+    write_debug_mode(run_id, hypothesis_id, location, message, data)
 
 
-CURSOR_DEBUG789_PATH = "/Users/anthonymaguire/VAmk0.4/.cursor/debug-789d41.log"
-CURSOR_DEBUG789_SESSION = "789d41"
-
-
-def _cursor_debug789(
+def _pipeline_diagnostic_log(
     hypothesis_id: str, location: str, message: str, data: dict
 ) -> None:
-    # #region agent log
-    try:
-        payload = {
-            "sessionId": CURSOR_DEBUG789_SESSION,
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with open(CURSOR_DEBUG789_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, default=str) + "\n")
-    except Exception:
-        pass
-    # #endregion
+    """Ingress/process breadcrumbs when ``PIPELINE_DIAGNOSTIC_LOG_PATH`` is set."""
+    write_diagnostic(PIPELINE_NAME, hypothesis_id, location, message, data)
 
 
 def _parse_n8n_webhook_error(body: str) -> dict[str, str]:
@@ -299,10 +241,319 @@ def _resolve_output_clip_path(clip_name: str) -> tuple[str, str]:
     return normalized_name, clip_path
 
 
+_JOB_ID_RE = re.compile(r"^job_\d{8}T\d{6}Z_[a-f0-9]{8}$")
+_DEFAULT_JOBS_LIMIT = 25
+_MAX_JOBS_LIMIT = 100
+
+
+def _inspection_urls(job_id: str) -> dict[str, str]:
+    return {
+        "job_url": f"/jobs/{job_id}",
+        "debug_url": f"/jobs/{job_id}/debug",
+    }
+
+
+def _jobs_root_readonly() -> str:
+    return os.path.abspath(resolve_paths(load_config())["jobs"])
+
+
+def _valid_job_id(job_id: str) -> bool:
+    return bool(_JOB_ID_RE.fullmatch(str(job_id or "").strip()))
+
+
+def _is_inside(root: str, path: str) -> bool:
+    try:
+        return (
+            os.path.commonpath([os.path.abspath(root), os.path.abspath(path)])
+            == os.path.abspath(root)
+        )
+    except ValueError:
+        return False
+
+
+def _load_json_object(path: str) -> dict[str, Any] | None:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _parse_jobs_limit(raw: str | None) -> int:
+    if raw is None or str(raw).strip() == "":
+        return _DEFAULT_JOBS_LIMIT
+    try:
+        limit = int(str(raw).strip())
+    except ValueError as exc:
+        raise ValueError("limit must be an integer") from exc
+    if limit < 1:
+        raise ValueError("limit must be >= 1")
+    return min(limit, _MAX_JOBS_LIMIT)
+
+
+def _timestamp_epoch(value: Any) -> float | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(raw).timestamp()
+    except ValueError:
+        return None
+
+
+def _artifact_file(path: str) -> dict[str, object]:
+    exists = os.path.isfile(path)
+    out: dict[str, object] = {"path": os.path.abspath(path), "exists": exists}
+    if exists:
+        try:
+            out["size_bytes"] = os.path.getsize(path)
+        except OSError:
+            pass
+    return out
+
+
+def _job_artifacts(job_dir: str) -> dict[str, object]:
+    clips_dir = os.path.join(job_dir, "clips")
+    clip_files: list[dict[str, object]] = []
+    if os.path.isdir(clips_dir):
+        try:
+            for entry in os.scandir(clips_dir):
+                if entry.is_file(follow_symlinks=False):
+                    clip_files.append(_artifact_file(entry.path))
+        except OSError:
+            clip_files = []
+    clip_files.sort(key=lambda x: str(x.get("path") or ""))
+    return {
+        "job_dir": os.path.abspath(job_dir),
+        "report": _artifact_file(os.path.join(job_dir, "report.json")),
+        "review": _artifact_file(os.path.join(job_dir, "review.md")),
+        "transcript": _artifact_file(os.path.join(job_dir, "transcript.json")),
+        "transcript_payload": _artifact_file(os.path.join(job_dir, "transcript_payload.json")),
+        "selection": _artifact_file(os.path.join(job_dir, "selection.json")),
+        "analytics": _artifact_file(os.path.join(job_dir, "analytics.json")),
+        "clips_dir": {"path": os.path.abspath(clips_dir), "exists": os.path.isdir(clips_dir)},
+        "clip_files": clip_files,
+    }
+
+
+def _job_summary(report: dict[str, Any], job_dir: str) -> dict[str, object]:
+    clips = report.get("clips") if isinstance(report.get("clips"), list) else []
+    warnings = report.get("warnings") if isinstance(report.get("warnings"), list) else []
+    errors = report.get("errors") if isinstance(report.get("errors"), list) else []
+    artifacts = _job_artifacts(job_dir)
+    job_id = str(report.get("job_id") or "")
+    summary: dict[str, object] = {
+        "job_id": job_id,
+        "input_video_name": report.get("input_video_name"),
+        "source_video": report.get("input_video_name"),
+        "status": report.get("status"),
+        "created_at": report.get("created_at"),
+        "completed_at": report.get("completed_at"),
+        "clip_count": len(clips),
+        "warning_count": len(warnings),
+        "error_count": len(errors),
+        "artifacts": {
+            "report_exists": bool((artifacts["report"] or {}).get("exists")),
+            "review_exists": bool((artifacts["review"] or {}).get("exists")),
+            "selection_exists": bool((artifacts["selection"] or {}).get("exists")),
+            "transcript_payload_exists": bool((artifacts["transcript_payload"] or {}).get("exists")),
+            "analytics_exists": bool((artifacts["analytics"] or {}).get("exists")),
+            "clip_file_count": len(artifacts.get("clip_files") or []),
+        },
+    }
+    if job_id:
+        summary.update(_inspection_urls(job_id))
+    return summary
+
+
+def _iter_job_reports() -> list[tuple[str, str, dict[str, Any]]]:
+    jobs_root = _jobs_root_readonly()
+    if not os.path.isdir(jobs_root):
+        return []
+    records: list[tuple[str, str, dict[str, Any]]] = []
+    try:
+        entries = list(os.scandir(jobs_root))
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        job_dir = os.path.abspath(entry.path)
+        if not _is_inside(jobs_root, job_dir):
+            continue
+        report_path = os.path.join(job_dir, "report.json")
+        report = _load_json_object(report_path)
+        if report is None:
+            continue
+        records.append((job_dir, report_path, report))
+    return records
+
+
+def _job_sort_key(record: tuple[str, str, dict[str, Any]]) -> float:
+    job_dir, report_path, report = record
+    for key in ("created_at", "completed_at"):
+        ts = _timestamp_epoch(report.get(key))
+        if ts is not None:
+            return ts
+    try:
+        return os.path.getmtime(report_path)
+    except OSError:
+        try:
+            return os.path.getmtime(job_dir)
+        except OSError:
+            return 0.0
+
+
+def _find_job_report(job_id: str) -> tuple[str, str, dict[str, Any]] | str | None:
+    if not _valid_job_id(job_id):
+        return "invalid"
+    matches = [
+        record for record in _iter_job_reports() if str(record[2].get("job_id") or "") == job_id
+    ]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        return "ambiguous"
+    return matches[0]
+
+
+def _transcript_stats(job_dir: str) -> dict[str, object]:
+    stats_path = os.path.join(job_dir, "transcript_payload.json")
+    if not os.path.isfile(stats_path):
+        stats_path = os.path.join(job_dir, "transcript.json")
+    payload = _load_json_object(stats_path)
+    if payload is None:
+        return {"available": False}
+    segments = payload.get("segments") if isinstance(payload.get("segments"), list) else []
+    starts: list[float] = []
+    ends: list[float] = []
+    for row in segments:
+        if not isinstance(row, dict):
+            continue
+        try:
+            start = float(row.get("start"))
+            end = float(row.get("end"))
+        except (TypeError, ValueError):
+            continue
+        if end > start:
+            starts.append(start)
+            ends.append(end)
+    text = str(payload.get("text") or payload.get("full_text") or "")
+    return {
+        "available": True,
+        "artifact_path": os.path.abspath(stats_path),
+        "segment_count": len(segments),
+        "timed_segment_count": len(ends),
+        "text_char_count": len(text),
+        "language": payload.get("language"),
+        "duration_sec": payload.get("duration"),
+        "first_segment_start_sec": min(starts) if starts else None,
+        "last_segment_end_sec": max(ends) if ends else None,
+    }
+
+
+def _compact_clip(item: Any) -> dict[str, object]:
+    if not isinstance(item, dict):
+        return {}
+    keep = (
+        "clip_id",
+        "clip_index",
+        "start",
+        "end",
+        "duration_sec",
+        "clip_file",
+        "clip_url",
+        "clip_path",
+        "job_clip_path",
+        "title",
+        "hook",
+        "caption",
+        "reason",
+        "scores",
+        "composite_score",
+        "clip_validation",
+    )
+    return {key: item[key] for key in keep if key in item}
+
+
+def _selection_summary(job_dir: str) -> dict[str, object]:
+    selection_path = os.path.join(job_dir, "selection.json")
+    payload = _load_json_object(selection_path)
+    if payload is None:
+        return {"available": False}
+    clips = payload.get("clips") if isinstance(payload.get("clips"), list) else []
+    warnings = (
+        payload.get("validation_warnings")
+        if isinstance(payload.get("validation_warnings"), list)
+        else []
+    )
+    return {
+        "available": True,
+        "artifact_path": os.path.abspath(selection_path),
+        "clip_count": len(clips),
+        "validation_warning_count": len(warnings),
+        "clips": [_compact_clip(c) for c in clips],
+        "validation_warnings": warnings,
+    }
+
+
+def _clip_validation_issues(clips: list[Any]) -> list[dict[str, object]]:
+    issues: list[dict[str, object]] = []
+    for idx, clip in enumerate(clips, start=1):
+        if not isinstance(clip, dict):
+            continue
+        validation = clip.get("clip_validation")
+        if isinstance(validation, dict):
+            if validation.get("ok") is False:
+                issues.append(
+                    {
+                        "clip_index": clip.get("clip_index", idx),
+                        "clip_id": clip.get("clip_id"),
+                        "validation": validation,
+                    }
+                )
+        else:
+            issues.append(
+                {
+                    "clip_index": clip.get("clip_index", idx),
+                    "clip_id": clip.get("clip_id"),
+                    "issue": "missing_clip_validation",
+                }
+            )
+    return issues
+
+
+def _job_debug_summary(job_dir: str, report: dict[str, Any]) -> dict[str, object]:
+    clips = report.get("clips") if isinstance(report.get("clips"), list) else []
+    warnings = report.get("warnings") if isinstance(report.get("warnings"), list) else []
+    errors = report.get("errors") if isinstance(report.get("errors"), list) else []
+    summary = _job_summary(report, job_dir)
+    return {
+        "success": True,
+        "pipeline": PIPELINE_NAME,
+        "job": summary,
+        "status": report.get("status"),
+        "errors": errors,
+        "warnings": warnings,
+        "stage_timings_ms": report.get("stage_timings_ms") or {},
+        "clips": [_compact_clip(c) for c in clips],
+        "clip_validation_issues": _clip_validation_issues(clips),
+        "artifacts": _job_artifacts(job_dir),
+        "transcript_stats": _transcript_stats(job_dir),
+        "selection_summary": _selection_summary(job_dir),
+        "policy_resolution": report.get("policy_resolution") or {},
+        "chunked": report.get("chunked", False),
+        "chunking": report.get("chunking"),
+    }
+
+
 def _build_multipart_form(
     fields: dict[str, str], files: list[tuple[str, str, bytes, str]]
 ) -> tuple[bytes, str]:
-    boundary = f"----mk03-{uuid.uuid4().hex}"
+    boundary = f"----mk04-{uuid.uuid4().hex}"
     body = bytearray()
     for name, value in fields.items():
         body.extend(f"--{boundary}\r\n".encode("utf-8"))
@@ -1111,6 +1362,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any]):
             "transcript_payload_path": job["normalized_transcript_path"],
             "selection_path": job["selection_path"],
             "policy_resolution": audit_plain,
+            **_inspection_urls(job["job_id"]),
         }
         if report.get("chunked"):
             response["chunked"] = True
@@ -1166,41 +1418,60 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any]):
                 repr(exc),
                 flush=True,
             )
-        for maybe_path, root in ((video_path, input_root), (transcript_path, temp_root)):
-            try:
-                abs_path = os.path.abspath(maybe_path)
-                if abs_path.startswith(root + os.sep) and os.path.isfile(abs_path):
-                    os.remove(abs_path)
-            except Exception as exc:
-                print(
-                    "[pipeline_cleanup] Removing temp/input artifact failed:",
-                    maybe_path,
-                    repr(exc),
-                    flush=True,
-                )
-        for dpath in chunk_scratch_dirs:
-            try:
-                if os.path.isdir(dpath):
-                    shutil.rmtree(dpath, ignore_errors=True)
-            except Exception as exc:
-                print(
-                    "[pipeline_cleanup] Removing chunk scratch dir failed:",
-                    dpath,
-                    repr(exc),
-                    flush=True,
-                )
-        for wpath in chunk_sidecar_whisper_paths:
-            try:
-                abs_w = os.path.abspath(wpath)
-                if abs_w.startswith(temp_root + os.sep) and os.path.isfile(abs_w):
-                    os.remove(abs_w)
-            except Exception as exc:
-                print(
-                    "[pipeline_cleanup] Removing chunk whisper sidecar failed:",
-                    wpath,
-                    repr(exc),
-                    flush=True,
-                )
+        temp_policy = effective_temp_cleanup_policy(config)
+        failed_run = report.get("status") == "failed"
+        skip_intermediate_cleanup = temp_policy == "debug_retain_all" or (
+            temp_policy == "retain_on_failure" and failed_run
+        )
+        report["artifact_retention"] = {
+            "temp_policy": temp_policy,
+            "skipped_intermediate_cleanup": skip_intermediate_cleanup,
+        }
+        try:
+            write_json(job["report_path"], report)
+        except Exception as exc:
+            print(
+                "[pipeline_finalize] Failed to persist artifact_retention metadata:",
+                repr(exc),
+                flush=True,
+            )
+
+        if not skip_intermediate_cleanup:
+            for maybe_path, root in ((video_path, input_root), (transcript_path, temp_root)):
+                try:
+                    abs_path = os.path.abspath(maybe_path)
+                    if abs_path.startswith(root + os.sep) and os.path.isfile(abs_path):
+                        os.remove(abs_path)
+                except Exception as exc:
+                    print(
+                        "[pipeline_cleanup] Removing temp/input artifact failed:",
+                        maybe_path,
+                        repr(exc),
+                        flush=True,
+                    )
+            for dpath in chunk_scratch_dirs:
+                try:
+                    if os.path.isdir(dpath):
+                        shutil.rmtree(dpath, ignore_errors=True)
+                except Exception as exc:
+                    print(
+                        "[pipeline_cleanup] Removing chunk scratch dir failed:",
+                        dpath,
+                        repr(exc),
+                        flush=True,
+                    )
+            for wpath in chunk_sidecar_whisper_paths:
+                try:
+                    abs_w = os.path.abspath(wpath)
+                    if abs_w.startswith(temp_root + os.sep) and os.path.isfile(abs_w):
+                        os.remove(abs_w)
+                except Exception as exc:
+                    print(
+                        "[pipeline_cleanup] Removing chunk whisper sidecar failed:",
+                        wpath,
+                        repr(exc),
+                        flush=True,
+                    )
 
 
 @app.route("/upload", methods=["POST"])
@@ -1288,6 +1559,55 @@ def get_output_clip(clip_file: str):
         return _fail("Output fetch failed", log_detail=repr(e), status_code=500)
 
 
+@app.route("/jobs", methods=["GET"])
+def list_jobs():
+    try:
+        limit = _parse_jobs_limit(request.args.get("limit"))
+    except ValueError as exc:
+        return _fail("Invalid limit", log_detail=str(exc), status_code=400)
+    try:
+        records = sorted(_iter_job_reports(), key=_job_sort_key, reverse=True)
+        jobs = [_job_summary(report, job_dir) for job_dir, _, report in records[:limit]]
+        return jsonify(
+            {
+                "success": True,
+                "pipeline": PIPELINE_NAME,
+                "jobs": jobs,
+                "count": len(jobs),
+                "limit": limit,
+            }
+        )
+    except Exception as exc:
+        print("[jobs] list error:", repr(exc), flush=True)
+        return _fail("Job listing failed", log_detail=repr(exc), status_code=500)
+
+
+@app.route("/jobs/<job_id>", methods=["GET"])
+def get_job_report(job_id: str):
+    match = _find_job_report(job_id)
+    if match == "invalid":
+        return _fail("Invalid job_id", status_code=400)
+    if match == "ambiguous":
+        return _fail("Ambiguous job_id", status_code=409)
+    if match is None:
+        return _fail("Job not found", status_code=404)
+    _, _, report = match
+    return jsonify(report)
+
+
+@app.route("/jobs/<job_id>/debug", methods=["GET"])
+def get_job_debug(job_id: str):
+    match = _find_job_report(job_id)
+    if match == "invalid":
+        return _fail("Invalid job_id", status_code=400)
+    if match == "ambiguous":
+        return _fail("Ambiguous job_id", status_code=409)
+    if match is None:
+        return _fail("Job not found", status_code=404)
+    job_dir, _, report = match
+    return jsonify(_job_debug_summary(job_dir, report))
+
+
 @app.route("/process", methods=["POST"])
 def process():
     # #region agent log
@@ -1295,7 +1615,7 @@ def process():
         _raw_len = request.content_length
     except Exception:
         _raw_len = None
-    _cursor_debug789(
+    _pipeline_diagnostic_log(
         "H1",
         "app.py:process",
         "request received",
@@ -1309,7 +1629,7 @@ def process():
     try:
         raw_preview = (request.get_data(cache=True, as_text=True) or "")[:400]
         # #region agent log
-        _cursor_debug789(
+        _pipeline_diagnostic_log(
             "H6",
             "app.py:process",
             "raw json body prefix",
@@ -1322,7 +1642,7 @@ def process():
         keys_after = sorted(payload.keys())
         if keys_before != keys_after:
             # #region agent log
-            _cursor_debug789(
+            _pipeline_diagnostic_log(
                 "H6",
                 "app.py:process",
                 "lifted fields from nested n8n wrapper",
@@ -1339,7 +1659,7 @@ def process():
             video_arg = os.path.basename(str(raw_path).strip().rstrip("/"))
             video_from_path = True
             # #region agent log
-            _cursor_debug789(
+            _pipeline_diagnostic_log(
                 "H4",
                 "app.py:process",
                 "derived video basename from video_path",
@@ -1351,7 +1671,7 @@ def process():
             # #endregion
         if not video_arg:
             # #region agent log
-            _cursor_debug789(
+            _pipeline_diagnostic_log(
                 "H4",
                 "app.py:process",
                 "fail missing video and video_path",
@@ -1372,7 +1692,7 @@ def process():
             _input_root_dbg = ensure_paths(_cfg)["input"]
         except Exception as _e:
             _input_root_dbg = f"<ensure_paths_error:{_e}>"
-        _cursor_debug789(
+        _pipeline_diagnostic_log(
             "H4",
             "app.py:process",
             "json parsed",
@@ -1387,7 +1707,7 @@ def process():
         # #endregion
         if not isinstance(selection_policy, dict):
             # #region agent log
-            _cursor_debug789(
+            _pipeline_diagnostic_log(
                 "H3",
                 "app.py:process",
                 "fail invalid selection type",
@@ -1407,7 +1727,7 @@ def process():
             pipe_blob = pipe_raw
         else:
             # #region agent log
-            _cursor_debug789(
+            _pipeline_diagnostic_log(
                 "H3",
                 "app.py:process",
                 "fail pipeline not object",
@@ -1428,7 +1748,7 @@ def process():
             )
         except ValueError as exc:
             # #region agent log
-            _cursor_debug789(
+            _pipeline_diagnostic_log(
                 "H3",
                 "app.py:process",
                 "fail policy bundle",
@@ -1439,7 +1759,7 @@ def process():
 
         _, video_path = _resolve_input_video_path(str(video_arg))
         # #region agent log
-        _cursor_debug789(
+        _pipeline_diagnostic_log(
             "H2",
             "app.py:process",
             "video path resolved",
@@ -1452,7 +1772,7 @@ def process():
         # #endregion
         if not os.path.isfile(video_path):
             # #region agent log
-            _cursor_debug789(
+            _pipeline_diagnostic_log(
                 "H2",
                 "app.py:process",
                 "fail input not found",
@@ -1465,7 +1785,7 @@ def process():
                 status_code=400,
             )
         # #region agent log
-        _cursor_debug789(
+        _pipeline_diagnostic_log(
             "H5",
             "app.py:process",
             "starting _run_pipeline",
@@ -1477,7 +1797,7 @@ def process():
     except Exception as e:
         print("[process] unexpected error:", repr(e), flush=True)
         # #region agent log
-        _cursor_debug789(
+        _pipeline_diagnostic_log(
             "H5",
             "app.py:process",
             "exception",

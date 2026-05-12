@@ -1,43 +1,14 @@
 import os
 import subprocess
 import sys
-import json
-import time
 
 from pipeline_utils import make_script_error, make_script_success
-from mk04_utils import ensure_paths, load_config
+from mk04_utils import ensure_paths, load_config, resolve_whisper_model_for_transcription
+from pipeline_debug_ndjson import write_debug_agent
 
 
 SCRIPT_NAME = "transcribe_video"
 WHISPER_TIMEOUT_SEC = 900
-_CONFIG = load_config()
-_DEFAULT_WHISPER_MODEL = (
-    _CONFIG.get("models", {}).get("whisper_model", "tiny") or "tiny"
-)
-WHISPER_MODEL = os.environ.get("WHISPER_MODEL", str(_DEFAULT_WHISPER_MODEL)).strip() or str(
-    _DEFAULT_WHISPER_MODEL
-)
-AGENT_DEBUG_LOG_PATH = os.environ.get("AGENT_DEBUG_LOG_PATH", "").strip()
-AGENT_DEBUG_SESSION_ID = "35c21b"
-
-
-def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict):
-    if not AGENT_DEBUG_LOG_PATH:
-        return
-    payload = {
-        "sessionId": AGENT_DEBUG_SESSION_ID,
-        "runId": "general-debug",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with open(AGENT_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload) + "\n")
-    except Exception:
-        pass
 
 
 def _derive_transcript_path(input_video: str, output_dir: str) -> str:
@@ -53,7 +24,8 @@ def run_transcription(input_video: str) -> str:
         raise ValueError(f"Input video not found: {video_path}")
 
     # #region agent log
-    _agent_debug_log(
+    write_debug_agent(
+        "transcribe-video",
         "H9-transcribe-entry",
         "transcribe_video.py:run_transcription",
         "entered transcription runner",
@@ -62,12 +34,14 @@ def run_transcription(input_video: str) -> str:
     # #endregion
 
     print("RUNNING WHISPER...", file=sys.stderr)
+    whisper_model = resolve_whisper_model_for_transcription(load_config())
     # #region agent log
-    _agent_debug_log(
+    write_debug_agent(
+        "transcribe-video",
         "H10-whisper-cli-launch",
         "transcribe_video.py:run_transcription",
         "about to invoke whisper CLI",
-        {"timeout_sec": WHISPER_TIMEOUT_SEC, "model": WHISPER_MODEL},
+        {"timeout_sec": WHISPER_TIMEOUT_SEC, "model": whisper_model},
     )
     # #endregion
     result = subprocess.run(
@@ -75,7 +49,7 @@ def run_transcription(input_video: str) -> str:
             "whisper",
             video_path,
             "--model",
-            WHISPER_MODEL,
+            whisper_model,
             "--output_format",
             "json",
             "--output_dir",
@@ -84,7 +58,8 @@ def run_transcription(input_video: str) -> str:
         timeout=WHISPER_TIMEOUT_SEC,
     )
     # #region agent log
-    _agent_debug_log(
+    write_debug_agent(
+        "transcribe-video",
         "H11-whisper-cli-result",
         "transcribe_video.py:run_transcription",
         "whisper CLI finished",
@@ -116,7 +91,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except Exception as e:
         # #region agent log
-        _agent_debug_log(
+        write_debug_agent(
+            "transcribe-video",
             "H12-transcribe-exception",
             "transcribe_video.py:main",
             "transcription script exception",

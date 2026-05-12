@@ -5,32 +5,9 @@ from __future__ import annotations
 import json
 import os
 import re
-import time
 from typing import Any
 
-DEBUG_MODE_LOG_PATH = os.environ.get("DEBUG_MODE_LOG_PATH", "").strip()
-DEBUG_MODE_SESSION_ID = "c9492c"
-
-
-def _debug_mode_log(hypothesis_id: str, location: str, message: str, data: dict):
-    if not DEBUG_MODE_LOG_PATH:
-        return
-    payload = {
-        "sessionId": DEBUG_MODE_SESSION_ID,
-        "runId": "pipeline-utils",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with open(DEBUG_MODE_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload) + "\n")
-    except Exception:
-        pass
-
-
+from pipeline_debug_ndjson import write_debug_mode
 def parse_time_to_seconds(s: str) -> float:
     """Parse HH:MM:SS, MM:SS, or SS (and optional fractional seconds) to seconds."""
     t = s.strip()
@@ -323,7 +300,8 @@ def _prepare_candidates(
         row["_duration_sec"] = duration
         candidates.append(row)
     # #region agent log
-    _debug_mode_log(
+    write_debug_mode(
+        "pipeline-utils",
         "H6-overfiltered-postprocess",
         "pipeline_utils.py:_prepare_candidates",
         "candidate filtering summary",
@@ -554,7 +532,8 @@ _MK04_SELECTION_MODEL_ENV_VAR = "MK04_SELECTION_MODEL"
 POLICY_MERGE_CHAIN_DOC = (
     "baseline: pipeline_config.json (paths + selection/chunking/models defaults) "
     "< funnel profile referenced by HTTP pipeline_profile|funnel_id OR by "
-    "defaults.pipeline_profile in pipeline_config.json (same-named entry under profiles.*) "
+    "defaults.pipeline_profile in pipeline_config.json (same-named entry under profiles.* "
+    "with optional selection/chunking/models overlays, e.g. whisper_model) "
     f"< {_RUNTIME_ENV_JSON_VAR} < {_MK04_WHISPER_ENV_VAR} / {_MK04_SELECTION_MODEL_ENV_VAR} "
     "< HTTP `pipeline` object < HTTP `selection` object"
 )
