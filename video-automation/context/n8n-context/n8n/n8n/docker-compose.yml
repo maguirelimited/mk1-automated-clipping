@@ -3,11 +3,11 @@
 # Then: docker compose down && docker compose up -d
 #
 # /files/input and /files/output exist ONLY inside the container. They map to
-# your real folders: <repo>/video-automation/input and .../output on the host — there is no
-# literal "files" directory you create on the host.
+# your real folders: <repo>/video-automation/input and .../output on the host.
+# There is no literal "files" directory you create on the host.
 #
 # If n8n says a path under /files/input is "not writable":
-#   - Ensure the host folders exist and Docker Desktop file sharing includes them.
+#   - Ensure the host folders exist. On Docker Desktop, file sharing must include them.
 #   - Relax permissions on the host, e.g. chmod 775 on input/ and output/
 #     (the container runs as user "node", typically UID 1000).
 #
@@ -15,7 +15,11 @@
 #   MK04_ROOT=/path/to/VAmk0.4/video-automation
 #   # Legacy alias still honored if MK04_ROOT is unset:
 #   # MK03_ROOT=/path/to/old/checkout
+#   N8N_HOME=/var/lib/n8n
 #   WEBHOOK_URL=https://your-ngrok-url/...
+#
+# Linux deployments must use real Linux host paths on the left side of volume
+# mounts. Older /Users/... paths are macOS developer examples only.
 # =============================================================================
 
 services:
@@ -36,7 +40,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - /Users/anthonymaguire/.n8n:/home/node/.n8n:rw
+      - ${N8N_HOME:-/var/lib/n8n}:/home/node/.n8n:rw
       # Host paths (left) — prefer MK04_ROOT in .env; MK03_ROOT is legacy fallback (no trailing slash)
       - ${MK04_ROOT:-${MK03_ROOT:-/path/to/VAmk0.4/video-automation}}/input:/files/input:rw
       - ${MK04_ROOT:-${MK03_ROOT:-/path/to/VAmk0.4/video-automation}}/output:/files/output:rw

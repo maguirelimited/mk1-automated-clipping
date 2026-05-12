@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -77,6 +78,22 @@ def create_app() -> Flask:
         def _check(name: str, ok: bool, detail: str):
             checks.append({"name": name, "ok": ok, "detail": detail})
 
+        def _is_writable_dir(path: Path) -> bool:
+            return path.is_dir() and os.access(path, os.W_OK | os.X_OK)
+
+        _check("python_executable", bool(sys.executable), sys.executable or "unknown")
+        _check("python_prefix", True, sys.prefix)
+        _check(
+            "python_venv",
+            True,
+            os.environ.get("VIRTUAL_ENV", "") or "not running inside a virtualenv",
+        )
+        try:
+            import flask  # noqa: F401
+
+            _check("flask_import", True, "import ok")
+        except Exception as exc:
+            _check("flask_import", False, repr(exc))
         _check("ffmpeg", bool(shutil.which("ffmpeg")), shutil.which("ffmpeg") or "Not found")
         _check("ffprobe", bool(shutil.which("ffprobe")), shutil.which("ffprobe") or "Not found")
         try:
@@ -132,18 +149,11 @@ def create_app() -> Flask:
             ("state_dir", paths.STATE_DIR),
             ("tmp_dir", paths.TMP_DIR),
         ):
-            if name == "clipping_input_dir":
-                try:
-                    path.mkdir(parents=True, exist_ok=True)
-                    exists = path.is_dir()
-                    detail = str(path)
-                except OSError as exc:
-                    exists = False
-                    detail = f"{path} ({exc})"
-            else:
-                exists = path.exists() if name == "funnels_file" else path.is_dir()
-                detail = str(path)
+            exists = path.exists() if name == "funnels_file" else path.is_dir()
+            detail = str(path)
             _check(f"path:{name}", exists, detail)
+            if name in {"clipping_input_dir", "ready_dir", "rejected_dir", "state_dir", "tmp_dir"}:
+                _check(f"path_writable:{name}", _is_writable_dir(path), str(path))
 
         try:
             funnels_manifest = list_funnels(include_inactive=True)

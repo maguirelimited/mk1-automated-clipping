@@ -1,2 +1,6 @@
-this file contains a copy of my n8n local setup with docker
-(this is not where i run it from and should only be used as context)
+This directory contains a copy of a local n8n Docker setup for context.
+It is not the authoritative runtime location.
+
+For Linux deployments, replace any developer-machine host paths with real Linux
+paths or avoid host paths in workflows by using API-returned URLs such as
+`/output/<clip_file>`.

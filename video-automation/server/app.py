@@ -2517,12 +2517,28 @@ def analytics_feedback():
 @app.route("/doctor", methods=["GET"])
 def doctor():
     config = load_config()
-    paths = ensure_paths(config)
+    paths = resolve_paths(config)
     checks: list[dict[str, object]] = []
 
     def _check(name: str, ok: bool, detail: str):
         checks.append({"name": name, "ok": ok, "detail": detail})
 
+    def _is_writable_dir(path: str) -> bool:
+        return os.path.isdir(path) and os.access(path, os.W_OK | os.X_OK)
+
+    _check("python_executable", bool(sys.executable), sys.executable or "unknown")
+    _check("python_prefix", True, sys.prefix)
+    _check(
+        "python_venv",
+        True,
+        os.environ.get("VIRTUAL_ENV", "") or "not running inside a virtualenv",
+    )
+    try:
+        import flask  # noqa: F401
+
+        _check("flask_import", True, "import ok")
+    except Exception as exc:
+        _check("flask_import", False, repr(exc))
     ffmpeg_path = shutil.which("ffmpeg")
     ffprobe_path = shutil.which("ffprobe")
     whisper_path = shutil.which("whisper")
@@ -2536,6 +2552,7 @@ def doctor():
     )
     for key, path in paths.items():
         _check(f"path:{key}", os.path.isdir(path), path)
+        _check(f"path_writable:{key}", _is_writable_dir(path), path)
 
     config_path = resolved_pipeline_config_path()
     profiles_path = os.environ.get("VIDEO_PIPELINE_PROFILES_PATH", "").strip()

@@ -142,6 +142,18 @@ def test_list_jobs_sorts_newest_first_and_summarizes(client):
     assert data["jobs"][0]["debug_url"] == f"/jobs/{newer}/debug"
 
 
+def test_doctor_reports_linux_readiness_fields(client):
+    c, _ = client
+
+    resp = c.get("/doctor")
+
+    assert resp.status_code in (200, 500)
+    checks = {check["name"] for check in resp.get_json()["checks"]}
+    assert "python_executable" in checks
+    assert "flask_import" in checks
+    assert "path_writable:input" in checks
+
+
 def test_get_job_returns_existing_report(client):
     c, jobs_root = client
     job_id = "job_20260512T130000Z_1234abcd"

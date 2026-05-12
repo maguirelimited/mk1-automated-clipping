@@ -11,13 +11,26 @@ VIDEO_ROOT="$MK04_ROOT/video-automation"
 load_env_file "$INPUT_ROOT/.env"
 load_env_file "$VIDEO_ROOT/.env"
 
-INPUT_URL="http://${INPUT_SERVICE_HOST:-127.0.0.1}:${INPUT_SERVICE_PORT:-5060}/doctor"
-VIDEO_URL="http://${VIDEO_AUTOMATION_HOST:-127.0.0.1}:${VIDEO_AUTOMATION_PORT:-5050}/doctor"
+client_host() {
+  local host="$1"
+  if [[ "$host" == "0.0.0.0" || "$host" == "::" ]]; then
+    echo "127.0.0.1"
+  else
+    echo "$host"
+  fi
+}
+
+INPUT_HOST="$(client_host "${INPUT_SERVICE_HOST:-127.0.0.1}")"
+VIDEO_HOST="$(client_host "${VIDEO_AUTOMATION_HOST:-127.0.0.1}")"
+INPUT_BASE_URL="http://${INPUT_HOST}:${INPUT_SERVICE_PORT:-5060}"
+VIDEO_BASE_URL="http://${VIDEO_HOST}:${VIDEO_AUTOMATION_PORT:-5050}"
 
 echo "Local binary checks"
 require_command python3
+require_command curl
 require_command ffmpeg
 require_command ffprobe
+echo "python3: $(command -v python3)"
 if command -v whisper >/dev/null 2>&1; then
   echo "whisper: $(command -v whisper)"
 else
@@ -25,15 +38,26 @@ else
 fi
 
 echo
-echo "Input service doctor: $INPUT_URL"
+echo "Input service health: ${INPUT_BASE_URL}/healthz"
 if [[ -n "${INPUT_SERVICE_SECRET:-}" ]]; then
-  curl -fsS -H "X-Input-Service-Secret: $INPUT_SERVICE_SECRET" "$INPUT_URL"
+  curl -fsS -H "X-Input-Service-Secret: $INPUT_SERVICE_SECRET" "${INPUT_BASE_URL}/healthz"
 else
-  curl -fsS "$INPUT_URL"
+  curl -fsS "${INPUT_BASE_URL}/healthz"
 fi
 
 echo
+echo "Input service doctor: ${INPUT_BASE_URL}/doctor"
+if [[ -n "${INPUT_SERVICE_SECRET:-}" ]]; then
+  curl -fsS -H "X-Input-Service-Secret: $INPUT_SERVICE_SECRET" "${INPUT_BASE_URL}/doctor"
+else
+  curl -fsS "${INPUT_BASE_URL}/doctor"
+fi
+
 echo
-echo "Video automation doctor: $VIDEO_URL"
-curl -fsS "$VIDEO_URL"
+echo "Video automation health: ${VIDEO_BASE_URL}/healthz"
+curl -fsS "${VIDEO_BASE_URL}/healthz"
+echo
+echo
+echo "Video automation doctor: ${VIDEO_BASE_URL}/doctor"
+curl -fsS "${VIDEO_BASE_URL}/doctor"
 echo

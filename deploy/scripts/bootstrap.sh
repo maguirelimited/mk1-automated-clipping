@@ -10,6 +10,8 @@ require_command ffmpeg
 require_command ffprobe
 
 echo "Bootstrapping mk0.4 under: $MK04_ROOT"
+echo "Note: Whisper is a runtime CLI dependency for video automation and is not installed by bootstrap."
+echo "Install it separately so 'whisper' resolves on PATH for the service user."
 
 INPUT_ROOT="$MK04_ROOT/source-input/input_service"
 VIDEO_ROOT="$MK04_ROOT/video-automation"

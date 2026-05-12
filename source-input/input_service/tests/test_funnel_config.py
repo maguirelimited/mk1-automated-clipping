@@ -128,6 +128,9 @@ class FunnelConfigTests(unittest.TestCase):
         payload = resp.get_json()
         self.assertEqual(payload["service"], "input_service")
         self.assertTrue(any(c["name"] == "funnels_config" for c in payload["checks"]))
+        self.assertTrue(any(c["name"] == "python_executable" for c in payload["checks"]))
+        self.assertTrue(any(c["name"] == "flask_import" for c in payload["checks"]))
+        self.assertTrue(any(c["name"] == "path_writable:state_dir" for c in payload["checks"]))
 
 
 if __name__ == "__main__":
