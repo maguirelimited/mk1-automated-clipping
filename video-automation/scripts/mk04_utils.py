@@ -373,6 +373,55 @@ def maybe_copy(src: str, dst: str) -> None:
         shutil.copy2(src, dst)
 
 
+def build_funnel_job_record(
+    *,
+    funnel_ops: dict[str, Any] | None,
+    resolved_selection: dict[str, Any],
+    policy_audit: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Shape funnel fields for ``report.json`` / API (None when no content funnel was applied)."""
+    if not isinstance(funnel_ops, dict):
+        return None
+    fid = funnel_ops.get("funnel_id")
+    if not isinstance(fid, str) or not fid.strip():
+        return None
+    audit = policy_audit if isinstance(policy_audit, dict) else {}
+    fr = audit.get("funnel_resolution") if isinstance(audit.get("funnel_resolution"), dict) else {}
+    platforms = funnel_ops.get("platforms")
+    enabled_platforms: list[str] = []
+    if isinstance(platforms, dict):
+        enabled_platforms = sorted(k for k, v in platforms.items() if v is True)
+    out = funnel_ops.get("output") if isinstance(funnel_ops.get("output"), dict) else {}
+    res_sel = {
+        "max_clips": int(resolved_selection["max_clips"]),
+        "min_duration_sec": float(resolved_selection["min_duration_sec"]),
+        "max_duration_sec": float(resolved_selection["max_duration_sec"]),
+        "max_overlap_sec": float(resolved_selection["max_overlap_sec"]),
+        "include_reasons": bool(resolved_selection.get("include_reasons", False)),
+        "include_clip_metadata": bool(resolved_selection.get("include_clip_metadata", True)),
+    }
+    res_out = {
+        "filename_prefix": str(out.get("filename_prefix", "") or ""),
+        "delivery_mode": str(out.get("delivery_mode", "") or "pull_from_output_endpoint"),
+    }
+    policy_summary: dict[str, Any] = {
+        "funnel_resolve_source": fr.get("funnel_resolve_source"),
+        "funnel_config_applied": fr.get("funnel_config_applied"),
+        "funnel_config_path": fr.get("funnel_config_path"),
+        "pipeline_profile_resolved": audit.get("pipeline_profile_resolved"),
+        "selection_key_sources": audit.get("selection_key_sources"),
+    }
+    return {
+        "funnel_id": fid.strip(),
+        "funnel_name": str(funnel_ops.get("funnel_name") or "").strip() or None,
+        "enabled_platforms": enabled_platforms,
+        "platforms": dict(platforms) if isinstance(platforms, dict) else {},
+        "resolved_selection": res_sel,
+        "resolved_output": res_out,
+        "funnel_policy_summary": policy_summary,
+    }
+
+
 def write_json(path: str, payload: Any) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
@@ -386,8 +435,57 @@ def write_review(path: str, report: dict[str, Any]) -> None:
         f"- Job ID: `{report.get('job_id', '')}`",
         f"- Status: `{report.get('status', '')}`",
         "",
-        "## Selected Clips",
     ]
+    funnel = report.get("funnel")
+    if isinstance(funnel, dict) and funnel.get("funnel_id"):
+        lines.extend(
+            [
+                "## Funnel",
+                "",
+                f"- **funnel_id:** `{funnel.get('funnel_id', '')}`",
+                f"- **funnel_name:** {funnel.get('funnel_name') or '—'}",
+                f"- **enabled_platforms:** {', '.join(funnel.get('enabled_platforms') or []) or '—'}",
+                "",
+                "### Resolved selection",
+                "",
+            ]
+        )
+        rs = funnel.get("resolved_selection") or {}
+        if isinstance(rs, dict):
+            lines.extend(
+                [
+                    f"- max_clips: `{rs.get('max_clips')}`",
+                    f"- min_duration_sec: `{rs.get('min_duration_sec')}`",
+                    f"- max_duration_sec: `{rs.get('max_duration_sec')}`",
+                    f"- max_overlap_sec: `{rs.get('max_overlap_sec')}`",
+                    f"- include_clip_metadata: `{rs.get('include_clip_metadata')}`",
+                    f"- include_reasons: `{rs.get('include_reasons')}`",
+                    "",
+                ]
+            )
+        ro = funnel.get("resolved_output") or {}
+        if isinstance(ro, dict):
+            lines.extend(
+                [
+                    "### Resolved output",
+                    "",
+                    f"- filename_prefix: `{ro.get('filename_prefix', '') or '—'}`",
+                    f"- delivery_mode: `{ro.get('delivery_mode', '')}`",
+                    "",
+                ]
+            )
+        summ = funnel.get("funnel_policy_summary") or {}
+        if isinstance(summ, dict):
+            if summ.get("funnel_resolve_source"):
+                lines.append(f"- **resolve_source:** `{summ.get('funnel_resolve_source')}`")
+            if summ.get("funnel_config_path"):
+                lines.append(f"- **funnel_config_path:** `{summ.get('funnel_config_path')}`")
+            lines.append("")
+    lines.extend(
+        [
+            "## Selected Clips",
+        ]
+    )
     clips = report.get("clips") or []
     if clips:
         for idx, clip in enumerate(clips, start=1):

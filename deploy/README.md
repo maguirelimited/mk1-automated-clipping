@@ -109,6 +109,13 @@ virtualenv status, Flask/import availability where relevant, required CLIs,
 OpenAI key presence, config files, funnel config, and runtime path existence /
 writability.
 
+`GET /doctor` on both services always returns **HTTP 200** when the process is
+reachable; use the JSON field **`"ok": true|false`** for readiness (failed
+checks set `"ok": false` without a 5xx status). Tools that treat any non-2xx as
+“offline” should probe **`GET /healthz`** for liveness or parse **`"ok"`** on
+`/doctor`. The repo **`deploy/scripts/doctor.sh`** exits non-zero if **`"ok"`**
+is false.
+
 ## Run Manually During Testing
 
 Terminal 1:

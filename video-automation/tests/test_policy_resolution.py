@@ -96,7 +96,7 @@ def test_named_profile_merges_before_http(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     assert bundle["selection"]["max_clips"] == 9
     assert bundle["selection"]["min_duration_sec"] == 18.0
-    assert bundle["policy_audit"]["selection_key_sources"]["min_duration_sec"] == "profile"
+    assert bundle["policy_audit"]["selection_key_sources"]["min_duration_sec"] == "legacy_profile"
     assert bundle["policy_audit"]["selection_key_sources"]["max_clips"] == "http_selection"
     chunk = bundle["chunking_effective"]
     assert "enabled" in chunk

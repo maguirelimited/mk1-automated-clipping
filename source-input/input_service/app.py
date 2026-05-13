@@ -167,10 +167,8 @@ def create_app() -> Flask:
             _check("funnels_config", False, str(exc))
 
         all_ok = all(bool(c["ok"]) for c in checks)
-        return (
-            jsonify({"ok": all_ok, "service": "input_service", "checks": checks}),
-            200 if all_ok else 500,
-        )
+        # Always HTTP 200 when this handler runs; JSON "ok" reflects readiness.
+        return jsonify({"ok": all_ok, "service": "input_service", "checks": checks}), 200
 
     @app.get("/funnels")
     def funnels():

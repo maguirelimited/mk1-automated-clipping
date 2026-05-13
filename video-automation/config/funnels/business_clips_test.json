@@ -1,0 +1,20 @@
+{
+  "funnel_id": "business_clips_test",
+  "funnel_name": "Business Clips Test",
+  "platforms": {
+    "tiktok": true,
+    "instagram_reels": true,
+    "youtube_shorts": true,
+    "x": false
+  },
+  "selection": {
+    "max_clips": 5,
+    "min_duration_sec": 20,
+    "max_duration_sec": 45,
+    "max_overlap_sec": 2
+  },
+  "output": {
+    "filename_prefix": "business_clips",
+    "delivery_mode": "pull_from_output_endpoint"
+  }
+}

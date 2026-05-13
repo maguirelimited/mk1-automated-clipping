@@ -48,10 +48,12 @@ fi
 echo
 echo "Input service doctor: ${INPUT_BASE_URL}/doctor"
 if [[ -n "${INPUT_SERVICE_SECRET:-}" ]]; then
-  curl -fsS -H "X-Input-Service-Secret: $INPUT_SERVICE_SECRET" "${INPUT_BASE_URL}/doctor"
+  _input_doc="$(curl -fsS -H "X-Input-Service-Secret: $INPUT_SERVICE_SECRET" "${INPUT_BASE_URL}/doctor")"
 else
-  curl -fsS "${INPUT_BASE_URL}/doctor"
+  _input_doc="$(curl -fsS "${INPUT_BASE_URL}/doctor")"
 fi
+echo "$_input_doc"
+echo "$_input_doc" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get('ok') else 1)"
 
 echo
 echo "Video automation health: ${VIDEO_BASE_URL}/healthz"
@@ -59,5 +61,7 @@ curl -fsS "${VIDEO_BASE_URL}/healthz"
 echo
 echo
 echo "Video automation doctor: ${VIDEO_BASE_URL}/doctor"
-curl -fsS "${VIDEO_BASE_URL}/doctor"
+_video_doc="$(curl -fsS "${VIDEO_BASE_URL}/doctor")"
+echo "$_video_doc"
+echo "$_video_doc" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get('ok') else 1)"
 echo
