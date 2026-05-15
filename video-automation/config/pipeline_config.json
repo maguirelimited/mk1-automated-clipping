@@ -1,6 +1,7 @@
 {
   "defaults": {
-    "pipeline_profile": "business_podcasts_001"
+    "pipeline_profile": "business_podcasts_001",
+    "default_funnel_id": "business_clips_test"
   },
   "paths": {
     "input_folder": "input",

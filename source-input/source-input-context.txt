@@ -180,9 +180,9 @@ The clipping server **`POST /process`** takes **`video`** as a basename only; th
 Recommended orchestration after **`input_ready`:**
 
 1. **Copy or move** (or NFS/shared volume) **`source.mp4`** into **`video-automation/input/`** under a deterministic name (**e.g. keep `source.mp4` per funnel/job**).
-2. Call **`POST /upload`** **or** go straight to **`POST /process`** with **`{ "video": "<that basename>", "pipeline_profile": "<pipeline_profile from input_ready>" }`**. In normal operation n8n should not send clip-duration overrides; funnel behaviour lives in repo catalogs.
+2. Call **`POST /process`** with **`{ "video": "<that basename>", "pipeline_profile": "<pipeline_profile from input_ready>" }`**. In normal operation n8n should not send clip-duration overrides; funnel behaviour lives in repo catalogs.
 
-Alternatively **`POST /process-inline`** may stream the blob if **`allow_blocking_inline`** is explicitly set (**long-running**, see system context).
+The older clipping-server **`POST /upload`** and **`POST /process-inline`** ingestion routes were removed because current orchestration uses file handoff into `input/` plus `/process`. They can be restored from earlier versions if HTTP multipart or base64 ingestion is needed again.
 
 Both services remain **deployable independently**; n8n (or equivalent) owns ordering and retries.
 

@@ -3,8 +3,6 @@ import os
 import subprocess
 import sys
 import uuid
-import base64
-import tempfile
 import time
 import mimetypes
 import re
@@ -30,15 +28,17 @@ from chunk_pipeline import (
     write_merged_whisper_json,
 )
 from analytics_store import persist_feedback_event, persist_run_analytics
+from funnel_config import sanitize_funnel_config_basename
 from pipeline_utils import (
     normalize_segments,
     parse_selection_payload,
     resolved_pipeline_config_path,
-    resolve_pipeline_run_policy,
+    resolve_run_policy,
     parse_time_to_seconds,
     postprocess_segments,
 )
 from mk04_utils import (
+    build_funnel_job_record,
     categorize_error,
     create_job_paths,
     effective_temp_cleanup_policy,
@@ -118,7 +118,7 @@ def _parse_n8n_webhook_error(body: str) -> dict[str, str]:
 
 
 def _lift_n8n_wrapped_video_fields(data: dict[str, Any]) -> dict[str, Any]:
-    """Lift ``video`` / ``video_path`` / ``funnel_id`` from common n8n wrappers.
+    """Lift ``video`` / ``video_path`` / ``funnel_id`` / ``funnel_config`` from common n8n wrappers.
 
     n8n items often look like ``{ "json": { "video_path": "...", ... } }`` when
     the HTTP Request node sends the whole item; without lifting, only ``selection``
@@ -127,7 +127,7 @@ def _lift_n8n_wrapped_video_fields(data: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(data, dict):
         return {}
     out = dict(data)
-    lift_keys = ("video", "video_path", "funnel_id")
+    lift_keys = ("video", "video_path", "funnel_id", "funnel_config")
     for wrap in ("json", "body", "data", "item"):
         if wrap not in out:
             continue
@@ -591,7 +591,7 @@ def _resolve_input_video_path(video_name: str) -> tuple[str, str]:
 
     normalized_name = os.path.basename(str(video_name or "").strip())
     if not normalized_name:
-        normalized_name = f"upload_{uuid.uuid4().hex[:10]}.mp4"
+        normalized_name = f"input_{uuid.uuid4().hex[:10]}.mp4"
 
     video_path = os.path.normpath(os.path.join(input_root, normalized_name))
     if not video_path.startswith(input_root + os.sep):
@@ -1108,8 +1108,10 @@ def resolve_http_policy_bundle(
     selection_blob: dict[str, Any] | None,
     pipeline_blob: dict[str, Any] | None,
     pipeline_profile_hint: Any,
+    http_funnel_id: str | None = None,
+    http_funnel_config: Any = None,
 ) -> dict[str, Any]:
-    """Merge repo config + profiles + env + HTTP into one auditable bundle."""
+    """Merge repo config + profiles + funnel + env + HTTP into one auditable bundle."""
 
     cfg = load_config()
     cfg_abs = resolved_pipeline_config_path()
@@ -1118,12 +1120,19 @@ def resolve_http_policy_bundle(
         if isinstance(pipeline_profile_hint, str) and pipeline_profile_hint.strip()
         else None
     )
-    return resolve_pipeline_run_policy(
+    hf = (
+        http_funnel_id.strip()
+        if isinstance(http_funnel_id, str) and http_funnel_id.strip()
+        else None
+    )
+    return resolve_run_policy(
         pipeline_config_abs=cfg_abs,
         pipeline_config=cfg,
         pipeline_profile=pf,
         request_pipeline_blob=pipeline_blob,
         request_selection_blob=selection_blob or {},
+        http_funnel_id=hf,
+        http_funnel_config=http_funnel_config,
     )
 
 
@@ -1137,6 +1146,18 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any]):
     audit_plain = dict(policy_bundle.get("policy_audit") or {})
     selection_policy = dict(policy_bundle["selection"])
     models_eff_mb = dict(policy_bundle.get("models_effective") or {})
+    funnel_ops_raw = policy_bundle.get("funnel_ops")
+    filename_prefix = ""
+    delivery_mode = "pull_from_output_endpoint"
+    if isinstance(funnel_ops_raw, dict):
+        out_meta = funnel_ops_raw.get("output")
+        if isinstance(out_meta, dict):
+            fp = out_meta.get("filename_prefix")
+            if isinstance(fp, str) and fp.strip():
+                filename_prefix = fp.strip()
+            dm = out_meta.get("delivery_mode")
+            if isinstance(dm, str) and dm.strip():
+                delivery_mode = dm.strip()
 
     transcription_env = dict(os.environ)
     whisper_override = str(models_eff_mb.get("whisper_model") or "").strip()
@@ -1186,6 +1207,11 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any]):
         "stage_timings_ms": stage_ms,
         "clips": [],
         "policy_resolution": audit_plain,
+        "funnel": build_funnel_job_record(
+            funnel_ops=funnel_ops_raw if isinstance(funnel_ops_raw, dict) else None,
+            resolved_selection=selection_policy,
+            policy_audit=audit_plain,
+        ),
     }
 
     for notice in audit_plain.get("warnings", []):
@@ -1616,7 +1642,10 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any]):
         for index, segment in enumerate(validated_segments, start=1):
             start = str(segment["start"]).strip()
             end = str(segment["end"]).strip()
-            clip_name = f"{filename}_clip_{index:02d}_{uuid.uuid4().hex[:8]}.mp4"
+            if filename_prefix:
+                clip_name = f"{filename_prefix}_clip_{index:02d}_{uuid.uuid4().hex[:8]}.mp4"
+            else:
+                clip_name = f"{filename}_clip_{index:02d}_{uuid.uuid4().hex[:8]}.mp4"
             clip_path = os.path.join(output_root, clip_name)
             clip = subprocess.run(
                 [PYTHON, script_clip, video_path, start, end, clip_path],
@@ -1720,6 +1749,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any]):
         write_review(job["review_path"], report)
 
         run_id = uuid.uuid4().hex
+        funnel_record = report.get("funnel")
         response: dict[str, object] = {
             "success": True,
             "pipeline": PIPELINE_NAME,
@@ -1727,7 +1757,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any]):
             "source_video": os.path.basename(video_path),
             "video_basename": filename,
             "clips": clips,
-            "delivery_mode": "pull_from_output_endpoint",
+            "delivery_mode": delivery_mode,
             "job_id": job["job_id"],
             "job_dir": job["job_dir"],
             "report_path": job["report_path"],
@@ -1738,6 +1768,18 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any]):
             "policy_resolution": audit_plain,
             **_inspection_urls(job["job_id"]),
         }
+        if isinstance(funnel_record, dict) and funnel_record.get("funnel_id"):
+            response["funnel"] = funnel_record
+            response["funnel_id"] = funnel_record.get("funnel_id")
+            response["funnel_name"] = funnel_record.get("funnel_name")
+            response["enabled_platforms"] = funnel_record.get("enabled_platforms") or []
+            response["funnel_policy_summary"] = funnel_record.get("funnel_policy_summary") or {}
+        else:
+            response["funnel"] = None
+            response["funnel_id"] = None
+            response["funnel_name"] = None
+            response["enabled_platforms"] = []
+            response["funnel_policy_summary"] = {}
         if report.get("chunked"):
             response["chunked"] = True
             if report.get("chunking"):
@@ -1753,6 +1795,11 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any]):
         return jsonify(response)
     finally:
         try:
+            report["funnel"] = build_funnel_job_record(
+                funnel_ops=funnel_ops_raw if isinstance(funnel_ops_raw, dict) else None,
+                resolved_selection=selection_policy,
+                policy_audit=dict(policy_bundle.get("policy_audit") or {}),
+            )
             if report.get("completed_at") is None:
                 report["completed_at"] = now_iso()
                 if report.get("status") == "running":
@@ -1848,76 +1895,6 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any]):
                     )
 
 
-@app.route("/upload", methods=["POST"])
-def upload_video():
-    try:
-        upload_started_ms = int(time.time() * 1000)
-        debug_run_id = f"run-{uuid.uuid4().hex[:8]}"
-        # #region agent log
-        _debug_mode_log(
-            debug_run_id,
-            "H1-endpoint-mismatch",
-            "app.py:upload_video",
-            "upload endpoint received request",
-            {
-                "content_type": request.content_type or "",
-                "has_video_file": bool(request.files.get("video_file")),
-                "form_keys": sorted(list(request.form.keys())),
-            },
-        )
-        # #endregion
-        # #region agent log
-        _agent_debug_log(
-            "general-debug",
-            "H13-ingress-upload",
-            "app.py:upload_video",
-            "upload endpoint hit",
-            {
-                "content_type": request.content_type,
-                "has_video_file": bool(request.files.get("video_file")),
-                "form_keys": sorted(list(request.form.keys())),
-            },
-        )
-        # #endregion
-        upload = request.files.get("video_file")
-        if upload is None:
-            return _fail("Missing video_file", status_code=400)
-
-        requested_name = str(request.form.get("video_name") or upload.filename or "").strip()
-        video_name, video_path = _resolve_input_video_path(requested_name)
-        upload.save(video_path)
-
-        if not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
-            return _fail("Uploaded file is empty", status_code=400)
-
-        # #region agent log
-        _debug_mode_log(
-            debug_run_id,
-            "H5-response-late-or-missing",
-            "app.py:upload_video",
-            "upload endpoint returning success",
-            {
-                "video_name": video_name,
-                "elapsed_ms": int(time.time() * 1000) - upload_started_ms,
-                "size_bytes": os.path.getsize(video_path),
-            },
-        )
-        # #endregion
-        return jsonify(
-            {
-                "success": True,
-                "pipeline": PIPELINE_NAME,
-                "video": video_name,
-                "video_path": video_path,
-            }
-        )
-    except ValueError as e:
-        return _fail(str(e), status_code=400)
-    except Exception as e:
-        print("[upload] unexpected error:", repr(e), flush=True)
-        return _fail("Upload failed", log_detail=repr(e), status_code=500)
-
-
 @app.route("/output/<path:clip_file>", methods=["GET"])
 def get_output_clip(clip_file: str):
     try:
@@ -1982,6 +1959,152 @@ def get_job_debug(job_id: str):
     return jsonify(_job_debug_summary(job_dir, report))
 
 
+def _process_pipeline_json_payload(payload: dict[str, Any], *, route_label: str):
+    """Handle a parsed JSON body for ``/process`` and ``/process-inline`` (video must exist under input/)."""
+    raw_video = payload.get("video")
+    raw_path = payload.get("video_path")
+    video_arg: str | None = None
+    video_from_path = False
+    if raw_video is not None and str(raw_video).strip():
+        video_arg = str(raw_video).strip()
+    elif raw_path is not None and str(raw_path).strip():
+        video_arg = os.path.basename(str(raw_path).strip().rstrip("/"))
+        video_from_path = True
+        _pipeline_diagnostic_log(
+            "H4",
+            f"app.py:{route_label}",
+            "derived video basename from video_path",
+            {
+                "video_path_prefix": str(raw_path)[:280],
+                "video_arg": video_arg,
+            },
+        )
+    if not video_arg:
+        _pipeline_diagnostic_log(
+            "H4",
+            f"app.py:{route_label}",
+            "fail missing video and video_path",
+            {"payload_keys": sorted(payload.keys())},
+        )
+        return _fail(
+            "Missing usable 'video' or 'video_path' in the JSON body (after unwrapping common n8n keys: "
+            "json, body, data, item). Send run-funnel's video_path, e.g. in the HTTP node use a JSON body with "
+            "\"video_path\": \"={{ $json.video_path }}\" on the same item that received /run-funnel output, "
+            "or merge that field into the object next to \"selection\". Undefined n8n expressions are omitted by JSON.stringify.",
+            status_code=400,
+        )
+    selection_policy = payload.get("selection", {}) or {}
+    try:
+        _cfg = load_config()
+        _input_root_dbg = ensure_paths(_cfg)["input"]
+    except Exception as _e:
+        _input_root_dbg = f"<ensure_paths_error:{_e}>"
+    _pipeline_diagnostic_log(
+        "H4",
+        f"app.py:{route_label}",
+        "json parsed",
+        {
+            "video_arg": str(video_arg)[:500],
+            "video_from_video_path": video_from_path,
+            "payload_keys": sorted(payload.keys()),
+            "payload_empty": payload == {},
+            "input_root_resolved": _input_root_dbg,
+        },
+    )
+    if not isinstance(selection_policy, dict):
+        _pipeline_diagnostic_log(
+            "H3",
+            f"app.py:{route_label}",
+            "fail invalid selection type",
+            {"detail": repr(selection_policy)[:300]},
+        )
+        return _fail(
+            "Invalid selection policy",
+            log_detail=repr(selection_policy),
+            status_code=400,
+        )
+
+    pipe_raw = payload.get("pipeline")
+    if pipe_raw is None:
+        pipe_blob: dict[str, Any] = {}
+    elif isinstance(pipe_raw, dict):
+        pipe_blob = pipe_raw
+    else:
+        _pipeline_diagnostic_log(
+            "H3",
+            f"app.py:{route_label}",
+            "fail pipeline not object",
+            {"pipe_type": type(pipe_raw).__name__},
+        )
+        return _fail("`pipeline` must be a JSON object when provided", status_code=400)
+
+    pp = payload.get("pipeline_profile")
+    prof_hint = pp.strip() if isinstance(pp, str) and pp.strip() else None
+    if prof_hint is None:
+        fid_catalog = payload.get("funnel_id")
+        if isinstance(fid_catalog, str) and fid_catalog.strip():
+            prof_hint = fid_catalog.strip()
+    if prof_hint is None:
+        fc_hint = payload.get("funnel_config")
+        if fc_hint is not None:
+            try:
+                prof_hint = sanitize_funnel_config_basename(fc_hint)
+            except ValueError:
+                prof_hint = None
+
+    fid_body = payload.get("funnel_id")
+    http_funnel_id = fid_body.strip() if isinstance(fid_body, str) and fid_body.strip() else None
+    fc_body = payload.get("funnel_config")
+
+    try:
+        bundle = resolve_http_policy_bundle(
+            selection_blob=selection_policy,
+            pipeline_blob=pipe_blob,
+            pipeline_profile_hint=prof_hint,
+            http_funnel_id=http_funnel_id,
+            http_funnel_config=fc_body,
+        )
+    except ValueError as exc:
+        _pipeline_diagnostic_log(
+            "H3",
+            f"app.py:{route_label}",
+            "fail policy bundle",
+            {"error": str(exc)[:500]},
+        )
+        return _fail("Invalid pipeline policy resolution", log_detail=str(exc), status_code=400)
+
+    _, video_path = _resolve_input_video_path(str(video_arg))
+    _pipeline_diagnostic_log(
+        "H2",
+        f"app.py:{route_label}",
+        "video path resolved",
+        {
+            "video_arg": str(video_arg)[:500],
+            "video_path": video_path,
+            "isfile": os.path.isfile(video_path),
+        },
+    )
+    if not os.path.isfile(video_path):
+        _pipeline_diagnostic_log(
+            "H2",
+            f"app.py:{route_label}",
+            "fail input not found",
+            {"video_path": video_path},
+        )
+        return _fail(
+            "Input video not found for /process. Copy or move the source video into the configured input folder, then send its basename as `video`.",
+            log_detail=video_path,
+            status_code=400,
+        )
+    _pipeline_diagnostic_log(
+        "H5",
+        f"app.py:{route_label}",
+        "starting _run_pipeline",
+        {"video_path": video_path},
+    )
+    return _run_pipeline(video_path, bundle)
+
+
 @app.route("/process", methods=["POST"])
 def process():
     # #region agent log
@@ -2023,150 +2146,7 @@ def process():
                 {"keys_before": keys_before, "keys_after": keys_after},
             )
             # #endregion
-        raw_video = payload.get("video")
-        raw_path = payload.get("video_path")
-        video_arg: str | None = None
-        video_from_path = False
-        if raw_video is not None and str(raw_video).strip():
-            video_arg = str(raw_video).strip()
-        elif raw_path is not None and str(raw_path).strip():
-            video_arg = os.path.basename(str(raw_path).strip().rstrip("/"))
-            video_from_path = True
-            # #region agent log
-            _pipeline_diagnostic_log(
-                "H4",
-                "app.py:process",
-                "derived video basename from video_path",
-                {
-                    "video_path_prefix": str(raw_path)[:280],
-                    "video_arg": video_arg,
-                },
-            )
-            # #endregion
-        if not video_arg:
-            # #region agent log
-            _pipeline_diagnostic_log(
-                "H4",
-                "app.py:process",
-                "fail missing video and video_path",
-                {"payload_keys": sorted(payload.keys())},
-            )
-            # #endregion
-            return _fail(
-                "Missing usable 'video' or 'video_path' in the JSON body (after unwrapping common n8n keys: "
-                "json, body, data, item). Send run-funnel's video_path, e.g. in the HTTP node use a JSON body with "
-                "\"video_path\": \"={{ $json.video_path }}\" on the same item that received /run-funnel output, "
-                "or merge that field into the object next to \"selection\". Undefined n8n expressions are omitted by JSON.stringify.",
-                status_code=400,
-            )
-        selection_policy = payload.get("selection", {}) or {}
-        # #region agent log
-        try:
-            _cfg = load_config()
-            _input_root_dbg = ensure_paths(_cfg)["input"]
-        except Exception as _e:
-            _input_root_dbg = f"<ensure_paths_error:{_e}>"
-        _pipeline_diagnostic_log(
-            "H4",
-            "app.py:process",
-            "json parsed",
-            {
-                "video_arg": str(video_arg)[:500],
-                "video_from_video_path": video_from_path,
-                "payload_keys": sorted(payload.keys()),
-                "payload_empty": payload == {},
-                "input_root_resolved": _input_root_dbg,
-            },
-        )
-        # #endregion
-        if not isinstance(selection_policy, dict):
-            # #region agent log
-            _pipeline_diagnostic_log(
-                "H3",
-                "app.py:process",
-                "fail invalid selection type",
-                {"detail": repr(selection_policy)[:300]},
-            )
-            # #endregion
-            return _fail(
-                "Invalid selection policy",
-                log_detail=repr(selection_policy),
-                status_code=400,
-            )
-
-        pipe_raw = payload.get("pipeline")
-        if pipe_raw is None:
-            pipe_blob: dict[str, Any] = {}
-        elif isinstance(pipe_raw, dict):
-            pipe_blob = pipe_raw
-        else:
-            # #region agent log
-            _pipeline_diagnostic_log(
-                "H3",
-                "app.py:process",
-                "fail pipeline not object",
-                {"pipe_type": type(pipe_raw).__name__},
-            )
-            # #endregion
-            return _fail("`pipeline` must be a JSON object when provided", status_code=400)
-
-        prof_hint = payload.get("pipeline_profile")
-        if prof_hint is None:
-            prof_hint = payload.get("funnel_id")
-
-        try:
-            bundle = resolve_http_policy_bundle(
-                selection_blob=selection_policy,
-                pipeline_blob=pipe_blob,
-                pipeline_profile_hint=prof_hint,
-            )
-        except ValueError as exc:
-            # #region agent log
-            _pipeline_diagnostic_log(
-                "H3",
-                "app.py:process",
-                "fail policy bundle",
-                {"error": str(exc)[:500]},
-            )
-            # #endregion
-            return _fail("Invalid pipeline policy resolution", log_detail=str(exc), status_code=400)
-
-        _, video_path = _resolve_input_video_path(str(video_arg))
-        # #region agent log
-        _pipeline_diagnostic_log(
-            "H2",
-            "app.py:process",
-            "video path resolved",
-            {
-                "video_arg": str(video_arg)[:500],
-                "video_path": video_path,
-                "isfile": os.path.isfile(video_path),
-            },
-        )
-        # #endregion
-        if not os.path.isfile(video_path):
-            # #region agent log
-            _pipeline_diagnostic_log(
-                "H2",
-                "app.py:process",
-                "fail input not found",
-                {"video_path": video_path},
-            )
-            # #endregion
-            return _fail(
-                "Input video not found for /process. Upload first via /upload, or use /process-inline to provide the video directly.",
-                log_detail=video_path,
-                status_code=400,
-            )
-        # #region agent log
-        _pipeline_diagnostic_log(
-            "H5",
-            "app.py:process",
-            "starting _run_pipeline",
-            {"video_path": video_path},
-        )
-        # #endregion
-        return _run_pipeline(video_path, bundle)
+        return _process_pipeline_json_payload(payload, route_label="process")
 
     except Exception as e:
         print("[process] unexpected error:", repr(e), flush=True)
@@ -2183,305 +2163,14 @@ def process():
 
 @app.route("/process-inline", methods=["POST"])
 def process_inline():
-    tmp_path = None
-    started_ms = int(time.time() * 1000)
-    debug_run_id = f"run-{uuid.uuid4().hex[:8]}"
+    """Same JSON contract as ``POST /process`` (video basename under configured input folder)."""
     try:
-        # #region agent log
-        _debug_mode_log(
-            debug_run_id,
-            "H1-endpoint-mismatch",
-            "app.py:process_inline",
-            "process-inline endpoint received request",
-            {
-                "content_type": request.content_type or "",
-                "has_video_file": bool(request.files.get("video_file")),
-                "has_json_body": bool(request.get_json(silent=True) or {}),
-                "form_keys": sorted(list(request.form.keys())),
-            },
-        )
-        # #endregion
-        # #region agent log
-        _agent_debug_log(
-            "general-debug",
-            "H14-ingress-process-inline",
-            "app.py:process_inline",
-            "process-inline endpoint hit",
-            {
-                "content_type": request.content_type,
-                "has_video_file": bool(request.files.get("video_file")),
-                "has_json_body": bool(request.get_json(silent=True) or {}),
-                "form_keys": sorted(list(request.form.keys())),
-            },
-        )
-        # #endregion
-        input_root = ensure_paths(load_config())["input"]
-        upload = request.files.get("video_file")
         payload = request.get_json(silent=True) or {}
-
-        # process-inline is intentionally blocking (upload + full pipeline in one request).
-        # Require explicit opt-in to avoid accidental long-running n8n upload requests.
-        inline_opt_in_raw = request.form.get("allow_blocking_inline")
-        if inline_opt_in_raw is None:
-            inline_opt_in_raw = payload.get("allow_blocking_inline")
-        inline_opt_in = str(inline_opt_in_raw or "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
-        if not inline_opt_in:
-            # #region agent log
-            _debug_mode_log(
-                debug_run_id,
-                "H1-endpoint-mismatch",
-                "app.py:process_inline",
-                "rejected process-inline without explicit opt-in",
-                {
-                    "has_video_file": bool(upload),
-                    "form_keys": sorted(list(request.form.keys())),
-                    "payload_keys": (
-                        sorted(list(payload.keys()))
-                        if isinstance(payload, dict)
-                        else []
-                    ),
-                },
-            )
-            # #endregion
-            return _fail(
-                "Endpoint /process-inline is synchronous and long-running. "
-                "Use /upload then /process for non-blocking n8n flows, "
-                "or set allow_blocking_inline=true to opt in.",
-                status_code=400,
-            )
-
-        if upload is not None:
-            selection_raw = request.form.get("selection")
-            if not isinstance(selection_raw, str) or not selection_raw.strip():
-                selection_policy = {}
-            else:
-                try:
-                    selection_policy = json.loads(selection_raw)
-                except json.JSONDecodeError as e:
-                    return _fail("Invalid selection policy", log_detail=str(e), status_code=400)
-
-            if not isinstance(selection_policy, dict):
-                return _fail("Invalid selection policy", log_detail=repr(selection_policy), status_code=400)
-
-            multipart_pipe_blob: dict[str, Any] = {}
-            pipe_form = request.form.get("pipeline")
-            if isinstance(pipe_form, str) and pipe_form.strip():
-                try:
-                    parsed_pb = json.loads(pipe_form)
-                except json.JSONDecodeError as e:
-                    return _fail("Invalid multipart `pipeline` JSON", log_detail=str(e), status_code=400)
-                if not isinstance(parsed_pb, dict):
-                    return _fail("multipart field `pipeline` must be a JSON object", status_code=400)
-                multipart_pipe_blob = parsed_pb
-
-            multipart_prof = (
-                request.form.get("pipeline_profile")
-                or request.form.get("funnel_id")
-                or payload.get("pipeline_profile")
-                or payload.get("funnel_id")
-            )
-
-            try:
-                multipart_bundle = resolve_http_policy_bundle(
-                    selection_blob=selection_policy,
-                    pipeline_blob=multipart_pipe_blob,
-                    pipeline_profile_hint=multipart_prof,
-                )
-            except ValueError as exc:
-                return _fail("Invalid pipeline policy resolution", log_detail=str(exc), status_code=400)
-
-            video_name = str(
-                request.form.get("video_name") or upload.filename or "upload.mp4"
-            )
-            _, ext = os.path.splitext(video_name)
-            suffix = ext if ext else ".mp4"
-
-            # #region agent log
-            _debug_log(
-                "H-new-upload",
-                "server/app.py:process_inline",
-                "Received multipart upload payload",
-                {
-                    "video_name": video_name,
-                    "selection_keys": sorted(selection_policy.keys()),
-                    "content_type": request.content_type,
-                },
-            )
-            # #endregion
-
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                suffix=suffix,
-                prefix="n8n_upload_",
-                dir=input_root,
-                delete=False,
-            ) as tmp:
-                upload.save(tmp)
-                tmp_path = os.path.abspath(tmp.name)
-
-            # #region agent log
-            _debug_log(
-                "H-new-upload",
-                "server/app.py:process_inline",
-                "Wrote multipart upload to temp file",
-                {"tmp_path": tmp_path, "size_bytes": os.path.getsize(tmp_path)},
-            )
-            # #endregion
-
-            result = _run_pipeline(tmp_path, multipart_bundle)
-            # #region agent log
-            _debug_mode_log(
-                debug_run_id,
-                "H3-multipart-vs-json-path",
-                "app.py:process_inline",
-                "multipart branch completed pipeline",
-                {
-                    "elapsed_ms": int(time.time() * 1000) - started_ms,
-                    "tmp_path": tmp_path,
-                },
-            )
-            # #endregion
-            # #region agent log
-            _agent_debug_log(
-                "general-debug",
-                "H16-process-inline-return",
-                "app.py:process_inline",
-                "process-inline returning multipart flow response",
-                {
-                    "elapsed_ms": int(time.time() * 1000) - started_ms,
-                    "tmp_path": tmp_path,
-                },
-            )
-            # #endregion
-            return result
-
-        selection_policy = payload.get("selection", {}) or {}
-        if not isinstance(selection_policy, dict):
-            return _fail("Invalid selection policy", log_detail=repr(selection_policy), status_code=400)
-
-        pipe_raw = payload.get("pipeline")
-        if pipe_raw is None:
-            inline_pipe: dict[str, Any] = {}
-        elif isinstance(pipe_raw, dict):
-            inline_pipe = pipe_raw
-        else:
-            return _fail("`pipeline` must be a JSON object when provided", status_code=400)
-
-        inline_prof_hint = payload.get("pipeline_profile")
-        if inline_prof_hint is None:
-            inline_prof_hint = payload.get("funnel_id")
-
-        try:
-            inline_bundle = resolve_http_policy_bundle(
-                selection_blob=selection_policy,
-                pipeline_blob=inline_pipe,
-                pipeline_profile_hint=inline_prof_hint,
-            )
-        except ValueError as exc:
-            return _fail("Invalid pipeline policy resolution", log_detail=str(exc), status_code=400)
-
-        video_name = str(payload.get("video_name") or payload.get("video") or "upload.mp4")
-        video_b64 = payload.get("video_b64")
-        if not isinstance(video_b64, str) or not video_b64.strip():
-            return _fail("Missing video_b64", status_code=400)
-
-        _, ext = os.path.splitext(video_name)
-        suffix = ext if ext else ".mp4"
-
-        # #region agent log
-        _debug_log(
-            "H-new-upload",
-            "server/app.py:process_inline",
-            "Received inline processing payload",
-            {"video_name": video_name, "has_b64": bool(video_b64), "suffix": suffix},
-        )
-        # #endregion
-
-        raw_bytes = base64.b64decode(video_b64, validate=True)
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            suffix=suffix,
-            prefix="n8n_upload_",
-            dir=input_root,
-            delete=False,
-        ) as tmp:
-            tmp.write(raw_bytes)
-            tmp_path = os.path.abspath(tmp.name)
-
-        # #region agent log
-        _debug_log(
-            "H-new-upload",
-            "server/app.py:process_inline",
-            "Wrote inline upload to temp file",
-            {"tmp_path": tmp_path, "size_bytes": len(raw_bytes)},
-        )
-        # #endregion
-
-        result = _run_pipeline(tmp_path, inline_bundle)
-        # #region agent log
-        _debug_mode_log(
-            debug_run_id,
-            "H3-multipart-vs-json-path",
-            "app.py:process_inline",
-            "json-base64 branch completed pipeline",
-            {
-                "elapsed_ms": int(time.time() * 1000) - started_ms,
-                "tmp_path": tmp_path,
-            },
-        )
-        # #endregion
-        # #region agent log
-        _agent_debug_log(
-            "general-debug",
-            "H16-process-inline-return",
-            "app.py:process_inline",
-            "process-inline returning base64 flow response",
-            {
-                "elapsed_ms": int(time.time() * 1000) - started_ms,
-                "tmp_path": tmp_path,
-            },
-        )
-        # #endregion
-        return result
+        payload = _lift_n8n_wrapped_video_fields(payload)
+        return _process_pipeline_json_payload(payload, route_label="process-inline")
     except Exception as e:
-        # #region agent log
-        _debug_log(
-            "H-new-upload",
-            "server/app.py:process_inline",
-            "Inline processing exception",
-            {"error": repr(e)},
-        )
-        # #endregion
         print("[process-inline] unexpected error:", repr(e), flush=True)
         return _fail("Processing failed", log_detail=repr(e), status_code=500)
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except Exception as exc:
-                print(
-                    "[process-inline_cleanup] Removing temp upload failed:",
-                    tmp_path,
-                    repr(exc),
-                    flush=True,
-                )
-        for wpath in selector_window_paths:
-            try:
-                abs_w = os.path.abspath(wpath)
-                if abs_w.startswith(temp_root + os.sep) and os.path.isfile(abs_w):
-                    os.remove(abs_w)
-            except Exception as exc:
-                print(
-                    "[pipeline_cleanup] Removing selector window transcript failed:",
-                    wpath,
-                    repr(exc),
-                    flush=True,
-                )
 
 
 @app.route("/healthz", methods=["GET"])
@@ -2576,8 +2265,9 @@ def doctor():
             _check("n8n_probe", False, str(e))
 
     all_ok = all(bool(c["ok"]) for c in checks)
-    status_code = 200 if all_ok else 500
-    return jsonify({"ok": all_ok, "checks": checks, "pipeline": PIPELINE_NAME}), status_code
+    # Always HTTP 200 so load balancers / n8n "credential test" treat the process as
+    # reachable; use JSON "ok" for readiness (deploy/scripts/doctor.sh checks "ok").
+    return jsonify({"ok": all_ok, "checks": checks, "pipeline": PIPELINE_NAME}), 200
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # `selection` schema
 
-The `selection` object on the `/process` (and `/process-inline`) request body is the per-run knob channel for the clipper. n8n is the source of truth at runtime; values in `pipeline_config.json` are defaults only and are used when a field is missing.
+The `selection` object on the `/process` request body is the per-run knob channel for the clipper. n8n is the source of truth at runtime; values in `pipeline_config.json` are defaults only and are used when a field is missing.
 
 This document lists every field that `_run_pipeline` (`server/app.py`) currently reads from `selection_policy`, including types, defaults, and downstream effect.
 
@@ -37,7 +37,7 @@ Defaults flow in this order (first non-null wins):
 
 ## n8n example
 
-Minimal request body sent to `POST /process` (after a prior `/upload`):
+Minimal request body sent to `POST /process` after the source file has already been copied or moved into the configured `input/` folder:
 
 ```json
 {
@@ -53,20 +53,8 @@ Minimal request body sent to `POST /process` (after a prior `/upload`):
 }
 ```
 
-Equivalent for `POST /process-inline` (JSON-base64 branch, blocking — fallback only, requires `allow_blocking_inline=true`):
+The older `/upload` and `/process-inline` ingestion endpoints were intentionally removed because current orchestration uses file handoff into `input/` plus `/process`. They can be restored from earlier versions if HTTP multipart or base64 ingestion is needed again.
 
-```json
-{
-  "video_b64": "<base64 mp4>",
-  "filename": "doac_episode_2024_07_15.mp4",
-  "selection": {
-    "min_duration_sec": 30,
-    "max_duration_sec": 60,
-    "max_clips": 3
-  },
-  "allow_blocking_inline": true
-}
-```
 
 ## Notes for future fields
 

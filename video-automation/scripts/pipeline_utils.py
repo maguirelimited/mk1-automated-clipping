@@ -7,7 +7,21 @@ import os
 import re
 from typing import Any
 
+from funnel_config import (
+    funnel_config_file_exists,
+    load_content_funnel_config,
+    sanitize_funnel_config_basename,
+)
 from pipeline_debug_ndjson import write_debug_mode
+
+TRACE_PIPELINE_CONFIG = "pipeline_config"
+TRACE_LEGACY_PROFILE = "legacy_profile"
+TRACE_FUNNEL_CONFIG = "funnel_config"
+TRACE_RUNTIME_ENV_JSON = "runtime_env_json"
+TRACE_HTTP_PIPELINE_SEL = "http_pipeline.selection"
+TRACE_HTTP_SELECTION = "http_selection"
+
+
 def parse_time_to_seconds(s: str) -> float:
     """Parse HH:MM:SS, MM:SS, or SS (and optional fractional seconds) to seconds."""
     t = s.strip()
@@ -530,12 +544,15 @@ _MK04_WHISPER_ENV_VAR = "MK04_WHISPER_MODEL"
 _MK04_SELECTION_MODEL_ENV_VAR = "MK04_SELECTION_MODEL"
 
 POLICY_MERGE_CHAIN_DOC = (
-    "baseline: pipeline_config.json (paths + selection/chunking/models defaults) "
-    "< funnel profile referenced by HTTP pipeline_profile|funnel_id OR by "
-    "defaults.pipeline_profile in pipeline_config.json (same-named entry under profiles.* "
-    "with optional selection/chunking/models overlays, e.g. whisper_model) "
-    f"< {_RUNTIME_ENV_JSON_VAR} < {_MK04_WHISPER_ENV_VAR} / {_MK04_SELECTION_MODEL_ENV_VAR} "
-    "< HTTP `pipeline` object < HTTP `selection` object"
+    "selection merge order: "
+    f"{TRACE_PIPELINE_CONFIG} (pipeline_config.json engine defaults) "
+    f"< {TRACE_LEGACY_PROFILE} (video_pipeline_profiles.json via pipeline_profile / funnel_id hint) "
+    f"< {TRACE_FUNNEL_CONFIG} (config/funnels/<stem>.json; HTTP funnel_config basename wins over funnel_id, "
+    "else HTTP funnel_id, else defaults.default_funnel_id) "
+    f"< {TRACE_RUNTIME_ENV_JSON} ({_RUNTIME_ENV_JSON_VAR}) "
+    f"< {_MK04_WHISPER_ENV_VAR} / {_MK04_SELECTION_MODEL_ENV_VAR} "
+    f"< {TRACE_HTTP_PIPELINE_SEL} < {TRACE_HTTP_SELECTION}. "
+    "Chunking/models follow the same layer pattern except content funnel files do not overlay chunking/models in mk0.4."
 )
 
 
@@ -698,7 +715,7 @@ def _finalize_selection(sel: dict[str, Any]) -> dict[str, Any]:
     if sel["min_duration_sec"] > sel["max_duration_sec"]:
         raise ValueError(
             "Resolved min_duration_sec cannot exceed max_duration_sec — reconcile "
-            "pipeline_config.json, profiles, VIDEO_PIPELINE_RUNTIME_JSON, and HTTP overrides."
+            "pipeline_config, legacy_profile, funnel_config, runtime_env_json, and HTTP overrides."
         )
     if sel["max_overlap_sec"] < 0:
         raise ValueError("Resolved max_overlap_sec cannot be negative")
@@ -714,8 +731,8 @@ def _http_runtime_override_audit(
     chunk_trace: dict[str, str],
     models_trace: dict[str, str],
 ) -> dict[str, object]:
-    http_selection = _audit_keys_matching_source(sel_trace, "http_selection")
-    pipe_sel = _audit_keys_matching_source(sel_trace, "http_pipeline.selection")
+    http_selection = _audit_keys_matching_source(sel_trace, TRACE_HTTP_SELECTION)
+    pipe_sel = _audit_keys_matching_source(sel_trace, TRACE_HTTP_PIPELINE_SEL)
     pipe_chunk = _audit_keys_matching_source(chunk_trace, "http_pipeline.chunking")
     pipe_models = _audit_keys_matching_source(models_trace, "http_pipeline.models")
     return {
@@ -733,9 +750,9 @@ def _infra_env_override_audit(
     sel_trace: dict[str, str], chunk_trace: dict[str, str], models_trace: dict[str, str]
 ) -> dict[str, list[str]]:
     return {
-        "selection": _audit_keys_matching_source(sel_trace, _RUNTIME_ENV_JSON_VAR),
-        "chunking": _audit_keys_matching_source(chunk_trace, _RUNTIME_ENV_JSON_VAR),
-        "models": _audit_keys_matching_source(models_trace, _RUNTIME_ENV_JSON_VAR),
+        "selection": _audit_keys_matching_source(sel_trace, TRACE_RUNTIME_ENV_JSON),
+        "chunking": _audit_keys_matching_source(chunk_trace, TRACE_RUNTIME_ENV_JSON),
+        "models": _audit_keys_matching_source(models_trace, TRACE_RUNTIME_ENV_JSON),
         "models_whisper_env": _audit_keys_matching_source(models_trace, _MK04_WHISPER_ENV_VAR),
         "models_selection_env": _audit_keys_matching_source(
             models_trace, _MK04_SELECTION_MODEL_ENV_VAR
@@ -750,8 +767,13 @@ def resolve_pipeline_run_policy(
     pipeline_profile: str | None = None,
     request_pipeline_blob: dict[str, Any] | None = None,
     request_selection_blob: dict[str, Any] | None = None,
+    http_funnel_id: str | None = None,
+    http_funnel_config: str | None = None,
 ) -> dict[str, Any]:
-    """Produce a single auditable resolved policy bundle for one HTTP invocation."""
+    """Produce a single auditable resolved policy bundle for one HTTP invocation.
+
+    Prefer :func:`resolve_run_policy` as the documented entry point; this name is retained for tests and imports.
+    """
 
     warnings_list: list[str] = []
 
@@ -762,21 +784,21 @@ def resolve_pipeline_run_policy(
     base_sel = _selection_from_pipeline_config(pipeline_config.get("selection"))
     selection_effective = dict(base_sel)
     for k in base_sel:
-        sel_trace[k] = "pipeline_config.json"
+        sel_trace[k] = TRACE_PIPELINE_CONFIG
 
     base_chunk_raw = pipeline_config.get("chunking")
     chunk_effective: dict[str, Any] = (
         dict(base_chunk_raw) if isinstance(base_chunk_raw, dict) else {}
     )
     for k in chunk_effective.keys():
-        chunk_trace[str(k)] = "pipeline_config.json"
+        chunk_trace[str(k)] = TRACE_PIPELINE_CONFIG
 
     models_eff_dict = pipeline_config.get("models")
     models_eff: dict[str, Any] = dict(models_eff_dict) if isinstance(models_eff_dict, dict) else {}
     models_eff.setdefault("whisper_model", "tiny")
     models_eff.setdefault("selection_model", "gpt-4o-mini")
     for mk in models_eff.keys():
-        models_trace[str(mk)] = "pipeline_config.json"
+        models_trace[str(mk)] = TRACE_PIPELINE_CONFIG
 
     profiles_catalog, pf_note = _load_json_profiles_file(
         _profiles_catalog_path(pipeline_config_abs)
@@ -794,10 +816,14 @@ def resolve_pipeline_run_policy(
     )
     defaults_obj = pipeline_config.get("defaults")
     config_default_pf: str | None = None
+    default_funnel_id: str | None = None
     if isinstance(defaults_obj, dict):
         raw_pf = defaults_obj.get("pipeline_profile")
         if isinstance(raw_pf, str) and raw_pf.strip():
             config_default_pf = raw_pf.strip()
+        raw_df = defaults_obj.get("default_funnel_id")
+        if isinstance(raw_df, str) and raw_df.strip():
+            default_funnel_id = raw_df.strip()
 
     effective_lookup_name = pipeline_profile_requested_http
     applied_config_default_pf = False
@@ -828,11 +854,67 @@ def resolve_pipeline_run_policy(
     _merge_overlay_with_trace(
         selection_effective,
         sel_trace,
-        "profile",
+        TRACE_LEGACY_PROFILE,
         _normalize_selection_shard(profile_root.get("selection")),
     )
-    _merge_chunk_with_trace(chunk_effective, chunk_trace, "profile", profile_root.get("chunking"))
-    _merge_models_with_trace(models_eff, models_trace, "profile", profile_root.get("models"))
+    _merge_chunk_with_trace(
+        chunk_effective, chunk_trace, TRACE_LEGACY_PROFILE, profile_root.get("chunking")
+    )
+    _merge_models_with_trace(models_eff, models_trace, TRACE_LEGACY_PROFILE, profile_root.get("models"))
+
+    http_funnel_explicit = (
+        str(http_funnel_id).strip()
+        if isinstance(http_funnel_id, str) and http_funnel_id.strip()
+        else None
+    )
+    stem_from_funnel_config: str | None = None
+    if http_funnel_config is not None:
+        stem_from_funnel_config = sanitize_funnel_config_basename(http_funnel_config)
+
+    funnel_file_candidate: str | None = None
+    funnel_resolve_source = "none"
+    if stem_from_funnel_config:
+        funnel_file_candidate = stem_from_funnel_config
+        funnel_resolve_source = "http_funnel_config"
+    elif http_funnel_explicit:
+        funnel_file_candidate = http_funnel_explicit
+        funnel_resolve_source = "http_funnel_id"
+    elif default_funnel_id:
+        funnel_file_candidate = default_funnel_id
+        funnel_resolve_source = "defaults.default_funnel_id"
+
+    content_funnel = None
+    funnel_config_path_abs: str | None = None
+    if funnel_file_candidate:
+        if funnel_config_file_exists(
+            pipeline_config_abs=pipeline_config_abs, funnel_id=funnel_file_candidate
+        ):
+            try:
+                content_funnel = load_content_funnel_config(
+                    pipeline_config_abs=pipeline_config_abs, funnel_id=funnel_file_candidate
+                )
+                funnel_config_path_abs = content_funnel.source_path
+            except (ValueError, OSError) as exc:
+                raise ValueError(f"Invalid content funnel config for {funnel_file_candidate!r}: {exc}") from exc
+        elif http_funnel_explicit or stem_from_funnel_config:
+            warnings_list.append(
+                f"No content funnel file for funnel_id={funnel_file_candidate!r} "
+                "(expected JSON beside pipeline_config under config/funnels/). "
+                "Continuing with pipeline + legacy profile selection defaults only."
+            )
+        elif funnel_resolve_source == "defaults.default_funnel_id":
+            warnings_list.append(
+                f"defaults.default_funnel_id is set to {funnel_file_candidate!r} but no funnel file exists; "
+                "skipping funnel_config layer."
+            )
+
+    if content_funnel is not None:
+        _merge_overlay_with_trace(
+            selection_effective,
+            sel_trace,
+            TRACE_FUNNEL_CONFIG,
+            _normalize_selection_shard(content_funnel.selection_shard),
+        )
 
     raw_rt = os.environ.get(_RUNTIME_ENV_JSON_VAR, "").strip()
     if raw_rt:
@@ -845,11 +927,15 @@ def resolve_pipeline_run_policy(
         _merge_overlay_with_trace(
             selection_effective,
             sel_trace,
-            _RUNTIME_ENV_JSON_VAR,
+            TRACE_RUNTIME_ENV_JSON,
             _normalize_selection_shard(rt_obj.get("selection")),
         )
-        _merge_chunk_with_trace(chunk_effective, chunk_trace, _RUNTIME_ENV_JSON_VAR, rt_obj.get("chunking"))
-        _merge_models_with_trace(models_eff, models_trace, _RUNTIME_ENV_JSON_VAR, rt_obj.get("models"))
+        _merge_chunk_with_trace(
+            chunk_effective, chunk_trace, TRACE_RUNTIME_ENV_JSON, rt_obj.get("chunking")
+        )
+        _merge_models_with_trace(
+            models_eff, models_trace, TRACE_RUNTIME_ENV_JSON, rt_obj.get("models")
+        )
 
     ww = os.environ.get(_MK04_WHISPER_ENV_VAR, "").strip()
     if ww:
@@ -872,7 +958,7 @@ def resolve_pipeline_run_policy(
     _merge_overlay_with_trace(
         selection_effective,
         sel_trace,
-        "http_pipeline.selection",
+        TRACE_HTTP_PIPELINE_SEL,
         _normalize_selection_shard(http_pipe.get("selection")),
     )
     _merge_chunk_with_trace(
@@ -889,7 +975,7 @@ def resolve_pipeline_run_policy(
     )
 
     merged_req_sel = _normalize_selection_shard(request_selection_blob)
-    _merge_overlay_with_trace(selection_effective, sel_trace, "http_selection", merged_req_sel)
+    _merge_overlay_with_trace(selection_effective, sel_trace, TRACE_HTTP_SELECTION, merged_req_sel)
 
     selection_final = _finalize_selection(selection_effective)
 
@@ -919,6 +1005,8 @@ def resolve_pipeline_run_policy(
         and not infra_env_touch
     )
 
+    funnel_ops = content_funnel.as_policy_sidecar() if content_funnel is not None else None
+
     audit = {
         "precedence_documentation": POLICY_MERGE_CHAIN_DOC,
         "pipeline_profile_requested_http": pipeline_profile_requested_http,
@@ -926,6 +1014,17 @@ def resolve_pipeline_run_policy(
         "pipeline_profile_config_default_value": config_default_pf,
         "pipeline_profile_resolve_source": pf_resolve_src,
         "pipeline_profile_resolved": chosen_profile_name,
+        "funnel_resolution": {
+            "funnel_resolve_source": funnel_resolve_source,
+            "funnel_file_candidate": funnel_file_candidate,
+            "http_funnel_config_stem": stem_from_funnel_config,
+            "http_funnel_id_explicit": http_funnel_explicit,
+            "default_funnel_id_from_config": default_funnel_id,
+            "funnel_config_applied": content_funnel is not None,
+            "funnel_config_path": funnel_config_path_abs,
+            "funnel_id_loaded": content_funnel.funnel_id if content_funnel else None,
+            "funnel_name_loaded": content_funnel.funnel_name if content_funnel else None,
+        },
         "deterministic_without_http_or_infra_env": deterministic_without_http_or_infra_env,
         "profiles_catalog_path": pf_path_note,
         "warnings": warnings_list,
@@ -944,4 +1043,35 @@ def resolve_pipeline_run_policy(
         "chunking_effective": dict(chunk_effective),
         "models_effective": dict(models_eff),
         "policy_audit": audit,
+        "funnel_ops": funnel_ops,
     }
+
+
+def resolve_run_policy(
+    *,
+    pipeline_config_abs: str,
+    pipeline_config: dict[str, Any],
+    pipeline_profile: str | None = None,
+    request_pipeline_blob: dict[str, Any] | None = None,
+    request_selection_blob: dict[str, Any] | None = None,
+    http_funnel_id: str | None = None,
+    http_funnel_config: str | None = None,
+) -> dict[str, Any]:
+    """Resolve one final run policy bundle for the clipper (single entry point).
+
+    Merge order: pipeline engine defaults → legacy ``video_pipeline_profiles`` (when resolved) →
+    content funnel JSON (``config/funnels/<stem>.json``) → ``VIDEO_PIPELINE_RUNTIME_JSON`` →
+    MK04 model env vars → HTTP ``pipeline`` → HTTP ``selection``.
+
+    Downstream code should read only this bundle (``selection``, ``chunking_effective``, ``models_effective``,
+    ``funnel_ops``, ``policy_audit``), not scattered raw config.
+    """
+    return resolve_pipeline_run_policy(
+        pipeline_config_abs=pipeline_config_abs,
+        pipeline_config=pipeline_config,
+        pipeline_profile=pipeline_profile,
+        request_pipeline_blob=request_pipeline_blob,
+        request_selection_blob=request_selection_blob,
+        http_funnel_id=http_funnel_id,
+        http_funnel_config=http_funnel_config,
+    )
