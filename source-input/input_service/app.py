@@ -16,6 +16,7 @@ header. If the env var is unset, no auth is enforced (mk1 localhost use).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -61,6 +62,68 @@ def _check_secret() -> tuple[dict, int] | None:
 def create_app() -> Flask:
     paths.ensure_dirs()
     app = Flask(__name__)
+
+    # #region agent log
+    def _debug_ingest(hypothesis_id: str, location: str, message: str, data: dict[str, object]) -> None:
+        try:
+            import time as _time
+
+            with open(
+                "/Users/anthonymaguire/VAmk0.4/.cursor/debug-673866.log",
+                "a",
+                encoding="utf-8",
+            ) as _f:
+                _f.write(
+                    json.dumps(
+                        {
+                            "sessionId": "673866",
+                            "runId": "n8n-offline-retry",
+                            "hypothesisId": hypothesis_id,
+                            "location": location,
+                            "message": message,
+                            "data": data,
+                            "timestamp": int(_time.time() * 1000),
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass
+
+    @app.before_request
+    def _debug_log_incoming_request():
+        _debug_ingest(
+            "H1_H3_H5",
+            "source-input/input_service/app.py:before_request",
+            "incoming_request",
+            {
+                "service": "input_service",
+                "method": request.method,
+                "path": request.path,
+                "remote_addr": getattr(request, "remote_addr", None),
+                "host_header": request.headers.get("Host"),
+                "content_length": request.content_length,
+                "has_secret_header": bool((request.headers.get("X-Input-Service-Secret") or "").strip()),
+                "secret_required": bool(os.environ.get("INPUT_SERVICE_SECRET", "").strip()),
+            },
+        )
+
+    @app.after_request
+    def _debug_log_response(response):
+        _debug_ingest(
+            "H1_H4_H5",
+            "source-input/input_service/app.py:after_request",
+            "response",
+            {
+                "service": "input_service",
+                "path": request.path,
+                "status_code": response.status_code,
+            },
+        )
+        return response
+
+    # #endregion
 
     @app.get("/healthz")
     def healthz():
