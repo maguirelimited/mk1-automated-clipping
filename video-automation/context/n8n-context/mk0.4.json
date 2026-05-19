@@ -195,7 +195,7 @@
         "url": "http://host.docker.internal:5050/process",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ video: $json.video, selection: { max_clips: 3, min_duration_sec: 10, max_duration_sec: 30, max_overlap_sec: 3, include_reasons: true, include_clip_metadata: true } }) }}",
+        "jsonBody": "={{ JSON.stringify({ input_id: $json.input_id, video: $json.video, selection: { max_clips: 3, min_duration_sec: 10, max_duration_sec: 30, max_overlap_sec: 3, include_reasons: true, include_clip_metadata: true } }) }}",
         "options": {
           "response": {
             "response": {
@@ -288,6 +288,12 @@
               "id": "e183e9ee-96c8-4d5a-b5c6-3f9847ed43f4",
               "name": "video",
               "value": "={{ $json.video_path }}",
+              "type": "string"
+            },
+            {
+              "id": "6f35d31b-2107-4edc-a577-96407a4fdf84",
+              "name": "input_id",
+              "value": "={{ $json.input_id }}",
               "type": "string"
             },
             {

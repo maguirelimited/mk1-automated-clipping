@@ -12,6 +12,8 @@ if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
 import app as server_app  # noqa: E402
+from input_service import ledger as input_ledger  # noqa: E402
+from input_service import paths as input_paths  # noqa: E402
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -219,3 +221,55 @@ def test_unsafe_job_ids_are_rejected(client, unsafe_id: str):
     data = resp.get_json()
     if data is not None:
         assert data["success"] is False
+
+
+def test_process_resolves_input_id_and_updates_ledger(
+    client, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    c, _ = client
+    monkeypatch.setenv("INPUT_JOB_LEDGER_DIR", str(tmp_path / "input_jobs"))
+    monkeypatch.setattr(input_paths, "SEEN_FILE", tmp_path / "seen_urls.json")
+    monkeypatch.setattr(
+        server_app,
+        "resolve_http_policy_bundle",
+        lambda **_: {"selection": {}, "policy_audit": {}, "models_effective": {}},
+    )
+
+    def fake_run_pipeline(video_path: str, policy_bundle: dict, *, input_id: str | None = None):
+        return server_app.jsonify(
+            {
+                "success": True,
+                "pipeline": server_app.PIPELINE_NAME,
+                "input_id": input_id,
+                "job_id": "job_20260512T150000Z_deadbeef",
+                "run_id": "run_1",
+                "clips": [{"clip_file": "clip_01.mp4"}],
+                "source_video": os.path.basename(video_path),
+            }
+        )
+
+    monkeypatch.setattr(server_app, "_run_pipeline", fake_run_pipeline)
+    video_path = tmp_path / "input.mp4"
+    video_path.write_bytes(b"fake-video")
+    record = input_ledger.create_record(
+        funnel_id="business_podcasts_001",
+        source_url="https://example.test/watch?v=abc",
+        source_metadata={"video_id": "abc"},
+    )
+    input_ledger.mark_downloaded(record["input_id"], video_path)
+
+    resp = c.post(
+        "/process",
+        json={
+            "input_id": record["input_id"],
+            "selection": {"max_clips": 1, "min_duration_sec": 10, "max_duration_sec": 30},
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["success"] is True
+    assert body["input_id"] == record["input_id"]
+    updated = input_ledger.load_record(record["input_id"])
+    assert updated["state"] == "succeeded"
+    assert updated["result"]["pipeline_job_id"] == "job_20260512T150000Z_deadbeef"

@@ -13,5 +13,6 @@ __all__ = [
     "downloader",
     "media_validator",
     "storage",
+    "ledger",
     "runner",
 ]

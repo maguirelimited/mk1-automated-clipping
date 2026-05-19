@@ -40,6 +40,7 @@ from .funnel_loader import (
     FunnelNotFoundError,
     load_funnel,
 )
+from . import ledger
 from .media_validator import ValidationError, validate_media
 from .source_checker import SourceCheckError, check_sources
 from .storage import StorageError, reject_file, store_ready
@@ -68,11 +69,55 @@ def _funnel_runtime_metadata(funnel: Funnel) -> dict[str, Any]:
     }
 
 
-def _success(funnel: Funnel, video_path: Path, cand: Any) -> dict[str, Any]:
+def _candidate_source_metadata(cand: Any) -> dict[str, Any]:
+    return {
+        "video_id": cand.video_id,
+        "title": cand.title,
+        "channel": cand.channel,
+        "source_url": cand.source,
+        "duration_seconds": cand.duration_seconds,
+        "upload_date": cand.upload_date,
+        "timestamp": cand.timestamp,
+        "source_id": cand.extra.get("source_id"),
+        "source_type": cand.extra.get("source_type"),
+        "source_label": cand.extra.get("source_label"),
+    }
+
+
+def _funnel_policy_snapshot(funnel: Funnel) -> dict[str, Any]:
+    return {
+        "pipeline_profile": funnel.pipeline_profile,
+        "posting_config": funnel.posting_config or {},
+        "analytics_config": funnel.analytics_config or {},
+        "max_downloads_per_run": funnel.max_downloads_per_run,
+        "min_duration_seconds": funnel.min_duration_seconds,
+        "max_duration_seconds": funnel.max_duration_seconds,
+        "title_blocklist": list(getattr(funnel, "title_blocklist", ()) or ()),
+        "title_allowlist": list(getattr(funnel, "title_allowlist", ()) or ()),
+    }
+
+
+def _filter_ledger_blocked(candidates: list[Any]) -> tuple[list[Any], int]:
+    out: list[Any] = []
+    blocked = 0
+    for cand in candidates:
+        if ledger.source_has_non_failed_record(video_id=cand.video_id, url=cand.url):
+            blocked += 1
+            continue
+        out.append(cand)
+    return out, blocked
+
+
+def _success(funnel: Funnel, video_path: Path, cand: Any, record: dict[str, Any]) -> dict[str, Any]:
+    input_id = str(record.get("input_id") or "")
     return {
         "success": True,
         "status": "input_ready",
         "funnel_id": funnel.funnel_id,
+        "input_id": input_id,
+        "job_id": input_id,
+        "input_state": record.get("state"),
+        "ledger_path": str(ledger.ledger_dir() / f"{input_id}.json") if input_id else None,
         "video_path": str(video_path),
         "source_url": cand.url,
         "title": cand.title,
@@ -203,6 +248,22 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
         len(valid),
         len(rejected),
     )
+    valid, ledger_blocked = _filter_ledger_blocked(valid)
+    if ledger_blocked:
+        log.info(
+            "Candidate ledger filter result: funnel_id=%s blocked=%s remaining=%s",
+            funnel.funnel_id,
+            ledger_blocked,
+            len(valid),
+        )
+    if not valid:
+        reason = "All valid candidates already have active or completed input ledger records."
+        log.info(
+            "Final funnel status: funnel_id=%s status=no_input_available reason=%s",
+            funnel.funnel_id,
+            reason,
+        )
+        return _no_input(funnel, reason)
 
     # ---- download / validate / store loop --------------------------------
     last_error: str | None = None
@@ -216,6 +277,18 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
             cand.duration_seconds,
         )
         try:
+            record = ledger.create_record(
+                funnel_id=funnel.funnel_id,
+                source_url=cand.url,
+                source_metadata=_candidate_source_metadata(cand),
+                funnel_policy=_funnel_policy_snapshot(funnel),
+                max_attempts=funnel.max_downloads_per_run,
+            )
+        except ledger.LedgerError as exc:
+            log.exception("Failed to create input ledger record")
+            return _failed(funnel.funnel_id, f"ledger_create_failed: {exc}")
+        input_id = str(record["input_id"])
+        try:
             dl = download_candidate(cand, funnel_id=funnel.funnel_id)
         except DownloadFailed as exc:
             log.warning("Download failed for %s: %s", cand.url, exc)
@@ -225,6 +298,10 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
                 cand.url,
                 exc,
             )
+            try:
+                ledger.mark_failed(input_id, f"download_failed: {exc}")
+            except ledger.LedgerError:
+                log.exception("Failed to mark input ledger download failure")
             last_error = f"download_failed: {exc}"
             continue
         except Exception as exc:  # pragma: no cover - last-resort guard
@@ -235,6 +312,10 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
                 cand.url,
                 exc,
             )
+            try:
+                ledger.mark_failed(input_id, f"download_failed: {exc}")
+            except ledger.LedgerError:
+                log.exception("Failed to mark input ledger download failure")
             last_error = f"download_failed: {exc}"
             continue
         log.info("Download success path: funnel_id=%s path=%s", funnel.funnel_id, dl.file_path)
@@ -245,11 +326,19 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
         except ValidationError as exc:
             log.warning("Validation failed for %s: %s", dl.file_path, exc)
             reject_file(dl.file_path, funnel.funnel_id, reason=str(exc))
+            try:
+                ledger.mark_failed(input_id, f"validation_failed: {exc}")
+            except ledger.LedgerError:
+                log.exception("Failed to mark input ledger validation failure")
             last_error = f"validation_failed: {exc}"
             continue
         except Exception as exc:  # pragma: no cover
             log.exception("Unexpected validation error for %s", dl.file_path)
             reject_file(dl.file_path, funnel.funnel_id, reason=str(exc))
+            try:
+                ledger.mark_failed(input_id, f"validation_failed: {exc}")
+            except ledger.LedgerError:
+                log.exception("Failed to mark input ledger validation failure")
             last_error = f"validation_failed: {exc}"
             continue
 
@@ -258,6 +347,10 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
             ready_path = store_ready(dl.file_path, funnel.funnel_id)
         except StorageError as exc:
             log.error("Storage failed for %s: %s", dl.file_path, exc)
+            try:
+                ledger.mark_failed(input_id, f"storage_failed: {exc}")
+            except ledger.LedgerError:
+                log.exception("Failed to mark input ledger storage failure")
             log.info(
                 "Final funnel status: funnel_id=%s status=failed error=storage_failed reason=%s",
                 funnel.funnel_id,
@@ -267,35 +360,32 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
 
         ready_path = ready_path.resolve()
         if not ready_path.is_file():
+            try:
+                ledger.mark_failed(
+                    input_id,
+                    f"storage_verification_failed: file missing at {ready_path}",
+                )
+            except ledger.LedgerError:
+                log.exception("Failed to mark input ledger storage verification failure")
             return _failed(
                 funnel.funnel_id,
                 f"storage_verification_failed: file missing at {ready_path}",
             )
+        try:
+            record = ledger.mark_downloaded(input_id, ready_path)
+        except ledger.LedgerError as exc:
+            log.exception("Failed to mark input ledger downloaded")
+            return _failed(funnel.funnel_id, f"ledger_update_failed: {exc}")
 
         _cleanup_funnel_tmp_after_store(funnel.funnel_id)
 
-        # mark seen ONLY after success
-        try:
-            seen.mark_seen(video_id=cand.video_id, url=cand.url)
-        except Exception as exc:  # pragma: no cover
-            log.exception("Failed to update seen store after success")
-            # The video is on disk and ready; surface the success but include a note.
-            payload = _success(funnel, ready_path, cand)
-            payload["warning"] = f"seen_store_update_failed: {exc}"
-            log.info(
-                "Final funnel status: funnel_id=%s status=input_ready video_path=%s warning=%s",
-                funnel.funnel_id,
-                ready_path,
-                payload["warning"],
-            )
-            return payload
-
         log.info(
-            "Final funnel status: funnel_id=%s status=input_ready video_path=%s",
+            "Final funnel status: funnel_id=%s status=input_ready input_id=%s video_path=%s",
             funnel.funnel_id,
+            input_id,
             ready_path,
         )
-        return _success(funnel, ready_path, cand)
+        return _success(funnel, ready_path, cand, record)
 
     # Every valid candidate failed download or validation.
     log.info(

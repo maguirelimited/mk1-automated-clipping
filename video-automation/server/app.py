@@ -18,6 +18,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _SCRIPTS_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "scripts"))
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
+_SOURCE_INPUT_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "..", "source-input", "input_service"))
+if _SOURCE_INPUT_DIR not in sys.path:
+    sys.path.insert(0, _SOURCE_INPUT_DIR)
 
 from chunk_pipeline import (
     ffmpeg_extract_segment,
@@ -29,6 +32,7 @@ from chunk_pipeline import (
 )
 from analytics_store import persist_feedback_event, persist_run_analytics
 from funnel_config import sanitize_funnel_config_basename
+from input_service.duplicate_store import DuplicateStore
 from pipeline_utils import (
     normalize_segments,
     parse_selection_payload,
@@ -60,6 +64,7 @@ from pipeline_debug_ndjson import (
     write_debug_mode,
     write_diagnostic,
 )
+from input_service import ledger as input_ledger
 
 app = Flask(__name__)
 PYTHON = sys.executable
@@ -118,7 +123,7 @@ def _parse_n8n_webhook_error(body: str) -> dict[str, str]:
 
 
 def _lift_n8n_wrapped_video_fields(data: dict[str, Any]) -> dict[str, Any]:
-    """Lift ``video`` / ``video_path`` / ``funnel_id`` / ``funnel_config`` from common n8n wrappers.
+    """Lift process boundary fields from common n8n wrappers.
 
     n8n items often look like ``{ "json": { "video_path": "...", ... } }`` when
     the HTTP Request node sends the whole item; without lifting, only ``selection``
@@ -127,7 +132,7 @@ def _lift_n8n_wrapped_video_fields(data: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(data, dict):
         return {}
     out = dict(data)
-    lift_keys = ("video", "video_path", "funnel_id", "funnel_config")
+    lift_keys = ("video", "video_path", "input_id", "job_id", "funnel_id", "funnel_config")
     for wrap in ("json", "body", "data", "item"):
         if wrap not in out:
             continue
@@ -1136,7 +1141,7 @@ def resolve_http_policy_bundle(
     )
 
 
-def _run_pipeline(video_path: str, policy_bundle: dict[str, Any]):
+def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: str | None = None):
     config = load_config()
     resolved_paths = ensure_paths(config)
     input_root = resolved_paths["input"]
@@ -1193,6 +1198,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any]):
     total_started = time.perf_counter()
     report: dict[str, object] = {
         "job_id": job["job_id"],
+        "input_id": input_id,
         "input_video_path": os.path.abspath(video_path),
         "input_video_name": os.path.basename(video_path),
         "video_duration_sec": ffprobe_duration_sec(video_path),
@@ -1754,6 +1760,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any]):
             "success": True,
             "pipeline": PIPELINE_NAME,
             "run_id": run_id,
+            "input_id": input_id,
             "source_video": os.path.basename(video_path),
             "video_basename": filename,
             "clips": clips,
@@ -1961,11 +1968,37 @@ def get_job_debug(job_id: str):
 
 def _process_pipeline_json_payload(payload: dict[str, Any], *, route_label: str):
     """Handle a parsed JSON body for ``/process`` and ``/process-inline`` (video must exist under input/)."""
+    raw_input_id = payload.get("input_id") or payload.get("job_id")
+    input_id = str(raw_input_id).strip() if raw_input_id is not None else ""
     raw_video = payload.get("video")
     raw_path = payload.get("video_path")
     video_arg: str | None = None
     video_from_path = False
-    if raw_video is not None and str(raw_video).strip():
+    ledger_record: dict[str, Any] | None = None
+    if input_id:
+        try:
+            ledger_record = input_ledger.load_record(input_id)
+            ledger_path = input_ledger.resolve_file_path(input_id)
+        except input_ledger.LedgerError as exc:
+            _pipeline_diagnostic_log(
+                "H4",
+                f"app.py:{route_label}",
+                "fail input ledger lookup",
+                {"input_id": input_id, "error": str(exc)[:500]},
+            )
+            return _fail("Input ledger lookup failed", log_detail=str(exc), status_code=400)
+        video_arg = str(ledger_path)
+        _pipeline_diagnostic_log(
+            "H4",
+            f"app.py:{route_label}",
+            "resolved video from input ledger",
+            {
+                "input_id": input_id,
+                "ledger_state": ledger_record.get("state"),
+                "video_path": str(ledger_path),
+            },
+        )
+    elif raw_video is not None and str(raw_video).strip():
         video_arg = str(raw_video).strip()
     elif raw_path is not None and str(raw_path).strip():
         video_arg = os.path.basename(str(raw_path).strip().rstrip("/"))
@@ -1983,13 +2016,13 @@ def _process_pipeline_json_payload(payload: dict[str, Any], *, route_label: str)
         _pipeline_diagnostic_log(
             "H4",
             f"app.py:{route_label}",
-            "fail missing video and video_path",
+            "fail missing input_id, video and video_path",
             {"payload_keys": sorted(payload.keys())},
         )
         return _fail(
-            "Missing usable 'video' or 'video_path' in the JSON body (after unwrapping common n8n keys: "
-            "json, body, data, item). Send run-funnel's video_path, e.g. in the HTTP node use a JSON body with "
-            "\"video_path\": \"={{ $json.video_path }}\" on the same item that received /run-funnel output, "
+            "Missing usable 'input_id', 'video' or 'video_path' in the JSON body (after unwrapping common n8n keys: "
+            "json, body, data, item). Prefer sending run-funnel's input_id, e.g. in the HTTP node use a JSON body with "
+            "\"input_id\": \"={{ $json.input_id }}\" on the same item that received /run-funnel output, "
             "or merge that field into the object next to \"selection\". Undefined n8n expressions are omitted by JSON.stringify.",
             status_code=400,
         )
@@ -2006,6 +2039,8 @@ def _process_pipeline_json_payload(payload: dict[str, Any], *, route_label: str)
         {
             "video_arg": str(video_arg)[:500],
             "video_from_video_path": video_from_path,
+            "input_id": input_id or None,
+            "input_ledger_state": (ledger_record or {}).get("state"),
             "payload_keys": sorted(payload.keys()),
             "payload_empty": payload == {},
             "input_root_resolved": _input_root_dbg,
@@ -2073,7 +2108,10 @@ def _process_pipeline_json_payload(payload: dict[str, Any], *, route_label: str)
         )
         return _fail("Invalid pipeline policy resolution", log_detail=str(exc), status_code=400)
 
-    _, video_path = _resolve_input_video_path(str(video_arg))
+    if input_id:
+        video_path = os.path.abspath(str(video_arg))
+    else:
+        _, video_path = _resolve_input_video_path(str(video_arg))
     _pipeline_diagnostic_log(
         "H2",
         f"app.py:{route_label}",
@@ -2091,6 +2129,11 @@ def _process_pipeline_json_payload(payload: dict[str, Any], *, route_label: str)
             "fail input not found",
             {"video_path": video_path},
         )
+        if input_id:
+            try:
+                input_ledger.mark_failed(input_id, f"input_video_not_found: {video_path}")
+            except input_ledger.LedgerError:
+                print("[process] input ledger missing-file update failed", flush=True)
         return _fail(
             "Input video not found for /process. Copy or move the source video into the configured input folder, then send its basename as `video`.",
             log_detail=video_path,
@@ -2100,9 +2143,74 @@ def _process_pipeline_json_payload(payload: dict[str, Any], *, route_label: str)
         "H5",
         f"app.py:{route_label}",
         "starting _run_pipeline",
-        {"video_path": video_path},
+        {"video_path": video_path, "input_id": input_id or None},
     )
-    return _run_pipeline(video_path, bundle)
+    if input_id:
+        try:
+            input_ledger.mark_processing(input_id)
+        except input_ledger.LedgerError as exc:
+            _pipeline_diagnostic_log(
+                "H5",
+                f"app.py:{route_label}",
+                "fail mark input processing",
+                {"input_id": input_id, "error": str(exc)[:500]},
+            )
+            return _fail("Input ledger update failed", log_detail=str(exc), status_code=500)
+    try:
+        response = _run_pipeline(video_path, bundle, input_id=input_id or None)
+    except Exception as exc:
+        if input_id:
+            try:
+                input_ledger.mark_failed(input_id, f"pipeline_exception: {exc}")
+            except input_ledger.LedgerError:
+                print("[process] input ledger exception update failed", flush=True)
+        raise
+    if input_id:
+        try:
+            status_code = response[1] if isinstance(response, tuple) and len(response) > 1 else 200
+            response_obj = response[0] if isinstance(response, tuple) else response
+            body: dict[str, Any] = {}
+            try:
+                body = response_obj.get_json(silent=True) or {}
+            except Exception:
+                body = {}
+            if isinstance(status_code, int) and 200 <= status_code < 300 and body.get("success") is True:
+                try:
+                    completed_record = input_ledger.load_record(input_id)
+                    meta = completed_record.get("source_metadata")
+                    if not isinstance(meta, dict):
+                        meta = {}
+                    DuplicateStore().mark_seen(
+                        video_id=str(meta.get("video_id") or "") or None,
+                        url=str(completed_record.get("source_url") or "") or None,
+                    )
+                except Exception as exc:
+                    print(
+                        "[process] seen store final success update failed:",
+                        repr(exc),
+                        flush=True,
+                    )
+                input_ledger.mark_succeeded(
+                    input_id,
+                    {
+                        "pipeline_job_id": body.get("job_id"),
+                        "run_id": body.get("run_id"),
+                        "clip_count": len(body.get("clips") or []),
+                    },
+                )
+            else:
+                input_ledger.mark_failed(
+                    input_id,
+                    body.get("error") or f"pipeline_http_status:{status_code}",
+                    {
+                        "pipeline_job_id": body.get("job_id"),
+                        "run_id": body.get("run_id"),
+                        "status_code": status_code,
+                    },
+                )
+        except input_ledger.LedgerError:
+            print("[process] input ledger terminal update failed", flush=True)
+    return response
 
 
 @app.route("/process", methods=["POST"])
