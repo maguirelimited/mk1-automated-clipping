@@ -12,8 +12,14 @@ def _cadence(profile: dict[str, Any]) -> dict[str, Any]:
     return dict(raw) if isinstance(raw, dict) else {}
 
 
-def _timezone(profile: dict[str, Any]) -> ZoneInfo:
-    raw = str(_cadence(profile).get("timezone") or "UTC")
+def _timezone(profile: dict[str, Any], defaults: dict[str, Any] | None = None) -> ZoneInfo:
+    scheduler_defaults = defaults or {}
+    raw = str(
+        _cadence(profile).get("timezone")
+        or scheduler_defaults.get("timezone")
+        or scheduler_defaults.get("default_timezone")
+        or "UTC"
+    )
     try:
         return ZoneInfo(raw)
     except Exception:
@@ -75,13 +81,27 @@ def next_scheduled_time(
     profile: dict[str, Any],
     existing_times: list[str],
     *,
+    defaults: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> str:
     cadence = _cadence(profile)
-    tz = _timezone(profile)
-    min_gap = timedelta(minutes=int(cadence.get("min_gap_minutes") or 180))
-    lead = timedelta(minutes=int(cadence.get("default_lead_minutes") or 180))
-    max_per_day = int(cadence.get("max_uploads_per_day") or 3)
+    scheduler_defaults = defaults or {}
+    tz = _timezone(profile, scheduler_defaults)
+    min_gap = timedelta(
+        minutes=int(
+            cadence.get("min_gap_minutes")
+            or scheduler_defaults.get("min_gap_minutes")
+            or scheduler_defaults.get("default_min_gap_minutes")
+            or 180
+        )
+    )
+    lead = timedelta(minutes=int(cadence.get("default_lead_minutes") or scheduler_defaults.get("default_lead_minutes") or 180))
+    max_per_day = int(
+        cadence.get("max_uploads_per_day")
+        or scheduler_defaults.get("max_uploads_per_day")
+        or scheduler_defaults.get("default_max_uploads_per_day")
+        or 3
+    )
     windows = _allowed_windows(profile)
 
     existing = [dt for raw in existing_times if (dt := parse_iso_datetime(raw)) is not None]

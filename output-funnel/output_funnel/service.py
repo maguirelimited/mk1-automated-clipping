@@ -65,6 +65,7 @@ def register_and_process_from_payload(
     if automation["auto_schedule"]:
         process_result["schedule"] = schedule_due_upload_jobs(
             store=active_store,
+            settings=cfg,
             limit=automation["schedule_limit"],
         )
     if automation["auto_publish"]:
@@ -116,8 +117,10 @@ def schedule_upload_job(
     *,
     store: OutputStore | None = None,
     profiles: list[dict[str, Any]] | None = None,
+    settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    active_store = store or make_store()
+    cfg = settings or load_settings()
+    active_store = store or make_store(cfg)
     job = active_store.get_upload_job(upload_job_id)
     if job is None:
         return {"upload_job_id": upload_job_id, "scheduled": False, "reason": "upload_job_not_found"}
@@ -140,7 +143,7 @@ def schedule_upload_job(
         platform=str(job["platform"]),
         channel_id=str(job["channel_id"]),
     )
-    scheduled_at = next_scheduled_time(profile, existing)
+    scheduled_at = next_scheduled_time(profile, existing, defaults=_scheduler_defaults(cfg))
     active_store.set_scheduled(
         upload_job_id,
         scheduled_at=scheduled_at,
@@ -153,14 +156,17 @@ def schedule_due_upload_jobs(
     *,
     store: OutputStore | None = None,
     profiles: list[dict[str, Any]] | None = None,
-    limit: int = 50,
+    settings: dict[str, Any] | None = None,
+    limit: int | None = None,
 ) -> dict[str, Any]:
-    active_store = store or make_store()
-    jobs = active_store.list_upload_jobs(status=UploadStatus.REGISTERED, limit=limit)
-    jobs.extend(active_store.list_upload_jobs(status=UploadStatus.ROUTED, limit=limit))
+    cfg = settings or load_settings()
+    active_store = store or make_store(cfg)
+    schedule_limit = _schedule_limit(cfg, limit)
+    jobs = active_store.list_upload_jobs(status=UploadStatus.REGISTERED, limit=schedule_limit)
+    jobs.extend(active_store.list_upload_jobs(status=UploadStatus.ROUTED, limit=schedule_limit))
     results = [
-        schedule_upload_job(int(job["id"]), store=active_store, profiles=profiles)
-        for job in jobs[: max(1, int(limit))]
+        schedule_upload_job(int(job["id"]), store=active_store, profiles=profiles, settings=cfg)
+        for job in jobs[:schedule_limit]
     ]
     return {"count": len(results), "results": results}
 
@@ -211,23 +217,60 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
+def _int_or_default(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    return _int_or_default(os.environ.get(name) or default, default)
+
+
 def _automation_settings(settings: dict[str, Any]) -> dict[str, Any]:
     raw = settings.get("automation") if isinstance(settings.get("automation"), dict) else {}
     auto_schedule = _env_bool("OUTPUT_FUNNEL_AUTO_SCHEDULE", bool(raw.get("auto_schedule", True)))
     auto_publish = _env_bool("OUTPUT_FUNNEL_AUTO_PUBLISH", bool(raw.get("auto_publish", False)))
-    try:
-        schedule_limit = int(os.environ.get("OUTPUT_FUNNEL_AUTO_SCHEDULE_LIMIT") or raw.get("schedule_limit") or 50)
-    except (TypeError, ValueError):
-        schedule_limit = 50
-    try:
-        publish_limit = int(os.environ.get("OUTPUT_FUNNEL_AUTO_PUBLISH_LIMIT") or raw.get("publish_limit") or 1)
-    except (TypeError, ValueError):
-        publish_limit = 1
+    schedule_limit = _env_int(
+        "OUTPUT_FUNNEL_AUTO_SCHEDULE_LIMIT",
+        _int_or_default(raw.get("schedule_limit"), 50),
+    )
+    publish_limit = _env_int(
+        "OUTPUT_FUNNEL_AUTO_PUBLISH_LIMIT",
+        _int_or_default(raw.get("publish_limit"), 1),
+    )
     return {
         "auto_schedule": auto_schedule,
         "auto_publish": auto_publish,
         "schedule_limit": max(1, schedule_limit),
         "publish_limit": max(1, publish_limit),
+    }
+
+
+def _schedule_limit(settings: dict[str, Any], override: int | None = None) -> int:
+    if override is not None:
+        return max(1, _int_or_default(override, 50))
+    return int(_automation_settings(settings)["schedule_limit"])
+
+
+def _scheduler_defaults(settings: dict[str, Any]) -> dict[str, Any]:
+    raw = settings.get("scheduler") if isinstance(settings.get("scheduler"), dict) else {}
+    timezone = os.environ.get("OUTPUT_FUNNEL_SCHEDULE_TIMEZONE") or raw.get("default_timezone") or "UTC"
+    return {
+        "timezone": timezone,
+        "default_lead_minutes": _env_int(
+            "OUTPUT_FUNNEL_SCHEDULE_LEAD_MINUTES",
+            _int_or_default(raw.get("default_lead_minutes"), 180),
+        ),
+        "min_gap_minutes": _env_int(
+            "OUTPUT_FUNNEL_SCHEDULE_MIN_GAP_MINUTES",
+            _int_or_default(raw.get("default_min_gap_minutes"), 180),
+        ),
+        "max_uploads_per_day": _env_int(
+            "OUTPUT_FUNNEL_SCHEDULE_MAX_UPLOADS_PER_DAY",
+            _int_or_default(raw.get("default_max_uploads_per_day"), 3),
+        ),
     }
 
 

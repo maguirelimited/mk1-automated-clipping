@@ -117,7 +117,7 @@ def schedule_queue_item(upload_job_id: int):
 @app.post("/queue/schedule-due")
 def schedule_due():
     data = _payload()
-    limit = int(data.get("limit") or 50)
+    limit = int(data["limit"]) if data.get("limit") is not None else None
     result = schedule_due_upload_jobs(store=_store(), limit=limit)
     _log_schedule_result({"processing": {"schedule": result}})
     return jsonify({"success": True, "pipeline": PIPELINE_NAME, **result})

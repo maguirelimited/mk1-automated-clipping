@@ -7,7 +7,7 @@ from .service import (
     load_job_payload_from_path,
     make_store,
     publish_due,
-    register_from_payload,
+    register_and_process_from_payload,
     retry_upload_job,
     schedule_due_upload_jobs,
     schedule_upload_job,
@@ -28,7 +28,7 @@ def main() -> None:
     schedule = sub.add_parser("schedule")
     schedule.add_argument("--upload-job-id", type=int)
     schedule.add_argument("--all", action="store_true")
-    schedule.add_argument("--limit", type=int, default=50)
+    schedule.add_argument("--limit", type=int)
     schedule.set_defaults(func=_schedule)
 
     publish = sub.add_parser("publish-due")
@@ -51,7 +51,7 @@ def _init_db(_args: argparse.Namespace) -> dict:
 
 def _register(args: argparse.Namespace) -> dict:
     payload = load_job_payload_from_path(args.report_path)
-    return {"success": True, **register_from_payload(payload)}
+    return {"success": True, **register_and_process_from_payload(payload)}
 
 
 def _schedule(args: argparse.Namespace) -> dict:

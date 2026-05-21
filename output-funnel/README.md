@@ -26,7 +26,13 @@ Runtime state is stored in SQLite at `data/output_funnel.sqlite3` by default. Ov
 - `OUTPUT_FUNNEL_CHANNELS`
 - `OUTPUT_FUNNEL_CONFIG_DIR`
 - `OUTPUT_FUNNEL_AUTO_SCHEDULE`
+- `OUTPUT_FUNNEL_AUTO_SCHEDULE_LIMIT`
 - `OUTPUT_FUNNEL_AUTO_PUBLISH`
+- `OUTPUT_FUNNEL_AUTO_PUBLISH_LIMIT`
+- `OUTPUT_FUNNEL_SCHEDULE_TIMEZONE`
+- `OUTPUT_FUNNEL_SCHEDULE_LEAD_MINUTES`
+- `OUTPUT_FUNNEL_SCHEDULE_MIN_GAP_MINUTES`
+- `OUTPUT_FUNNEL_SCHEDULE_MAX_UPLOADS_PER_DAY`
 
 Example upload-job metadata lives at `config/upload_job.example.json`. It shows the normalized shape expected around a YouTube Shorts upload: clip path, title, description, tags, privacy, optional `publish_at`, channel profile id, source identifiers, and the platform-neutral `platform_asset_id` result field.
 
@@ -56,6 +62,26 @@ Useful endpoints:
 - `POST /queue/<upload_job_id>/retry`
 
 `POST /registrations/from-job` auto-schedules registered clips by default when routing/preflight pass. It does not auto-publish unless `OUTPUT_FUNNEL_AUTO_PUBLISH=1` or `automation.auto_publish` is enabled in settings.
+
+## Scheduling Automation
+
+Scheduling and publishing are separate steps. Registration can route and schedule eligible YouTube upload jobs automatically, but it will not upload to YouTube unless publishing is explicitly enabled.
+
+Configure automation in `config/settings.example.json` or your `OUTPUT_FUNNEL_SETTINGS` file:
+
+- `automation.auto_schedule`: schedule newly registered eligible jobs after registration. Defaults to `true`; override with `OUTPUT_FUNNEL_AUTO_SCHEDULE=0` or `1`.
+- `automation.schedule_limit`: maximum number of pending `registered`/`routed` jobs to schedule in one automatic or batch pass. Override with `OUTPUT_FUNNEL_AUTO_SCHEDULE_LIMIT`.
+- `automation.auto_publish`: publish due scheduled jobs only when explicitly enabled. Defaults to `false`; override with `OUTPUT_FUNNEL_AUTO_PUBLISH=1`.
+- `scheduler.default_timezone`, `scheduler.default_lead_minutes`, `scheduler.default_min_gap_minutes`, and `scheduler.default_max_uploads_per_day`: fallback cadence values when a channel profile does not define them. Override with the matching `OUTPUT_FUNNEL_SCHEDULE_*` env vars.
+- Channel `cadence` settings in `config/channels.example.json` take precedence over scheduler defaults: `timezone`, `default_lead_minutes`, `min_gap_minutes`, `max_uploads_per_day`, and `allowed_windows`.
+
+To schedule existing pending rows without publishing:
+
+```shell
+python -m output_funnel.cli schedule --all
+```
+
+Pass `--limit <n>` to override the configured batch limit for that run.
 
 ## YouTube OAuth
 
