@@ -1,6 +1,6 @@
 # `selection` schema
 
-The `selection` object on the `/process` request body is the per-run knob channel for the clipper. n8n is the source of truth at runtime; values in `pipeline_config.json` are defaults only and are used when a field is missing.
+The `selection` object on the `/jobs` request body is the per-run knob channel for the clipper. `pipeline_config.json` is the local default source of truth; request values override it for that job.
 
 This document lists every field that `_run_pipeline` (`server/app.py`) currently reads from `selection_policy`, including types, defaults, and downstream effect.
 
@@ -13,7 +13,7 @@ This document lists every field that `_run_pipeline` (`server/app.py`) currently
 | `min_duration_sec` | number (seconds) | `pipeline_config.json` → `selection.min_clip_duration_sec` (currently `30`); hardcoded fallback `5` | `app.py:404-406` | Lower bound on clip length. Forwarded to `select_clip.py` (subprocess JSON) and to `validate_and_repair_selection`. |
 | `max_duration_sec` | number (seconds) | `pipeline_config.json` → `selection.max_clip_duration_sec` (currently `60`); hardcoded fallback `30` | `app.py:407-409` | Upper bound on clip length. Forwarded to `select_clip.py` and to `validate_and_repair_selection`. |
 | `max_overlap_sec` | number (seconds) | `pipeline_config.json` → `selection.max_overlap_sec` (currently `2`); hardcoded fallback `2` | `app.py:410-412` | Maximum permitted overlap between adjacent selected clips before deduping in `postprocess_segments`. |
-| `max_clips` | integer | `5` (hardcoded) | `app.py:403` | **Reserved for future scope.** Today the model is asked for up to `max_clips`, but the pipeline only ever ships the first valid clip end-to-end; multi-clip-per-input is mk1.5+ work. Safe to send `1`–`5` from n8n; the field is wired but downstream throttling has not been built. |
+| `max_clips` | integer | `5` (hardcoded) | `app.py:403` | Maximum selected clips to request and postprocess. |
 | `include_reasons` | boolean | `false` | `app.py:413` | When `true` (and `include_clip_metadata` is `false`), each entry in the response `clips[]` includes the model's `reason` string. |
 | `include_clip_metadata` | boolean | `true` | `app.py:414` | When `true`, each entry in the response `clips[]` includes the full metadata bundle: `title`, `hook`, `caption`, `scores`, `composite_score`, `reason`. Wins over `include_reasons` when both are set. |
 
@@ -29,15 +29,15 @@ These are not read from `selection`, but are forwarded into the selector subproc
 
 Defaults flow in this order (first non-null wins):
 
-1. `selection_policy[<field>]` — the value n8n sent on this request.
+1. `selection_policy[<field>]` — the value sent on this request.
 2. `pipeline_config.json` → `selection.<field>` — repo-level default.
 3. Hardcoded fallback in `_run_pipeline` — last resort if the config is missing the key.
 
-`pipeline_config.json` should be treated as default-only. If a value needs to vary per run, set it in n8n's `selection` payload, not in the config.
+`pipeline_config.json` should be treated as default-only. If a value needs to vary per run, set it in the request `selection` payload.
 
-## n8n example
+## API example
 
-Minimal request body sent to `POST /process` after the source file has already been copied or moved into the configured `input/` folder:
+Minimal request body sent to `POST /jobs` after the source file has already been copied or moved into the configured `input/` folder:
 
 ```json
 {
@@ -53,7 +53,7 @@ Minimal request body sent to `POST /process` after the source file has already b
 }
 ```
 
-The older `/upload` and `/process-inline` ingestion endpoints were intentionally removed because current orchestration uses file handoff into `input/` plus `/process`. They can be restored from earlier versions if HTTP multipart or base64 ingestion is needed again.
+`/process` and `/process-inline` are deprecated compatibility wrappers around `/jobs`. `POST /jobs` also accepts multipart `video_file` directly.
 
 
 ## Notes for future fields

@@ -30,5 +30,10 @@
   },
   "artifact_retention": {
     "temp_policy": "default"
+  },
+  "async_worker": {
+    "enabled": true,
+    "max_concurrent_jobs": 1,
+    "job_store_type": "json"
   }
 }

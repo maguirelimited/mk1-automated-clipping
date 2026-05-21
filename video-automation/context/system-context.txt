@@ -4,17 +4,17 @@ Convert raw long-form content into the maximum number of high quality short-form
 CURRENT PIPELINE TARGET
 - Active implementation is `mk0.4` (logical pipeline name; see `PIPELINE_NAME` in the server).
 - Flask app in `video-automation/server/` orchestrates file-based processing, per-job bookkeeping, Whisper transcription, LLM clip selection, validation, FFmpeg clipping, and artifact writes.
-- **Automated source input is a separate service** under `automated-content/VAmk0.4/source-input/` (`POST /run-funnel`). Orchestration (e.g. n8n) is expected to run that service first when the video is acquired from funnel sources, then hand the file off into `video-automation/input/` and call `/process`.
+- **Automated source input is a separate service** under `automated-content/VAmk0.4/source-input/` (`POST /run-funnel`). External automation can run that service first when the video is acquired from funnel sources, then hand the file to this server through `POST /jobs`.
 
 WHERE `mk0.4` IS NAMED (this file + code)
 - **This document:** pipeline name references; filesystem paths resolved from `video-automation/` (defaults `input/`, `output/`, `temp/`, `jobs/`); `"pipeline": "mk0.4"` in API payloads.
 - **Runtime:** `video-automation/server/app.py` sets `PIPELINE_NAME = "mk0.4"`; success/error bodies and `/healthz` include it.
 
 CURRENT SYSTEM FLOW (end-to-end)
-1. Obtain a longform MP4 — with n8n this normally means the **input service**: `POST /run-funnel` → on `input_ready`, use `video_path` from that response as the source file for the clipping server.
-2. **File handoff:** copy/move the source into configured `paths.input_folder` (default `video-automation/input/`) under the basename you will pass to `/process`.
-3. **Process:** `POST /process` JSON `{ "video": "<basename in input/>", "selection": { ...optional overrides... } }`. Resolves basename under `input_folder` only.
-4. **_run_pipeline** (`app.py`): creates a **job directory** under `paths.jobs_folder` (`jobs/<stem>_<job_id>/`), copies inputs for traceability (`input_*`, transcript, selection JSON, clips, `report.json`, `review.md`).
+1. Obtain a longform MP4 from upload, local file handoff, or the sibling input service.
+2. **Create job:** `POST /jobs` with multipart `video_file` or JSON `video` / `video_path` / `input_id`. The API returns immediately with `job_id`, `status_url`, and `outputs_url`.
+3. **Internal worker:** a simple in-process queue runs jobs asynchronously from the HTTP caller perspective, one job at a time by default.
+4. **_run_pipeline** (`app.py`): uses the job directory under `paths.jobs_folder` (`jobs/<stem>_<job_id>/`), copies inputs for traceability (`input_*`, transcript, selection JSON, clips, `report.json`, `review.md`).
 5. **`transcribe_video.py`** (Whisper): default path runs once on the full file → transcript JSON in **`paths.temp_folder`**; **chunked-long path** splits the media first — see **`LONG VIDEO CHUNKING`** below.
 6. Full timeline transcript normalized into `jobs/.../transcript_payload.json` (**monolithic Whisper JSON** **or merged multi-chunk JSON**).
 7. `select_clip.py` invokes OpenAI with the **`selection_model`** produced by **`resolve_pipeline_run_policy`** (defaults **`pipeline_config.json`** → **`video_pipeline_profiles.json`** funnel profile → **`VIDEO_PIPELINE_RUNTIME_JSON` / **`MK04_SELECTION_MODEL` → **`http.pipeline.models`**). **Chunked-long path**: one selector call **per FFmpeg slice**, then timestamps are recombined (**`timeline_offset_sec`**) — see **`LONG VIDEO CHUNKING`** below.
@@ -43,14 +43,14 @@ KEY COMPONENTS
 - `server/app.py`: routes, **`_run_pipeline`**, subprocess orchestration, **`resolve_http_policy_bundle`**, **`_parse_script_envelope`** for stdout JSON lines.
 
 CONFIG OWNERSHIP (single deterministic merge)
-- **Repo-first default funnel:** **`defaults.pipeline_profile`** inside **`pipeline_config.json`** selects **`profiles.<name>`** in **`video_pipeline_profiles.json`** whenever HTTP omits **`pipeline_profile`** / **`funnel_id`** — reproducible **`git checkout` + **`PIPELINE_CONFIG_PATH`** installs without n8n body overrides.
+- **Repo-first default funnel:** **`defaults.pipeline_profile`** inside **`pipeline_config.json`** selects **`profiles.<name>`** in **`video_pipeline_profiles.json`** whenever HTTP omits **`pipeline_profile`** / **`funnel_id`** — reproducible **`git checkout` + **`PIPELINE_CONFIG_PATH`** installs without request body overrides.
 - **`config/pipeline_config.json`**: Base deployment defaults. **`selection`**, **`chunking`**, **`models`**, plus **`defaults.pipeline_profile`** (optional string). Alternate file: **`PIPELINE_CONFIG_PATH`**.
-- **`config/video_pipeline_profiles.json`**: Named funnel contracts (**same ids as **`funnel_id`** you pass through n8n** when you route by funnel). Shape **`{ "profiles": { "<id>": { "selection"?, "chunking"?, "models"? }}}`**. Alternate path **`VIDEO_PIPELINE_PROFILES_PATH`**.
+- **`config/video_pipeline_profiles.json`**: Named funnel contracts (**same ids as **`funnel_id`** you pass when you route by funnel). Shape **`{ "profiles": { "<id>": { "selection"?, "chunking"?, "models"? }}}`**. Alternate path **`VIDEO_PIPELINE_PROFILES_PATH`**.
 - **`VIDEO_PIPELINE_RUNTIME_JSON`**: Env JSON (**self-hosted / Helm**); keep beside deploy artifacts for deterministic replicas.
 - **`MK04_WHISPER_MODEL` / `MK04_SELECTION_MODEL`**: Narrow env overrides merged into **`models`** after **`VIDEO_PIPELINE_RUNTIME_JSON`** (Whisper child sees **`WHISPER_MODEL`** env; **`select_clip`** honours **`selection_model`** from the subprocess JSON).
 - **HTTP**, last wins on overlapping keys except models stack as above for env-specific vars:
   - **`pipeline`**: `{ "selection"?, "chunking"?, "models"? }`
-  - **`selection`**: final override for **`max_clips`**, durations, overlap, flags (**same semantics as today's n8n body**).
+  - **`selection`**: final override for **`max_clips`**, durations, overlap, flags.
 - **`pipeline_profile`** / **`funnel_id`** selects a **`profiles`** entry (overrides **`defaults.pipeline_profile`** when present).
 - See **`POLICY_MERGE_CHAIN_DOC`** in **`scripts/pipeline_utils.py`**. **`policy_resolution`** echoes **`pipeline_profile_requested_http`**, **`pipeline_profile_resolve_source`** (`http` / `config_default` / `none`), **`pipeline_profile_resolved`**, **`http_execution_overrides`** vs **`infra_env_overrides_present`**, and **`deterministic_without_http_or_infra_env`** (**`True`** when cloning the repo/catalog alone suffices for identical execution tiers).
 
@@ -65,19 +65,22 @@ PIPELINE UTILS / SELECTION NOTES
 - **`validate_and_repair_selection`** clamps to effective min/max duration (tolerance factors ~0.7 / ~1.3), rejects timestamps beyond **`video_duration_sec`** when FFprobe succeeds, aligns to nearest Whisper boundary when reasonable.
 
 HTTP API (FLASK) — DEFAULT HOST `5050` in `if __name__ == "__main__"`
-- **`POST /process`**: JSON `video`; optional **`selection`** (**final override tier** — `max_clips`, `*_duration_sec`, overlap/metadata flags); optional **`pipeline`** object (`selection` / `chunking` / `models` shards applied before **`selection`**); **`pipeline_profile`** or **`funnel_id`** funnel hint. Runs full pipeline from a file already in **`input/`** (basename only).
+- **`POST /jobs`**: accepts multipart `video_file` or JSON `video` / `video_path` / `input_id`; optional **`selection`** (**final override tier** — `max_clips`, `*_duration_sec`, overlap/metadata flags); optional **`pipeline`** object (`selection` / `chunking` / `models` shards applied before **`selection`**); **`pipeline_profile`** or **`funnel_id`** funnel hint. Returns `202` with polling URLs.
+- **`GET /jobs/<job_id>`**: status payload (`queued`, `running`, `success`, `failed`), current stage, errors, timings, artifact paths, and clips when complete.
+- **`GET /jobs/<job_id>/outputs`**: completed clips and metadata; returns not-ready status for queued/running/failed jobs.
+- **`POST /process`** / **`POST /process-inline`**: deprecated wrappers around `POST /jobs`; external automation can keep calling them but should migrate.
 - **`GET /output/<path:clip_file>`**: **`send_from_directory`** over configured **`output`** folder (**`as_attachment=True`**).
 - **`POST /analytics/feedback`**: JSON feedback append endpoint for future performance tracking. Required **`job_id`**, **`clip_id`**; optional **`platform`**, **`posted_url`**, **`observed_at`**, **`metrics`** object (views/likes/comments/etc.), **`notes`**. Writes **`analytics/feedback.jsonl`**.
 - **`GET /healthz`**: `{ "ok": true, "pipeline": "mk0.4" }`.
-- **`GET /doctor`**: dependency checks (**ffmpeg**, **ffprobe**, **whisper**, **OPENAI_API_KEY**, config/profile files, path dirs writable); optional query **`probe_url`** for outbound HTTP sanity. Returns **HTTP 200** with JSON **`"ok": false`** when any check fails (process is still reachable); use **`"ok"`** for readiness, not HTTP status alone.
+- **`GET /doctor`**: dependency checks (**ffmpeg**, **ffprobe**, **whisper**, **OPENAI_API_KEY**, config/profile files, path dirs writable); optional query **`adapter_probe_url`** for outbound HTTP sanity. Returns **HTTP 200** with JSON **`"ok": false`** when any check fails (process is still reachable); use **`"ok"`** for readiness, not HTTP status alone.
 
-REMOVED INGESTION ENDPOINTS
-- Older **`POST /upload`** and **`POST /process-inline`** routes were removed because current n8n operation uses file handoff into **`input/`** plus **`POST /process`**.
-- If multipart upload or base64 one-shot ingestion is needed again, those functions can be restored from earlier versions of `server/app.py`; the removal was not a pipeline redesign.
+COMPATIBILITY ENDPOINTS
+- **`POST /upload`** remains optional, but **`POST /jobs`** can upload directly.
+- **`POST /process`** and **`POST /process-inline`** are deprecated compatibility wrappers that enqueue jobs and return polling URLs.
 
 AUTOMATED INPUT SERVICE (COORDINATION ONLY)
 - **Not part of this repo’s Flask pipeline process** — sibling project `source-input/input_service/` (see **`source-input/source-input-context.txt`**).
-- Expected pattern: **`POST …/run-funnel`** → if **`input_ready`**, place the resolved file under this pipeline’s **`input/`** (matching the basename you pass to **`POST /process`**), then call **`POST /process`** with **`pipeline_profile`** from the input-service response unless the repo default is already correct. The input service also returns **`posting_config`** and **`analytics_config`** for orchestration/post-run routing; clipping behaviour remains owned by **`video_pipeline_profiles.json`**.
+- Expected pattern: **`POST …/run-funnel`** → if **`input_ready`**, call **`POST /jobs`** with `input_id` or a resolved source path, then poll `status_url`. The input service also returns **`posting_config`** and **`analytics_config`** for orchestration/post-run routing; clipping behaviour remains owned by **`video_pipeline_profiles.json`**.
 
 ERROR HANDLING (SERVER)
 - Failures return `{ "success": false, "error": "<message>", "pipeline": "mk0.4" }` (typical **`500`**; **`400`** for bad input paths; **`404`** missing clip).
@@ -91,7 +94,7 @@ ANALYTICS FOUNDATION
 
 OPERATIONAL TRADE-OFFS
 - FFmpeg stream copy clipping (`clip_video.py`) aligns wall-clock span with selected timestamps within container constraints.
-- Pipeline is synchronous; large videos block the HTTP worker unless offloaded externally.
+- Pipeline processing is asynchronous from the HTTP caller perspective; the default in-process worker runs one job at a time.
 - **Ephemeral hygiene:** `_run_pipeline` removes the **processed input file under `input/`** and transcript under **`temp/`** after run ( **`job`** copies retained under **`jobs/`**).
 
 SECURITY / CONFIG
@@ -107,7 +110,7 @@ DEPLOYMENT / OPERATIONS
 - Service bind envs: **`INPUT_SERVICE_HOST`/`INPUT_SERVICE_PORT`** and **`VIDEO_AUTOMATION_HOST`/`VIDEO_AUTOMATION_PORT`**.
 
 CURRENT FOCUS (high level)
-- Operator/n8n flow: funnel acquisition (input service) ↔ file handoff into **`input/`** ↔ **`/process`** clipping server; **`/doctor`** gates machine readiness.
+- Current flow: source acquisition ↔ **`POST /jobs`** ↔ polling/output fetch; **`/doctor`** gates machine readiness.
 - **Long ingest (~>1 h default):** chunk → per-slice Whisper + slice-wise GPT selection merged back to wall clock — toggle via **`chunking.enabled`** in **`pipeline_config.json`**.
 
 FILE STRUCTURE (video-automation project)

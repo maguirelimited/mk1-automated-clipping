@@ -4,15 +4,16 @@ import subprocess
 import sys
 import uuid
 import time
-import mimetypes
 import re
 import shutil
-from datetime import datetime
+import threading
+import queue
+from datetime import datetime, timezone
 from typing import Any
 from urllib import request as urlrequest
-from urllib.error import HTTPError, URLError
 
 from flask import Flask, jsonify, request, send_from_directory
+from werkzeug.utils import secure_filename
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _SCRIPTS_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "scripts"))
@@ -70,6 +71,9 @@ app = Flask(__name__)
 PYTHON = sys.executable
 # Stable identifier returned in JSON (`pipeline`, `/healthz`); keep unchanged for integrations.
 PIPELINE_NAME = "mk0.4"
+_JOB_QUEUE: "queue.Queue[dict[str, Any]]" = queue.Queue()
+_JOB_WORKERS_STARTED = False
+_JOB_WORKERS_LOCK = threading.Lock()
 
 
 def _debug_log(hypothesis_id: str, location: str, message: str, data: dict):
@@ -103,31 +107,11 @@ def _pipeline_diagnostic_log(
     write_diagnostic(PIPELINE_NAME, hypothesis_id, location, message, data)
 
 
-def _parse_n8n_webhook_error(body: str) -> dict[str, str]:
-    """Extract structured fields from n8n JSON error bodies (e.g. 404 webhook)."""
-    raw = (body or "").strip()
-    if not raw:
-        return {}
-    try:
-        obj = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
-    if not isinstance(obj, dict):
-        return {}
-    out: dict[str, str] = {}
-    for k in ("message", "hint", "code"):
-        v = obj.get(k)
-        if v is not None and str(v).strip():
-            out[k] = str(v).strip()
-    return out
+def _lift_adapter_wrapped_video_fields(data: dict[str, Any]) -> dict[str, Any]:
+    """Lift process boundary fields from common automation-wrapper payloads.
 
-
-def _lift_n8n_wrapped_video_fields(data: dict[str, Any]) -> dict[str, Any]:
-    """Lift process boundary fields from common n8n wrappers.
-
-    n8n items often look like ``{ "json": { "video_path": "...", ... } }`` when
-    the HTTP Request node sends the whole item; without lifting, only ``selection``
-    might be merged at the top and ``video_path`` stays nested.
+    Some automation tools send ``{ "json": { "video_path": "...", ... } }`` or
+    similar wrapper objects; without lifting, the input fields stay nested.
     """
     if not isinstance(data, dict):
         return {}
@@ -620,6 +604,72 @@ def _resolve_output_clip_path(clip_name: str) -> tuple[str, str]:
     return normalized_name, clip_path
 
 
+def _save_uploaded_video_file(file_storage: Any) -> tuple[str, str]:
+    raw_name = getattr(file_storage, "filename", "") or ""
+    safe_name = secure_filename(raw_name)
+    if not safe_name:
+        safe_name = f"upload_{uuid.uuid4().hex[:10]}.mp4"
+    input_root = ensure_paths(load_config())["input"]
+    os.makedirs(input_root, exist_ok=True)
+    stem, ext = os.path.splitext(safe_name)
+    candidate = safe_name
+    dest = os.path.abspath(os.path.join(input_root, candidate))
+    while os.path.exists(dest):
+        candidate = f"{stem}_{uuid.uuid4().hex[:8]}{ext or '.mp4'}"
+        dest = os.path.abspath(os.path.join(input_root, candidate))
+    if not dest.startswith(os.path.abspath(input_root) + os.sep):
+        raise ValueError("Invalid upload filename")
+    file_storage.save(dest)
+    return candidate, dest
+
+
+def _request_payload() -> dict[str, Any]:
+    if request.is_json:
+        payload = request.get_json(silent=True) or {}
+        return payload if isinstance(payload, dict) else {}
+    form_payload: dict[str, Any] = {}
+    for key, value in request.form.items():
+        text = str(value).strip()
+        if key in ("selection", "pipeline", "funnel_config") and text.startswith(("{", "[")):
+            try:
+                form_payload[key] = json.loads(text)
+                continue
+            except json.JSONDecodeError:
+                pass
+        form_payload[key] = value
+    return form_payload
+
+
+def _resolve_job_video_input(payload: dict[str, Any]) -> tuple[str | None, str, str, dict[str, Any] | None]:
+    file_storage = request.files.get("video_file") or request.files.get("file")
+    if file_storage is not None and getattr(file_storage, "filename", ""):
+        _, video_path = _save_uploaded_video_file(file_storage)
+        return None, os.path.abspath(video_path), "upload", None
+
+    raw_input_id = payload.get("input_id") or payload.get("source_input_id")
+    input_id = str(raw_input_id).strip() if raw_input_id is not None else ""
+    if input_id:
+        ledger_record = input_ledger.load_record(input_id)
+        ledger_path = input_ledger.resolve_file_path(input_id)
+        return input_id, os.path.abspath(str(ledger_path)), "input_ledger", ledger_record
+
+    raw_video = payload.get("video")
+    raw_path = payload.get("video_path") or payload.get("path")
+    if raw_video is not None and str(raw_video).strip():
+        video_arg = str(raw_video).strip()
+    elif raw_path is not None and str(raw_path).strip():
+        video_arg = str(raw_path).strip()
+    else:
+        raise ValueError("Missing input video. Send multipart `video_file`, JSON `video`, `video_path`, or `input_id`.")
+
+    candidate = os.path.abspath(os.path.expanduser(video_arg))
+    if os.path.isabs(video_arg) or os.sep in video_arg or (os.altsep and os.altsep in video_arg):
+        return None, candidate, "existing_path", None
+
+    _, input_video_path = _resolve_input_video_path(os.path.basename(video_arg.rstrip("/")))
+    return None, os.path.abspath(input_video_path), "input_folder", None
+
+
 _JOB_ID_RE = re.compile(r"^job_\d{8}T\d{6}Z_[a-f0-9]{8}$")
 _DEFAULT_JOBS_LIMIT = 25
 _MAX_JOBS_LIMIT = 100
@@ -628,12 +678,18 @@ _MAX_JOBS_LIMIT = 100
 def _inspection_urls(job_id: str) -> dict[str, str]:
     return {
         "job_url": f"/jobs/{job_id}",
+        "status_url": f"/jobs/{job_id}",
+        "outputs_url": f"/jobs/{job_id}/outputs",
         "debug_url": f"/jobs/{job_id}/debug",
     }
 
 
 def _jobs_root_readonly() -> str:
     return os.path.abspath(resolve_paths(load_config())["jobs"])
+
+
+def _new_job_id() -> str:
+    return f"job_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
 
 
 def _valid_job_id(job_id: str) -> bool:
@@ -694,6 +750,26 @@ def _artifact_file(path: str) -> dict[str, object]:
     return out
 
 
+def _current_stage_from_report(report: dict[str, Any]) -> str:
+    explicit = report.get("current_stage")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    status = str(report.get("status") or "").strip()
+    if status in ("queued", "success", "failed"):
+        return status
+    timings = report.get("stage_timings_ms") if isinstance(report.get("stage_timings_ms"), dict) else {}
+    clips = report.get("clips") if isinstance(report.get("clips"), list) else []
+    if clips:
+        return "complete"
+    if "selection_ms" in timings:
+        return "clipping"
+    if "transcription_ms" in timings:
+        return "selection"
+    if status == "running":
+        return "transcription"
+    return status or "unknown"
+
+
 def _job_artifacts(job_dir: str) -> dict[str, object]:
     clips_dir = os.path.join(job_dir, "clips")
     clip_files: list[dict[str, object]] = []
@@ -729,6 +805,7 @@ def _job_summary(report: dict[str, Any], job_dir: str) -> dict[str, object]:
         "input_video_name": report.get("input_video_name"),
         "source_video": report.get("input_video_name"),
         "status": report.get("status"),
+        "current_stage": _current_stage_from_report(report),
         "created_at": report.get("created_at"),
         "completed_at": report.get("completed_at"),
         "clip_count": len(clips),
@@ -915,6 +992,7 @@ def _job_debug_summary(job_dir: str, report: dict[str, Any]) -> dict[str, object
         "pipeline": PIPELINE_NAME,
         "job": summary,
         "status": report.get("status"),
+        "current_stage": _current_stage_from_report(report),
         "errors": errors,
         "warnings": warnings,
         "stage_timings_ms": report.get("stage_timings_ms") or {},
@@ -930,182 +1008,285 @@ def _job_debug_summary(job_dir: str, report: dict[str, Any]) -> dict[str, object
     }
 
 
-def _build_multipart_form(
-    fields: dict[str, str], files: list[tuple[str, str, bytes, str]]
-) -> tuple[bytes, str]:
-    boundary = f"----mk04-{uuid.uuid4().hex}"
-    body = bytearray()
-    for name, value in fields.items():
-        body.extend(f"--{boundary}\r\n".encode("utf-8"))
-        body.extend(
-            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8")
-        )
-        body.extend(str(value).encode("utf-8"))
-        body.extend(b"\r\n")
-    for field_name, filename, blob, content_type in files:
-        body.extend(f"--{boundary}\r\n".encode("utf-8"))
-        body.extend(
-            (
-                f'Content-Disposition: form-data; name="{field_name}"; '
-                f'filename="{filename}"\r\n'
-            ).encode("utf-8")
-        )
-        body.extend(f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"))
-        body.extend(blob)
-        body.extend(b"\r\n")
-    body.extend(f"--{boundary}--\r\n".encode("utf-8"))
-    return bytes(body), f"multipart/form-data; boundary={boundary}"
-
-
-def _post_clips_to_n8n_once(
-    *,
-    webhook_url: str,
-    fields: dict[str, str],
-    files: list[tuple[str, str, bytes, str]],
-    timeout_sec: float,
-) -> tuple[int, str]:
-    payload, content_type = _build_multipart_form(fields, files)
-    req = urlrequest.Request(
-        webhook_url,
-        data=payload,
-        headers={"Content-Type": content_type},
-        method="POST",
-    )
-    try:
-        with urlrequest.urlopen(req, timeout=timeout_sec) as resp:
-            status = int(resp.status)
-            body_text = resp.read(2000).decode("utf-8", errors="replace")
-            return status, body_text
-    except HTTPError as e:
-        try:
-            raw = e.read(2000)
-            body_text = raw.decode("utf-8", errors="replace")
-        except Exception:
-            body_text = str(e)
-        return int(e.code), body_text
-    except URLError as e:
-        raise RuntimeError(f"n8n delivery failed: {e}") from e
-
-
-def _post_clips_to_n8n(
-    *,
-    webhook_url: str,
-    clips: list[dict[str, object]],
-    source_video_path: str,
-    include_files: bool,
-    run_id: str,
-    max_attempts: int,
-    timeout_sec: float,
-    backoff_sec: float,
-) -> dict[str, object]:
-    clip_count = len(clips)
-    fields: dict[str, str] = {
-        "pipeline": PIPELINE_NAME,
-        "run_id": run_id,
-        "source_video_name": os.path.basename(source_video_path),
-        "clip_count": str(clip_count),
-        "clips_json": json.dumps(clips),
-    }
-    files: list[tuple[str, str, bytes, str]] = []
-    if include_files:
-        for idx, clip in enumerate(clips, start=1):
-            clip_path = str(clip.get("clip_path") or "").strip()
-            if not clip_path or not os.path.isfile(clip_path):
-                continue
-            with open(clip_path, "rb") as f:
-                blob = f.read()
-            ctype = mimetypes.guess_type(clip_path)[0] or "application/octet-stream"
-            files.append((f"clip_{idx:02d}", os.path.basename(clip_path), blob, ctype))
-
-    expected_files = clip_count if include_files else 0
-    last_status = 0
-    last_body = ""
-    last_err: str | None = None
-    attempts_used = 0
-
-    # #region agent log
-    _debug_log(
-        "H-webhook-url",
-        "app.py:_post_clips_to_n8n",
-        "n8n multipart POST target",
-        {
-            "webhook_url": webhook_url,
-            "clip_count": clip_count,
-            "include_files": include_files,
-            "multipart_files_built": len(files),
-        },
-    )
-    # #endregion
-
-    for attempt in range(1, max(1, max_attempts) + 1):
-        attempts_used = attempt
-        try:
-            status, last_body = _post_clips_to_n8n_once(
-                webhook_url=webhook_url,
-                fields=fields,
-                files=files,
-                timeout_sec=timeout_sec,
-            )
-            last_status = status
-            ok_http = 200 <= status < 300
-            if ok_http:
-                files_sent = len(files)
-                mismatch = bool(
-                    include_files and files_sent != clip_count and clip_count > 0
-                )
-                return {
-                    "ok": True,
-                    "skipped": False,
-                    "status_code": status,
-                    "clip_count": clip_count,
-                    "files_sent": files_sent,
-                    "expected_files": expected_files,
-                    "file_count_mismatch": mismatch,
-                    "run_id": run_id,
-                    "response_excerpt": last_body,
-                    "attempts_used": attempts_used,
-                }
-            # Do not retry permanent client errors
-            if 400 <= status < 500:
-                n8n_err = _parse_n8n_webhook_error(last_body)
-                err_msg = f"webhook returned HTTP {status}"
-                if n8n_err.get("message"):
-                    err_msg = f"{err_msg}: {n8n_err['message']}"
-                row: dict[str, object] = {
-                    "ok": False,
-                    "skipped": False,
-                    "status_code": status,
-                    "clip_count": clip_count,
-                    "files_sent": len(files),
-                    "expected_files": expected_files,
-                    "run_id": run_id,
-                    "error": err_msg,
-                    "response_excerpt": last_body,
-                    "attempts_used": attempts_used,
-                }
-                if n8n_err:
-                    row["n8n_error"] = n8n_err
-                return row
-            last_err = f"HTTP {status}"
-        except RuntimeError as e:
-            last_err = str(e)
-
-        if attempt < max(1, max_attempts):
-            delay = backoff_sec * (2 ** (attempt - 1))
-            time.sleep(delay)
-
+def _job_status_payload(job_dir: str, report: dict[str, Any]) -> dict[str, object]:
+    clips = report.get("clips") if isinstance(report.get("clips"), list) else []
+    errors = report.get("errors") if isinstance(report.get("errors"), list) else []
+    warnings = report.get("warnings") if isinstance(report.get("warnings"), list) else []
     return {
-        "ok": False,
-        "skipped": False,
-        "status_code": last_status or None,
-        "clip_count": clip_count,
-        "files_sent": len(files),
-        "expected_files": expected_files,
-        "run_id": run_id,
-        "error": last_err or "n8n delivery failed after retries",
-        "response_excerpt": last_body,
-        "attempts_used": attempts_used,
+        "success": str(report.get("status") or "") != "failed",
+        "pipeline": PIPELINE_NAME,
+        "job_id": report.get("job_id"),
+        "status": report.get("status"),
+        "current_stage": _current_stage_from_report(report),
+        "created_at": report.get("created_at"),
+        "started_at": report.get("started_at"),
+        "completed_at": report.get("completed_at"),
+        "input_id": report.get("input_id"),
+        "input_video_name": report.get("input_video_name"),
+        "source_video": report.get("input_video_name"),
+        "errors": errors,
+        "warnings": warnings,
+        "timings": report.get("stage_timings_ms") or {},
+        "stage_timings_ms": report.get("stage_timings_ms") or {},
+        "artifacts": _job_artifacts(job_dir),
+        "clips": [_compact_clip(c) for c in clips] if report.get("status") == "success" else [],
+        **_inspection_urls(str(report.get("job_id") or "")),
     }
+
+
+def _job_outputs_payload(job_dir: str, report: dict[str, Any]) -> dict[str, object]:
+    status = str(report.get("status") or "")
+    clips = report.get("clips") if isinstance(report.get("clips"), list) else []
+    artifacts = _job_artifacts(job_dir)
+    return {
+        "success": status == "success",
+        "pipeline": PIPELINE_NAME,
+        "job_id": report.get("job_id"),
+        "status": status,
+        "current_stage": _current_stage_from_report(report),
+        "ready": status == "success",
+        "clips": [_compact_clip(c) for c in clips] if status == "success" else [],
+        "metadata": {
+            "clip_count": len(clips) if status == "success" else 0,
+            "input_video_name": report.get("input_video_name"),
+            "video_duration_sec": report.get("video_duration_sec"),
+            "policy_resolution": report.get("policy_resolution") or {},
+            "selector": report.get("selector") or {},
+            "chunked": report.get("chunked", False),
+            "chunking": report.get("chunking"),
+            "timings": report.get("stage_timings_ms") or {},
+        },
+        "artifacts": artifacts,
+    }
+
+
+def _async_config() -> dict[str, object]:
+    cfg = load_config()
+    worker_cfg = cfg.get("async_worker") if isinstance(cfg.get("async_worker"), dict) else {}
+    max_jobs_raw = worker_cfg.get("max_concurrent_jobs", cfg.get("max_concurrent_jobs", 1))
+    try:
+        max_jobs = int(max_jobs_raw)
+    except (TypeError, ValueError):
+        max_jobs = 1
+    return {
+        "enabled": bool(worker_cfg.get("enabled", cfg.get("async_worker_enabled", True))),
+        "max_concurrent_jobs": max(1, max_jobs),
+        "job_store_type": str(worker_cfg.get("job_store_type", cfg.get("job_store_type", "json")) or "json"),
+    }
+
+
+def _create_queued_report(
+    *,
+    job_id: str,
+    job: dict[str, str],
+    video_path: str,
+    input_id: str | None,
+    input_source: str,
+    policy_bundle: dict[str, Any],
+) -> dict[str, Any]:
+    audit_plain = dict(policy_bundle.get("policy_audit") or {})
+    selection_policy = dict(policy_bundle.get("selection") or {})
+    funnel_ops_raw = policy_bundle.get("funnel_ops")
+    report: dict[str, Any] = {
+        "job_id": job_id,
+        "input_id": input_id,
+        "input_source": input_source,
+        "input_video_path": os.path.abspath(video_path),
+        "input_video_name": os.path.basename(video_path),
+        "video_duration_sec": None,
+        "transcript_path": None,
+        "selection_path": job["selection_path"],
+        "analytics_path": job["analytics_path"],
+        "status": "queued",
+        "current_stage": "queued",
+        "created_at": now_iso(),
+        "started_at": None,
+        "completed_at": None,
+        "errors": [],
+        "warnings": [],
+        "stage_timings_ms": {},
+        "clips": [],
+        "policy_resolution": audit_plain,
+        "job_store_type": "json",
+        "worker": _async_config(),
+        "funnel": build_funnel_job_record(
+            funnel_ops=funnel_ops_raw if isinstance(funnel_ops_raw, dict) else None,
+            resolved_selection=selection_policy,
+            policy_audit=audit_plain,
+        ),
+    }
+    write_json(job["report_path"], report)
+    write_review(job["review_path"], report)
+    maybe_copy(video_path, job["input_copy_path"])
+    return report
+
+
+def _update_job_report(job: dict[str, str], updates: dict[str, Any]) -> dict[str, Any]:
+    report = _load_json_object(job["report_path"]) or {}
+    report.update(updates)
+    write_json(job["report_path"], report)
+    try:
+        write_review(job["review_path"], report)
+    except Exception as exc:
+        print("[jobs] review update failed:", repr(exc), flush=True)
+    return report
+
+
+def _sync_input_ledger_terminal(input_id: str | None, response_body: dict[str, Any], status_code: int) -> None:
+    if not input_id:
+        return
+    try:
+        if 200 <= status_code < 300 and response_body.get("success") is True:
+            try:
+                completed_record = input_ledger.load_record(input_id)
+                meta = completed_record.get("source_metadata")
+                if not isinstance(meta, dict):
+                    meta = {}
+                DuplicateStore().mark_seen(
+                    video_id=str(meta.get("video_id") or "") or None,
+                    url=str(completed_record.get("source_url") or "") or None,
+                )
+            except Exception as exc:
+                print("[jobs] seen store final success update failed:", repr(exc), flush=True)
+            input_ledger.mark_succeeded(
+                input_id,
+                {
+                    "pipeline_job_id": response_body.get("job_id"),
+                    "run_id": response_body.get("run_id"),
+                    "clip_count": len(response_body.get("clips") or []),
+                },
+            )
+        else:
+            input_ledger.mark_failed(
+                input_id,
+                response_body.get("error") or f"pipeline_http_status:{status_code}",
+                {
+                    "pipeline_job_id": response_body.get("job_id"),
+                    "run_id": response_body.get("run_id"),
+                    "status_code": status_code,
+                },
+            )
+    except input_ledger.LedgerError:
+        print("[jobs] input ledger terminal update failed", flush=True)
+
+
+def _execute_job(task: dict[str, Any]) -> None:
+    job = task["job"]
+    job_id = str(task["job_id"])
+    input_id = task.get("input_id")
+    video_path = str(task["video_path"])
+    try:
+        _update_job_report(
+            job,
+            {
+                "status": "running",
+                "current_stage": "transcription",
+                "started_at": now_iso(),
+            },
+        )
+        if input_id:
+            try:
+                input_ledger.mark_processing(str(input_id))
+            except input_ledger.LedgerError as exc:
+                raise RuntimeError(f"Input ledger update failed: {exc}") from exc
+        with app.app_context():
+            response = _run_pipeline(
+                video_path,
+                task["policy_bundle"],
+                input_id=str(input_id) if input_id else None,
+                job_id=job_id,
+            )
+        status_code = response[1] if isinstance(response, tuple) and len(response) > 1 else 200
+        response_obj = response[0] if isinstance(response, tuple) else response
+        try:
+            body = response_obj.get_json(silent=True) or {}
+        except Exception:
+            body = {}
+        report = _load_json_object(job["report_path"]) or {}
+        if isinstance(status_code, int) and status_code >= 400 and report.get("status") not in (
+            "success",
+            "failed",
+        ):
+            errors = report.get("errors") if isinstance(report.get("errors"), list) else []
+            errors.append(
+                categorize_error(
+                    "pipeline",
+                    "http_error",
+                    str(body.get("error") or "Pipeline returned an error response"),
+                    {"status_code": status_code},
+                )
+            )
+            report.update(
+                {
+                    "status": "failed",
+                    "current_stage": "failed",
+                    "completed_at": now_iso(),
+                    "errors": errors,
+                }
+            )
+            write_json(job["report_path"], report)
+            write_review(job["review_path"], report)
+        _sync_input_ledger_terminal(str(input_id) if input_id else None, body, int(status_code))
+    except Exception as exc:
+        err = categorize_error("pipeline", "worker_exception", "Job worker failed", repr(exc))
+        report = _load_json_object(job["report_path"]) or {}
+        errors = report.get("errors") if isinstance(report.get("errors"), list) else []
+        errors.append(err)
+        report.update(
+            {
+                "status": "failed",
+                "current_stage": "failed",
+                "completed_at": now_iso(),
+                "errors": errors,
+            }
+        )
+        write_json(job["report_path"], report)
+        write_review(job["review_path"], report)
+        if input_id:
+            try:
+                input_ledger.mark_failed(str(input_id), f"pipeline_exception: {exc}")
+            except input_ledger.LedgerError:
+                print("[jobs] input ledger exception update failed", flush=True)
+    finally:
+        _JOB_QUEUE.task_done()
+
+
+def _job_worker_loop() -> None:
+    while True:
+        task = _JOB_QUEUE.get()
+        _execute_job(task)
+
+
+def _ensure_job_workers_started() -> None:
+    global _JOB_WORKERS_STARTED
+    cfg = _async_config()
+    if not bool(cfg["enabled"]):
+        return
+    with _JOB_WORKERS_LOCK:
+        desired = int(cfg["max_concurrent_jobs"])
+        existing = [t for t in threading.enumerate() if t.name.startswith("mk04-job-worker-")]
+        if _JOB_WORKERS_STARTED and len(existing) >= desired:
+            return
+        for idx in range(len(existing), desired):
+            thread = threading.Thread(
+                target=_job_worker_loop,
+                name=f"mk04-job-worker-{idx + 1}",
+                daemon=True,
+            )
+            thread.start()
+        _JOB_WORKERS_STARTED = True
+
+
+def _enqueue_job(task: dict[str, Any]) -> None:
+    _ensure_job_workers_started()
+    if not bool(_async_config()["enabled"]):
+        raise RuntimeError("Async worker is disabled in configuration")
+    _JOB_QUEUE.put(task)
+
+
+def _mark_report_failed(report: dict[str, object]) -> None:
+    report["status"] = "failed"
+    report["current_stage"] = "failed"
 
 
 def resolve_http_policy_bundle(
@@ -1141,7 +1322,13 @@ def resolve_http_policy_bundle(
     )
 
 
-def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: str | None = None):
+def _run_pipeline(
+    video_path: str,
+    policy_bundle: dict[str, Any],
+    *,
+    input_id: str | None = None,
+    job_id: str | None = None,
+):
     config = load_config()
     resolved_paths = ensure_paths(config)
     input_root = resolved_paths["input"]
@@ -1191,7 +1378,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
     filename = os.path.splitext(os.path.basename(video_path))[0]
     transcript_path = os.path.abspath(os.path.join(temp_root, f"{filename}.json"))
 
-    job = create_job_paths(config, video_path)
+    job = create_job_paths(config, video_path, job_id=job_id)
     warnings: list[dict[str, object]] = []
     stage_ms: dict[str, int] = {}
     created_at = now_iso()
@@ -1206,7 +1393,9 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
         "selection_path": job["selection_path"],
         "analytics_path": job["analytics_path"],
         "status": "running",
+        "current_stage": "transcription",
         "created_at": created_at,
+        "started_at": created_at,
         "completed_at": None,
         "errors": [],
         "warnings": warnings,
@@ -1241,7 +1430,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                 {"input_video_path": os.path.abspath(video_path)},
             )
             report["errors"] = [err]
-            report["status"] = "failed"
+            _mark_report_failed(report)
             return _fail(
                 "TIMESTAMP_PIPELINE_REJECTED unavailable_video_duration: ffprobe did not "
                 "return duration for input; fix the container/codec/path or ffmpeg install.",
@@ -1271,7 +1460,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                     transcribe.stderr or transcribe.stdout,
                 )
                 report["errors"] = [err]
-                report["status"] = "failed"
+                _mark_report_failed(report)
                 return _fail("Transcription failed", log_detail=err["details"], status_code=500)
 
             if not os.path.exists(transcript_path):
@@ -1286,7 +1475,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                         transcript_path,
                     )
                     report["errors"] = [err]
-                    report["status"] = "failed"
+                    _mark_report_failed(report)
                     return _fail(
                         "Transcript not created", log_detail=transcript_path, status_code=500
                     )
@@ -1304,7 +1493,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                     {"path": transcript_path, "detail": str(exc)},
                 )
                 report["errors"] = [err]
-                report["status"] = "failed"
+                _mark_report_failed(report)
                 return _fail(
                     "Transcript rejected: missing timed Whisper segments.",
                     log_detail=str(exc),
@@ -1354,7 +1543,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                     exc.details,
                 )
                 report["errors"] = [err]
-                report["status"] = "failed"
+                _mark_report_failed(report)
                 return _fail(
                     "Selection failed",
                     log_detail=err["details"],
@@ -1368,7 +1557,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                     str(e),
                 )
                 report["errors"] = [err]
-                report["status"] = "failed"
+                _mark_report_failed(report)
                 return _fail("Invalid selection output", log_detail=str(e), status_code=500)
             stage_ms["selection_ms"] = int((time.perf_counter() - t1) * 1000)
             report["selector"] = selector_summary
@@ -1388,7 +1577,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                     {"video_duration_sec": vd},
                 )
                 report["errors"] = [err]
-                report["status"] = "failed"
+                _mark_report_failed(report)
                 return _fail("Chunking failed", log_detail=err["details"], status_code=500)
 
             per_chunk_budget = max(
@@ -1424,7 +1613,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                         {"index": idx, "error": repr(exc)},
                     )
                     report["errors"] = [err]
-                    report["status"] = "failed"
+                    _mark_report_failed(report)
                     return _fail("Chunk extract failed", log_detail=repr(exc), status_code=500)
 
                 transcribe = subprocess.run(
@@ -1441,7 +1630,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                         transcribe.stderr or transcribe.stdout,
                     )
                     report["errors"] = [err]
-                    report["status"] = "failed"
+                    _mark_report_failed(report)
                     return _fail(
                         "Transcription failed (chunked)",
                         log_detail=err["details"],
@@ -1461,7 +1650,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                         whisper_path,
                     )
                     report["errors"] = [err]
-                    report["status"] = "failed"
+                    _mark_report_failed(report)
                     return _fail(
                         "Transcript not created (chunked)",
                         log_detail=whisper_path,
@@ -1492,7 +1681,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                     {"path": transcript_path, "detail": str(exc)},
                 )
                 report["errors"] = [err]
-                report["status"] = "failed"
+                _mark_report_failed(report)
                 return _fail(
                     "Merged transcript rejected: missing timed segments.",
                     log_detail=str(exc),
@@ -1517,7 +1706,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                         {"chunk_video_path": chunk_vid},
                     )
                     report["errors"] = [err]
-                    report["status"] = "failed"
+                    _mark_report_failed(report)
                     return _fail(
                         "TIMESTAMP_PIPELINE_REJECTED unavailable_chunk_duration: ffprobe "
                         "did not return duration for extracted chunk.",
@@ -1535,7 +1724,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                         {"path": whisper_path_chunk, "detail": str(exc)},
                     )
                     report["errors"] = [err]
-                    report["status"] = "failed"
+                    _mark_report_failed(report)
                     return _fail(
                         "Chunk transcript rejected before selection.",
                         log_detail=str(exc),
@@ -1572,7 +1761,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                         exc.details,
                     )
                     report["errors"] = [err]
-                    report["status"] = "failed"
+                    _mark_report_failed(report)
                     return _fail(
                         "Selection failed (chunked)",
                         log_detail=err["details"],
@@ -1613,7 +1802,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                     str(e),
                 )
                 report["errors"] = [err]
-                report["status"] = "failed"
+                _mark_report_failed(report)
                 return _fail("Invalid selection output", log_detail=str(e), status_code=500)
 
         validated_segments, validation_issues = validate_and_repair_selection(
@@ -1632,7 +1821,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                 validation_issues,
             )
             report["errors"] = [err]
-            report["status"] = "failed"
+            _mark_report_failed(report)
             return _fail("No valid clips selected after timestamp validation", status_code=422)
 
         write_json(
@@ -1666,7 +1855,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                     clip.stderr or clip.stdout,
                 )
                 report["errors"] = [err]
-                report["status"] = "failed"
+                _mark_report_failed(report)
                 return _fail("Clipping failed", log_detail=err["details"], status_code=500)
 
             envelope = _parse_script_envelope(clip.stdout)
@@ -1678,7 +1867,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                     clip.stderr or clip.stdout,
                 )
                 report["errors"] = [err]
-                report["status"] = "failed"
+                _mark_report_failed(report)
                 return _fail("Clipping failed: missing result envelope", log_detail=str(err["details"]), status_code=500)
             if envelope.get("ok") is not True or str(envelope.get("script", "")).strip() != "clip_video":
                 err = categorize_error(
@@ -1688,7 +1877,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                     {"envelope": envelope, "stderr": clip.stderr or clip.stdout},
                 )
                 report["errors"] = [err]
-                report["status"] = "failed"
+                _mark_report_failed(report)
                 return _fail("Clipping failed: invalid script envelope", log_detail=str(envelope), status_code=500)
 
             clip_validation = envelope.get("clip_validation")
@@ -1700,7 +1889,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                     {"envelope": envelope, "stderr": clip.stderr or clip.stdout},
                 )
                 report["errors"] = [err]
-                report["status"] = "failed"
+                _mark_report_failed(report)
                 return _fail(
                     "Clipping failed: output validation report missing",
                     log_detail=str(clip.stderr or ""),
@@ -1721,7 +1910,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
                     {"path": resolved_path, "exists": os.path.isfile(resolved_path)},
                 )
                 report["errors"] = [err]
-                report["status"] = "failed"
+                _mark_report_failed(report)
                 return _fail("Clipping failed: output file missing or too small", log_detail=str(resolved_path), status_code=500)
 
             job_clip_path = os.path.join(job["clips_dir"], os.path.basename(resolved_path))
@@ -1749,6 +1938,7 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
 
         report["clips"] = clips
         report["status"] = "success"
+        report["current_stage"] = "success"
         report["completed_at"] = now_iso()
         stage_ms["total_ms"] = int((time.perf_counter() - total_started) * 1000)
         write_json(job["report_path"], report)
@@ -1809,8 +1999,8 @@ def _run_pipeline(video_path: str, policy_bundle: dict[str, Any], *, input_id: s
             )
             if report.get("completed_at") is None:
                 report["completed_at"] = now_iso()
-                if report.get("status") == "running":
-                    report["status"] = "failed"
+                if report.get("status") in ("running", "queued"):
+                    _mark_report_failed(report)
                     report["errors"] = report.get("errors") or [
                         categorize_error(
                             "pipeline",
@@ -1940,6 +2130,15 @@ def list_jobs():
         return _fail("Job listing failed", log_detail=repr(exc), status_code=500)
 
 
+@app.route("/jobs", methods=["POST"])
+def create_job():
+    try:
+        return _create_job_from_payload(_request_payload())
+    except Exception as exc:
+        print("[jobs] create error:", repr(exc), flush=True)
+        return _fail("Job creation failed", log_detail=repr(exc), status_code=500)
+
+
 @app.route("/jobs/<job_id>", methods=["GET"])
 def get_job_report(job_id: str):
     match = _find_job_report(job_id)
@@ -1949,8 +2148,26 @@ def get_job_report(job_id: str):
         return _fail("Ambiguous job_id", status_code=409)
     if match is None:
         return _fail("Job not found", status_code=404)
-    _, _, report = match
-    return jsonify(report)
+    job_dir, _, report = match
+    return jsonify(_job_status_payload(job_dir, report))
+
+
+@app.route("/jobs/<job_id>/outputs", methods=["GET"])
+def get_job_outputs(job_id: str):
+    match = _find_job_report(job_id)
+    if match == "invalid":
+        return _fail("Invalid job_id", status_code=400)
+    if match == "ambiguous":
+        return _fail("Ambiguous job_id", status_code=409)
+    if match is None:
+        return _fail("Job not found", status_code=404)
+    job_dir, _, report = match
+    payload = _job_outputs_payload(job_dir, report)
+    if payload["ready"] is not True:
+        status = str(payload.get("status") or "")
+        code = 409 if status in ("queued", "running") else 422
+        return jsonify(payload), code
+    return jsonify(payload)
 
 
 @app.route("/jobs/<job_id>/debug", methods=["GET"])
@@ -2020,10 +2237,10 @@ def _process_pipeline_json_payload(payload: dict[str, Any], *, route_label: str)
             {"payload_keys": sorted(payload.keys())},
         )
         return _fail(
-            "Missing usable 'input_id', 'video' or 'video_path' in the JSON body (after unwrapping common n8n keys: "
-            "json, body, data, item). Prefer sending run-funnel's input_id, e.g. in the HTTP node use a JSON body with "
+            "Missing usable 'input_id', 'video' or 'video_path' in the JSON body (after unwrapping common automation keys: "
+            "json, body, data, item). Prefer sending run-funnel's input_id, e.g. use a JSON body with "
             "\"input_id\": \"={{ $json.input_id }}\" on the same item that received /run-funnel output, "
-            "or merge that field into the object next to \"selection\". Undefined n8n expressions are omitted by JSON.stringify.",
+            "or merge that field into the object next to \"selection\".",
             status_code=400,
         )
     selection_policy = payload.get("selection", {}) or {}
@@ -2213,6 +2430,161 @@ def _process_pipeline_json_payload(payload: dict[str, Any], *, route_label: str)
     return response
 
 
+def _create_job_from_payload(payload: dict[str, Any], *, compatibility_route: str | None = None):
+    payload = _lift_adapter_wrapped_video_fields(payload)
+    try:
+        input_id, video_path, input_source, ledger_record = _resolve_job_video_input(payload)
+    except input_ledger.LedgerError as exc:
+        return _fail("Input ledger lookup failed", log_detail=str(exc), status_code=400)
+    except ValueError as exc:
+        return _fail(str(exc), status_code=400)
+    except Exception as exc:
+        print("[jobs] input resolution failed:", repr(exc), flush=True)
+        return _fail("Input video resolution failed", log_detail=repr(exc), status_code=500)
+
+    if not os.path.isfile(video_path):
+        job_id = _new_job_id()
+        config = load_config()
+        job = create_job_paths(config, video_path, job_id=job_id)
+        err = categorize_error(
+            "prerequisites",
+            "input_video_not_found",
+            "Input video not found",
+            {"input_video_path": os.path.abspath(video_path), "input_source": input_source},
+        )
+        report = {
+            "job_id": job_id,
+            "input_id": input_id,
+            "input_source": input_source,
+            "input_video_path": os.path.abspath(video_path),
+            "input_video_name": os.path.basename(video_path),
+            "status": "failed",
+            "current_stage": "failed",
+            "created_at": now_iso(),
+            "started_at": None,
+            "completed_at": now_iso(),
+            "errors": [err],
+            "warnings": [],
+            "stage_timings_ms": {},
+            "clips": [],
+            "job_store_type": "json",
+        }
+        write_json(job["report_path"], report)
+        write_review(job["review_path"], report)
+        if input_id:
+            try:
+                input_ledger.mark_failed(input_id, f"input_video_not_found: {video_path}")
+            except input_ledger.LedgerError:
+                print("[jobs] input ledger missing-file update failed", flush=True)
+        body = _job_status_payload(job["job_dir"], report)
+        body["success"] = False
+        body["error"] = "Input video not found"
+        return jsonify(body), 400
+
+    selection_policy = payload.get("selection", {}) or {}
+    if not isinstance(selection_policy, dict):
+        return _fail("Invalid selection policy", log_detail=repr(selection_policy), status_code=400)
+
+    pipe_raw = payload.get("pipeline")
+    if pipe_raw is None:
+        pipe_blob: dict[str, Any] = {}
+    elif isinstance(pipe_raw, dict):
+        pipe_blob = pipe_raw
+    else:
+        return _fail("`pipeline` must be a JSON object when provided", status_code=400)
+
+    pp = payload.get("pipeline_profile")
+    prof_hint = pp.strip() if isinstance(pp, str) and pp.strip() else None
+    if prof_hint is None:
+        fid_catalog = payload.get("funnel_id")
+        if isinstance(fid_catalog, str) and fid_catalog.strip():
+            prof_hint = fid_catalog.strip()
+    if prof_hint is None:
+        fc_hint = payload.get("funnel_config")
+        if fc_hint is not None:
+            try:
+                prof_hint = sanitize_funnel_config_basename(fc_hint)
+            except ValueError:
+                prof_hint = None
+
+    fid_body = payload.get("funnel_id")
+    http_funnel_id = fid_body.strip() if isinstance(fid_body, str) and fid_body.strip() else None
+    fc_body = payload.get("funnel_config")
+
+    try:
+        bundle = resolve_http_policy_bundle(
+            selection_blob=selection_policy,
+            pipeline_blob=pipe_blob,
+            pipeline_profile_hint=prof_hint,
+            http_funnel_id=http_funnel_id,
+            http_funnel_config=fc_body,
+        )
+    except ValueError as exc:
+        return _fail("Invalid pipeline policy resolution", log_detail=str(exc), status_code=400)
+
+    job_id = _new_job_id()
+    config = load_config()
+    job = create_job_paths(config, video_path, job_id=job_id)
+    report = _create_queued_report(
+        job_id=job_id,
+        job=job,
+        video_path=video_path,
+        input_id=input_id,
+        input_source=input_source,
+        policy_bundle=bundle,
+    )
+    if compatibility_route:
+        report["compatibility_route"] = compatibility_route
+        report["deprecated_endpoint"] = compatibility_route
+        write_json(job["report_path"], report)
+        write_review(job["review_path"], report)
+
+    task = {
+        "job_id": job_id,
+        "job": job,
+        "video_path": os.path.abspath(video_path),
+        "input_id": input_id,
+        "input_source": input_source,
+        "input_ledger_state": (ledger_record or {}).get("state"),
+        "policy_bundle": bundle,
+    }
+    try:
+        _enqueue_job(task)
+    except Exception as exc:
+        err = categorize_error("pipeline", "queue_error", "Failed to enqueue job", repr(exc))
+        errors = report.get("errors") if isinstance(report.get("errors"), list) else []
+        errors.append(err)
+        report.update(
+            {
+                "status": "failed",
+                "current_stage": "failed",
+                "completed_at": now_iso(),
+                "errors": errors,
+            }
+        )
+        write_json(job["report_path"], report)
+        write_review(job["review_path"], report)
+        return _fail("Failed to enqueue job", log_detail=repr(exc), status_code=500)
+
+    body = {
+        "success": True,
+        "pipeline": PIPELINE_NAME,
+        "job_id": job_id,
+        "status": "queued",
+        "current_stage": "queued",
+        "status_url": f"/jobs/{job_id}",
+        "outputs_url": f"/jobs/{job_id}/outputs",
+        "job_url": f"/jobs/{job_id}",
+        "input_id": input_id,
+        "source_video": os.path.basename(video_path),
+    }
+    if compatibility_route:
+        body["deprecated"] = True
+        body["deprecated_endpoint"] = compatibility_route
+        body["message"] = f"{compatibility_route} is deprecated; use POST /jobs and poll status_url."
+    return jsonify(body), 202
+
+
 @app.route("/process", methods=["POST"])
 def process():
     # #region agent log
@@ -2243,18 +2615,18 @@ def process():
         # #endregion
         payload = request.get_json(silent=True) or {}
         keys_before = sorted(payload.keys())
-        payload = _lift_n8n_wrapped_video_fields(payload)
+        payload = _lift_adapter_wrapped_video_fields(payload)
         keys_after = sorted(payload.keys())
         if keys_before != keys_after:
             # #region agent log
             _pipeline_diagnostic_log(
                 "H6",
                 "app.py:process",
-                "lifted fields from nested n8n wrapper",
+                "lifted fields from nested automation wrapper",
                 {"keys_before": keys_before, "keys_after": keys_after},
             )
             # #endregion
-        return _process_pipeline_json_payload(payload, route_label="process")
+        return _create_job_from_payload(payload, compatibility_route="/process")
 
     except Exception as e:
         print("[process] unexpected error:", repr(e), flush=True)
@@ -2271,14 +2643,39 @@ def process():
 
 @app.route("/process-inline", methods=["POST"])
 def process_inline():
-    """Same JSON contract as ``POST /process`` (video basename under configured input folder)."""
+    """Deprecated compatibility wrapper around ``POST /jobs``."""
     try:
         payload = request.get_json(silent=True) or {}
-        payload = _lift_n8n_wrapped_video_fields(payload)
-        return _process_pipeline_json_payload(payload, route_label="process-inline")
+        payload = _lift_adapter_wrapped_video_fields(payload)
+        return _create_job_from_payload(payload, compatibility_route="/process-inline")
     except Exception as e:
         print("[process-inline] unexpected error:", repr(e), flush=True)
         return _fail("Processing failed", log_detail=repr(e), status_code=500)
+
+
+@app.route("/upload", methods=["POST"])
+def upload():
+    """Optional upload helper; ``POST /jobs`` can upload and enqueue directly."""
+    try:
+        file_storage = request.files.get("video_file") or request.files.get("file")
+        if file_storage is None or not getattr(file_storage, "filename", ""):
+            return _fail("Missing multipart video_file", status_code=400)
+        filename, video_path = _save_uploaded_video_file(file_storage)
+        return jsonify(
+            {
+                "success": True,
+                "pipeline": PIPELINE_NAME,
+                "video": filename,
+                "video_path": video_path,
+                "deprecated": True,
+                "message": "POST /jobs accepts video_file directly; /upload is optional.",
+            }
+        )
+    except ValueError as exc:
+        return _fail(str(exc), status_code=400)
+    except Exception as exc:
+        print("[upload] unexpected error:", repr(exc), flush=True)
+        return _fail("Upload failed", log_detail=repr(exc), status_code=500)
 
 
 @app.route("/healthz", methods=["GET"])
@@ -2363,17 +2760,17 @@ def doctor():
         str((config.get("defaults") or {}).get("pipeline_profile") or "Not set"),
     )
 
-    probe_url = request.args.get("probe_url", "").strip()
-    if probe_url:
+    adapter_probe_url = request.args.get("adapter_probe_url", "").strip()
+    if adapter_probe_url:
         try:
-            req = urlrequest.Request(probe_url, method="GET")
+            req = urlrequest.Request(adapter_probe_url, method="GET")
             with urlrequest.urlopen(req, timeout=5) as resp:
-                _check("n8n_probe", 200 <= int(resp.status) < 400, f"HTTP {resp.status}")
+                _check("adapter_probe", 200 <= int(resp.status) < 400, f"HTTP {resp.status}")
         except Exception as e:
-            _check("n8n_probe", False, str(e))
+            _check("adapter_probe", False, str(e))
 
     all_ok = all(bool(c["ok"]) for c in checks)
-    # Always HTTP 200 so load balancers / n8n "credential test" treat the process as
+    # Always HTTP 200 so load balancers and external probes treat the process as
     # reachable; use JSON "ok" for readiness (deploy/scripts/doctor.sh checks "ok").
     return jsonify({"ok": all_ok, "checks": checks, "pipeline": PIPELINE_NAME}), 200
 

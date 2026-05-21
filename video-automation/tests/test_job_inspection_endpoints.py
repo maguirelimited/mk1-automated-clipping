@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import queue
+import time
 import sys
 from pathlib import Path
 
@@ -23,6 +25,13 @@ def _write_json(path: Path, payload: object) -> None:
 
 @pytest.fixture()
 def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    server_app._JOB_WORKERS_STARTED = False
+    while True:
+        try:
+            server_app._JOB_QUEUE.get_nowait()
+            server_app._JOB_QUEUE.task_done()
+        except queue.Empty:
+            break
     cfg_path = tmp_path / "pipeline_config.json"
     paths = {
         "input_folder": str(tmp_path / "input"),
@@ -38,6 +47,7 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
             "selection": {},
             "models": {},
             "chunking": {},
+            "async_worker": {"enabled": True, "max_concurrent_jobs": 1, "job_store_type": "json"},
         },
     )
     monkeypatch.setenv("PIPELINE_CONFIG_PATH", str(cfg_path))
@@ -156,7 +166,7 @@ def test_doctor_reports_linux_readiness_fields(client):
     assert "path_writable:input" in checks
 
 
-def test_get_job_returns_existing_report(client):
+def test_get_job_returns_status_payload(client):
     c, jobs_root = client
     job_id = "job_20260512T130000Z_1234abcd"
     report = _create_job(jobs_root, job_id=job_id, created_at="2026-05-12T13:00:00+00:00")
@@ -164,7 +174,27 @@ def test_get_job_returns_existing_report(client):
     resp = c.get(f"/jobs/{job_id}")
 
     assert resp.status_code == 200
-    assert resp.get_json() == report
+    data = resp.get_json()
+    assert data["job_id"] == report["job_id"]
+    assert data["status"] == "success"
+    assert data["current_stage"] == "success"
+    assert data["clips"][0]["title"] == "Useful Clip"
+    assert data["artifacts"]["report"]["exists"] is True
+
+
+def test_get_job_outputs_returns_clips_and_metadata(client):
+    c, jobs_root = client
+    job_id = "job_20260512T130000Z_1234abcd"
+    _create_job(jobs_root, job_id=job_id, created_at="2026-05-12T13:00:00+00:00")
+
+    resp = c.get(f"/jobs/{job_id}/outputs")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["success"] is True
+    assert data["ready"] is True
+    assert data["clips"][0]["hook"] == "A good hook"
+    assert data["metadata"]["clip_count"] == 1
 
 
 def test_get_job_debug_returns_compact_ai_summary(client):
@@ -226,7 +256,7 @@ def test_unsafe_job_ids_are_rejected(client, unsafe_id: str):
 def test_process_resolves_input_id_and_updates_ledger(
     client, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    c, _ = client
+    c, jobs_root = client
     monkeypatch.setenv("INPUT_JOB_LEDGER_DIR", str(tmp_path / "input_jobs"))
     monkeypatch.setattr(input_paths, "SEEN_FILE", tmp_path / "seen_urls.json")
     monkeypatch.setattr(
@@ -235,13 +265,34 @@ def test_process_resolves_input_id_and_updates_ledger(
         lambda **_: {"selection": {}, "policy_audit": {}, "models_effective": {}},
     )
 
-    def fake_run_pipeline(video_path: str, policy_bundle: dict, *, input_id: str | None = None):
+    def fake_run_pipeline(
+        video_path: str,
+        policy_bundle: dict,
+        *,
+        input_id: str | None = None,
+        job_id: str | None = None,
+    ):
+        report = {
+            "job_id": job_id,
+            "input_id": input_id,
+            "input_video_name": os.path.basename(video_path),
+            "status": "success",
+            "current_stage": "success",
+            "created_at": server_app.now_iso(),
+            "completed_at": server_app.now_iso(),
+            "errors": [],
+            "warnings": [],
+            "stage_timings_ms": {},
+            "clips": [{"clip_file": "clip_01.mp4"}],
+        }
+        for path in jobs_root.glob(f"*_{job_id}/report.json"):
+            path.write_text(json.dumps(report), encoding="utf-8")
         return server_app.jsonify(
             {
                 "success": True,
                 "pipeline": server_app.PIPELINE_NAME,
                 "input_id": input_id,
-                "job_id": "job_20260512T150000Z_deadbeef",
+                "job_id": job_id,
                 "run_id": "run_1",
                 "clips": [{"clip_file": "clip_01.mp4"}],
                 "source_video": os.path.basename(video_path),
@@ -266,10 +317,55 @@ def test_process_resolves_input_id_and_updates_ledger(
         },
     )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     body = resp.get_json()
     assert body["success"] is True
     assert body["input_id"] == record["input_id"]
+    deadline = time.time() + 3
+    updated = input_ledger.load_record(record["input_id"])
+    while updated["state"] != "succeeded" and time.time() < deadline:
+        time.sleep(0.05)
+        updated = input_ledger.load_record(record["input_id"])
     updated = input_ledger.load_record(record["input_id"])
     assert updated["state"] == "succeeded"
-    assert updated["result"]["pipeline_job_id"] == "job_20260512T150000Z_deadbeef"
+    assert updated["result"]["pipeline_job_id"] == body["job_id"]
+
+
+def test_post_jobs_creates_queued_job_from_existing_input(client, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    c, jobs_root = client
+    monkeypatch.setattr(
+        server_app,
+        "resolve_http_policy_bundle",
+        lambda **_: {"selection": {}, "policy_audit": {}, "models_effective": {}},
+    )
+    monkeypatch.setattr(server_app, "_enqueue_job", lambda task: None)
+    video_path = tmp_path / "source.mp4"
+    video_path.write_bytes(b"fake-video")
+
+    resp = c.post("/jobs", json={"video_path": str(video_path)})
+
+    assert resp.status_code == 202
+    data = resp.get_json()
+    assert data["status"] == "queued"
+    assert data["status_url"] == f"/jobs/{data['job_id']}"
+    reports = list(jobs_root.glob("*/report.json"))
+    assert len(reports) == 1
+    report = json.loads(reports[0].read_text(encoding="utf-8"))
+    assert report["job_id"] == data["job_id"]
+    assert report["status"] == "queued"
+
+
+def test_post_jobs_missing_input_writes_failed_report(client):
+    c, jobs_root = client
+
+    resp = c.post("/jobs", json={"video": "missing.mp4"})
+
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert data["status"] == "failed"
+    assert data["error"] == "Input video not found"
+    reports = list(jobs_root.glob("*/report.json"))
+    assert len(reports) == 1
+    report = json.loads(reports[0].read_text(encoding="utf-8"))
+    assert report["status"] == "failed"
+    assert report["errors"][0]["category"] == "input_video_not_found"

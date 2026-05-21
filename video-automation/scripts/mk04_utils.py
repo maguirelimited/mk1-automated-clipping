@@ -346,11 +346,14 @@ def validate_and_repair_selection(
     return valid, issues
 
 
-def create_job_paths(config: dict[str, Any], video_path: str) -> dict[str, str]:
+def create_job_paths(
+    config: dict[str, Any], video_path: str, *, job_id: str | None = None
+) -> dict[str, str]:
     paths = ensure_paths(config)
     video_name = os.path.basename(video_path)
     stem = os.path.splitext(video_name)[0]
-    job_id = f"job_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
+    if job_id is None:
+        job_id = f"job_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
     job_dir = os.path.join(paths["jobs"], f"{stem}_{job_id}")
     clips_dir = os.path.join(job_dir, "clips")
     os.makedirs(clips_dir, exist_ok=True)
