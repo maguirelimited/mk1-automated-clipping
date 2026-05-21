@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "funnel_id": "mfm_business_ai_001",
+  "funnel_name": "MFM Business AI",
+  "platforms": {
+    "tiktok": false,
+    "instagram_reels": false,
+    "youtube_shorts": true,
+    "x": false
+  },
+  "selection": {
+    "max_clips": 3,
+    "min_duration_sec": 30,
+    "max_duration_sec": 60,
+    "max_overlap_sec": 2
+  },
+  "output": {
+    "filename_prefix": "mfm_business_ai",
+    "delivery_mode": "pull_from_output_endpoint"
+  }
+}

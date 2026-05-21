@@ -1,0 +1,1 @@
+"""Platform publisher adapters."""

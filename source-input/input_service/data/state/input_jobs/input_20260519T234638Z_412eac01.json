@@ -1,0 +1,97 @@
+{
+  "created_at": "2026-05-19T23:46:38.678115+00:00",
+  "error": "Selection failed (chunked)",
+  "file_path": "/Users/anthonymaguire/VAmk0.4/video-automation/input/business_podcasts_001_source.mp4",
+  "funnel_id": "business_podcasts_001",
+  "funnel_policy": {
+    "analytics_config": {
+      "enabled": false,
+      "event_namespace": "business_podcasts_001",
+      "track_fields": [
+        "source_url",
+        "clip_count",
+        "posting_status"
+      ],
+      "webhook_url": ""
+    },
+    "max_downloads_per_run": 1,
+    "max_duration_seconds": 10800,
+    "min_duration_seconds": 1500,
+    "pipeline_profile": "business_podcasts_001",
+    "posting_config": {
+      "default_caption_style": "business-insight",
+      "enabled": false,
+      "hashtags": [
+        "business",
+        "founders",
+        "entrepreneurship"
+      ],
+      "mode": "manual_review",
+      "platforms": [],
+      "requires_human_approval": true
+    },
+    "title_allowlist": [],
+    "title_blocklist": [
+      "shorts",
+      "short",
+      "clip",
+      "clips",
+      "highlight",
+      "highlights",
+      "trailer",
+      "teaser",
+      "preview",
+      "compilation"
+    ]
+  },
+  "input_id": "input_20260519T234638Z_412eac01",
+  "job_id": "input_20260519T234638Z_412eac01",
+  "result": {
+    "pipeline_job_id": null,
+    "run_id": null,
+    "status_code": 500
+  },
+  "retry": {
+    "attempt_count": 1,
+    "last_attempt_at": "2026-05-19T23:46:38.678115+00:00",
+    "max_attempts": 1
+  },
+  "schema_version": 1,
+  "source_metadata": {
+    "channel": "The Diary Of A CEO",
+    "duration_seconds": 6049,
+    "source_id": "diary_of_a_ceo",
+    "source_label": "The Diary Of A CEO",
+    "source_type": "youtube_channel",
+    "source_url": "https://www.youtube.com/@TheDiaryOfACEO/videos",
+    "timestamp": 1777532441,
+    "title": "Stock Expert: Becoming Rich Is Simple, But You Won\u2019t Do It!",
+    "upload_date": "20260430",
+    "video_id": "jLFG_FZKbks"
+  },
+  "source_url": "https://www.youtube.com/watch?v=jLFG_FZKbks",
+  "state": "failed",
+  "state_history": [
+    {
+      "at": "2026-05-19T23:46:38.678115+00:00",
+      "state": "discovered"
+    },
+    {
+      "at": "2026-05-19T23:48:30.368880+00:00",
+      "from_state": "discovered",
+      "state": "downloaded"
+    },
+    {
+      "at": "2026-05-19T23:48:31.281595+00:00",
+      "from_state": "downloaded",
+      "state": "processing"
+    },
+    {
+      "at": "2026-05-20T00:04:13.793820+00:00",
+      "error": "Selection failed (chunked)",
+      "from_state": "processing",
+      "state": "failed"
+    }
+  ],
+  "updated_at": "2026-05-20T00:04:13.793820+00:00"
+}

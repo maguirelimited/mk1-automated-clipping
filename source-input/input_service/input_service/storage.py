@@ -2,8 +2,8 @@
 
 Primary destination is ``video_automation_inputs_dir()`` (typically
 ``<repo>/video-automation/input``) with a predictable flat name
-``{funnel_id}_source.mp4`` (see ``paths.clipping_input_video_path``) so
-n8n can pass that basename to ``/process`` on the clipping server.
+``{funnel_id}_source.mp4`` (see ``paths.clipping_input_video_path``) for
+video-automation ``POST /jobs`` via ``input_id``.
 
 Legacy fallback (unchanged layout): if the primary store fails and the download
 file still exists, we store under ``data/inputs/ready/<funnel_id>/source.mp4``

@@ -175,11 +175,14 @@ and failed validations are never marked as seen.
 
 ## n8n integration
 
+n8n only triggers input ingestion. Clipping starts automatically when input is ready.
+
 ```
-n8n daily trigger
-  → HTTP POST http://localhost:5060/run-funnel
+n8n daily trigger (or manual)
+  → HTTP POST http://host.docker.internal:5060/run-funnel
       body: { "funnel_id": "business_podcasts_001" }
-  → if status == "input_ready", trigger clipping automation
-      with the returned video_path
-  → n8n handles upload flow
+  → if status == "input_ready", done (clipping enqueued internally)
+  → if status == "no_input_available", stop or notify
 ```
+
+Both services must be running: input on **5060**, video-automation on **5050**.

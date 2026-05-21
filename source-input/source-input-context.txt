@@ -175,16 +175,13 @@ input_service/
 
 ## Integration with the clipping pipeline (`video-automation`)
 
-The clipping server **`POST /process`** takes **`video`** as a basename only; that file must already exist under the clipping server’s **`input/`** directory (see **`video-automation/context/system-context.txt`**). It does **not** ingest arbitrary absolute **`input_ready`** **`video_path`** values from another host or root without a prior copy/move into **`input/`**.
+On **`input_ready`**, **`runner.run_funnel`** stores the file under **`video-automation/input/`** (flat name **`{funnel_id}_source.mp4`**) and automatically calls video-automation **`POST /jobs`** with **`input_id`** and **`pipeline_profile`**. n8n does **not** call clipping endpoints.
 
-Recommended orchestration after **`input_ready`:**
+Configure video-automation URL via **`VIDEO_AUTOMATION_BASE_URL`** (default **`http://127.0.0.1:5050`**). Set **`CLIPPING_AUTO_ENQUEUE=0`** only to disable the handoff.
 
-1. **Copy or move** (or NFS/shared volume) **`source.mp4`** into **`video-automation/input/`** under a deterministic name (**e.g. keep `source.mp4` per funnel/job**).
-2. Call **`POST /process`** with **`{ "video": "<that basename>", "pipeline_profile": "<pipeline_profile from input_ready>" }`**. In normal operation n8n should not send clip-duration overrides; funnel behaviour lives in repo catalogs.
+Clips and job artifacts are written by video-automation under **`output/`** and **`jobs/`**. External upload/delivery (e.g. n8n → Drive) is out of scope for the core pipeline.
 
-The older clipping-server **`POST /upload`** and **`POST /process-inline`** ingestion routes were removed because current orchestration uses file handoff into `input/` plus `/process`. They can be restored from earlier versions if HTTP multipart or base64 ingestion is needed again.
-
-Both services remain **deployable independently**; n8n (or equivalent) owns ordering and retries.
+Both services remain **deployable independently**; n8n (or cron) triggers **`/run-funnel` only**.
 
 
 ## Non-goals (unchanged intent)
@@ -201,3 +198,98 @@ Repo-level deployment artifacts live under **`automated-content/VAmk0.4/deploy/`
 - **`deploy/scripts/doctor.sh`**: calls both source-input and video-automation doctor endpoints.
 
 This service’s env template is **`input_service/.env.example`**.
+
+
+
+example config:
+[
+  {
+    "funnel_id": "business_podcasts_001",
+    "angle": "business founder podcasts",
+    "source_type": "youtube_channels",
+    "pipeline_profile": "business_podcasts_001",
+    "sources": [
+      {
+        "source_id": "diary_of_a_ceo",
+        "label": "The Diary Of A CEO",
+        "source_type": "youtube_channel",
+        "url": "https://www.youtube.com/@TheDiaryOfACEO/videos",
+        "active": true,
+        "max_videos_per_source": 25,
+        "hydrate_missing_duration": true,
+        "title_blocklist": [
+          "shorts",
+          "short",
+          "clip",
+          "clips",
+          "highlight",
+          "highlights",
+          "trailer",
+          "teaser",
+          "preview",
+          "compilation"
+        ]
+      }
+    ],
+    "min_duration_minutes": 25,
+    "max_duration_minutes": 180,
+    "max_downloads_per_run": 1,
+    "posting_config": {
+      "enabled": false,
+      "mode": "manual_review",
+      "platforms": [],
+      "default_caption_style": "business-insight",
+      "hashtags": [
+        "business",
+        "founders",
+        "entrepreneurship"
+      ],
+      "requires_human_approval": true
+    },
+    "analytics_config": {
+      "enabled": false,
+      "event_namespace": "business_podcasts_001",
+      "webhook_url": "",
+      "track_fields": [
+        "source_url",
+        "clip_count",
+        "posting_status"
+      ]
+    },
+    "active": true
+  },
+  {
+    "funnel_id": "template_youtube_podcast_001",
+    "angle": "copy this inactive template for a new YouTube podcast funnel",
+    "source_type": "youtube_channels",
+    "pipeline_profile": "template_youtube_podcast_001",
+    "sources": [
+      {
+        "source_id": "replace_me",
+        "label": "Replace Me Channel",
+        "source_type": "youtube_channel",
+        "url": "https://www.youtube.com/@ReplaceMe/videos",
+        "active": false,
+        "max_videos_per_source": 25,
+        "hydrate_missing_duration": true
+      }
+    ],
+    "min_duration_minutes": 20,
+    "max_duration_minutes": 180,
+    "max_downloads_per_run": 1,
+    "posting_config": {
+      "enabled": false,
+      "mode": "manual_review",
+      "platforms": [],
+      "hashtags": [],
+      "requires_human_approval": true
+    },
+    "analytics_config": {
+      "enabled": false,
+      "event_namespace": "template_youtube_podcast_001",
+      "webhook_url": "",
+      "track_fields": []
+    },
+    "active": false
+  }
+]

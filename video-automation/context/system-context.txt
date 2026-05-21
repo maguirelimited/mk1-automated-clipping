@@ -80,7 +80,7 @@ COMPATIBILITY ENDPOINTS
 
 AUTOMATED INPUT SERVICE (COORDINATION ONLY)
 - **Not part of this repo’s Flask pipeline process** — sibling project `source-input/input_service/` (see **`source-input/source-input-context.txt`**).
-- Expected pattern: **`POST …/run-funnel`** → if **`input_ready`**, call **`POST /jobs`** with `input_id` or a resolved source path, then poll `status_url`. The input service also returns **`posting_config`** and **`analytics_config`** for orchestration/post-run routing; clipping behaviour remains owned by **`video_pipeline_profiles.json`**.
+- Expected pattern: n8n triggers **`POST …/run-funnel` only**; on **`input_ready`**, source-input auto-calls **`POST /jobs`** with `input_id`. Poll or inspect job folders only for debugging; no n8n webhook delivery. Clipping behaviour remains owned by **`video_pipeline_profiles.json`**.
 
 ERROR HANDLING (SERVER)
 - Failures return `{ "success": false, "error": "<message>", "pipeline": "mk0.4" }` (typical **`500`**; **`400`** for bad input paths; **`404`** missing clip).

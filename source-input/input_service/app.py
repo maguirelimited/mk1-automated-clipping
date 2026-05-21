@@ -29,7 +29,8 @@ from flask import Flask, jsonify, request
 
 from input_service import paths
 from input_service.funnel_loader import FunnelInvalidError, list_funnels
-from input_service.runner import run_funnel
+from input_service.clipping_client import probe_clipping_health, video_automation_base_url
+from input_service.runner import emit_progress, run_funnel
 
 
 logging.basicConfig(
@@ -62,68 +63,6 @@ def _check_secret() -> tuple[dict, int] | None:
 def create_app() -> Flask:
     paths.ensure_dirs()
     app = Flask(__name__)
-
-    # #region agent log
-    def _debug_ingest(hypothesis_id: str, location: str, message: str, data: dict[str, object]) -> None:
-        try:
-            import time as _time
-
-            with open(
-                "/Users/anthonymaguire/VAmk0.4/.cursor/debug-673866.log",
-                "a",
-                encoding="utf-8",
-            ) as _f:
-                _f.write(
-                    json.dumps(
-                        {
-                            "sessionId": "673866",
-                            "runId": "n8n-offline-retry",
-                            "hypothesisId": hypothesis_id,
-                            "location": location,
-                            "message": message,
-                            "data": data,
-                            "timestamp": int(_time.time() * 1000),
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-        except Exception:
-            pass
-
-    @app.before_request
-    def _debug_log_incoming_request():
-        _debug_ingest(
-            "H1_H3_H5",
-            "source-input/input_service/app.py:before_request",
-            "incoming_request",
-            {
-                "service": "input_service",
-                "method": request.method,
-                "path": request.path,
-                "remote_addr": getattr(request, "remote_addr", None),
-                "host_header": request.headers.get("Host"),
-                "content_length": request.content_length,
-                "has_secret_header": bool((request.headers.get("X-Input-Service-Secret") or "").strip()),
-                "secret_required": bool(os.environ.get("INPUT_SERVICE_SECRET", "").strip()),
-            },
-        )
-
-    @app.after_request
-    def _debug_log_response(response):
-        _debug_ingest(
-            "H1_H4_H5",
-            "source-input/input_service/app.py:after_request",
-            "response",
-            {
-                "service": "input_service",
-                "path": request.path,
-                "status_code": response.status_code,
-            },
-        )
-        return response
-
-    # #endregion
 
     @app.get("/healthz")
     def healthz():
@@ -229,6 +168,14 @@ def create_app() -> Flask:
         except FunnelInvalidError as exc:
             _check("funnels_config", False, str(exc))
 
+        clip_ok, clip_detail = probe_clipping_health()
+        _check("video_automation_healthz", clip_ok, clip_detail)
+        _check(
+            "video_automation_base_url",
+            True,
+            video_automation_base_url(),
+        )
+
         all_ok = all(bool(c["ok"]) for c in checks)
         # Always HTTP 200 when this handler runs; JSON "ok" reflects readiness.
         return jsonify({"ok": all_ok, "service": "input_service", "checks": checks}), 200
@@ -294,7 +241,12 @@ def create_app() -> Flask:
 
         try:
             log.info("run_funnel start funnel_id=%s", funnel_id)
+            emit_progress("POST /run-funnel accepted", funnel_id=funnel_id)
             result = run_funnel(funnel_id)
+            emit_progress(
+                f"Run finished — status={result.get('status')}",
+                funnel_id=funnel_id,
+            )
             log.info("run_funnel end funnel_id=%s status=%s", funnel_id, result.get("status"))
             http_code = 200 if result.get("success") else 500
             # For "no_input_available" we still return 200 (success=true).

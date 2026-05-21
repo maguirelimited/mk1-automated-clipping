@@ -1,15 +1,15 @@
 [
   {
-    "funnel_id": "business_podcasts_001",
-    "angle": "business founder podcasts",
+    "funnel_id": "mfm_business_ai_001",
+    "angle": "business productivity ai leverage podcasts",
     "source_type": "youtube_channels",
-    "pipeline_profile": "business_podcasts_001",
+    "pipeline_profile": "mfm_business_ai_001",
     "sources": [
       {
-        "source_id": "diary_of_a_ceo",
-        "label": "The Diary Of A CEO",
+        "source_id": "my_first_million",
+        "label": "My First Million",
         "source_type": "youtube_channel",
-        "url": "https://www.youtube.com/@TheDiaryOfACEO/videos",
+        "url": "https://www.youtube.com/@MyFirstMillionPod/videos",
         "active": true,
         "max_videos_per_source": 25,
         "hydrate_missing_duration": true,
@@ -33,21 +33,27 @@
     "posting_config": {
       "enabled": false,
       "mode": "manual_review",
-      "platforms": [],
+      "platforms": [
+        "youtube_shorts"
+      ],
       "default_caption_style": "business-insight",
       "hashtags": [
         "business",
-        "founders",
-        "entrepreneurship"
+        "productivity",
+        "aitools",
+        "startups",
+        "entrepreneurship",
+        "saas"
       ],
       "requires_human_approval": true
     },
     "analytics_config": {
       "enabled": false,
-      "event_namespace": "business_podcasts_001",
+      "event_namespace": "mfm_business_ai_001",
       "webhook_url": "",
       "track_fields": [
         "source_url",
+        "source_title",
         "clip_count",
         "posting_status"
       ]

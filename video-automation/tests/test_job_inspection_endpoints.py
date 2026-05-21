@@ -197,6 +197,85 @@ def test_get_job_outputs_returns_clips_and_metadata(client):
     assert data["metadata"]["clip_count"] == 1
 
 
+def test_output_funnel_handoff_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    report_path = tmp_path / "report.json"
+    report = {"job_id": "job_20260512T130000Z_1234abcd", "status": "success", "clips": []}
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"success": true, "registered": []}'
+
+    calls = []
+
+    def fake_urlopen(req, timeout):
+        calls.append((req, timeout))
+        return FakeResponse()
+
+    monkeypatch.setenv("OUTPUT_FUNNEL_URL", "http://output-funnel.test")
+    monkeypatch.setattr(server_app.urlrequest, "urlopen", fake_urlopen)
+
+    result = server_app._try_output_funnel_handoff(report, report_path=str(report_path))
+
+    assert result["ok"] is True
+    assert result["status_code"] == 200
+    assert calls
+
+
+def test_output_funnel_handoff_down_is_nonfatal(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    report_path = tmp_path / "report.json"
+    report = {"job_id": "job_20260512T130000Z_1234abcd", "status": "success", "clips": []}
+
+    def fake_urlopen(_req, timeout):
+        raise OSError("connection refused")
+
+    monkeypatch.setenv("OUTPUT_FUNNEL_URL", "http://127.0.0.1:5999")
+    monkeypatch.setattr(server_app.urlrequest, "urlopen", fake_urlopen)
+
+    result = server_app._try_output_funnel_handoff(report, report_path=str(report_path))
+
+    assert result["enabled"] is True
+    assert result["ok"] is False
+    assert "connection refused" in result["error"]
+
+
+def test_output_funnel_schedule_lines_include_publish_at():
+    handoff = {
+        "response": {
+            "processing": {
+                "schedule": {
+                    "results": [
+                        {
+                            "upload_job_id": 7,
+                            "scheduled": True,
+                            "platform_publish_at": "2026-05-22T09:00:00Z",
+                        },
+                        {
+                            "upload_job_id": 8,
+                            "scheduled": False,
+                            "reason": "profile_not_found",
+                        },
+                    ]
+                }
+            }
+        }
+    }
+
+    lines = server_app._output_funnel_schedule_lines(handoff)
+
+    assert lines == [
+        "upload_job_id=7 publish_at=2026-05-22T09:00:00Z",
+        "upload_job_id=8 schedule_failed=profile_not_found",
+    ]
+
+
 def test_get_job_debug_returns_compact_ai_summary(client):
     c, jobs_root = client
     job_id = "job_20260512T140000Z_abcdef12"

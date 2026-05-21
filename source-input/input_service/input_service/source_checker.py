@@ -79,7 +79,7 @@ def _normalise_source_url(source_url: str, source_type: str) -> str:
     return source_url.strip()
 
 
-def _flat_extract(url: str, max_items: int) -> dict[str, Any]:
+def _flat_extract_playlist_items(url: str, playlist_items: str) -> dict[str, Any]:
     if YoutubeDL is None:
         raise SourceCheckError("yt-dlp is not installed; cannot check sources.")
     opts = {
@@ -88,16 +88,24 @@ def _flat_extract(url: str, max_items: int) -> dict[str, Any]:
         "skip_download": True,
         "extract_flat": "in_playlist",
         "ignoreerrors": True,
-        "playlist_items": f"1-{max_items}",
+        "playlist_items": playlist_items,
     }
     opts = apply_yt_dlp_auth_runtime_options(opts)
-    log.info("Checking source with yt-dlp: url=%s max_items=%s", url, max_items)
+    log.info("Checking source with yt-dlp: url=%s playlist_items=%s", url, playlist_items)
     with YoutubeDL(opts) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
         except DownloadError as exc:
             raise SourceCheckError(f"yt-dlp failed for {url}: {exc}") from exc
     return info or {}
+
+
+def _flat_extract(url: str, max_items: int) -> dict[str, Any]:
+    return _flat_extract_playlist_items(url, f"1-{max_items}")
+
+
+def _flat_extract_one(url: str, index: int) -> dict[str, Any]:
+    return _flat_extract_playlist_items(url, str(index))
 
 
 def _entries(info: dict[str, Any]) -> Iterable[dict[str, Any]]:
@@ -333,3 +341,103 @@ def check_sources(
     log.info("Candidate source check complete: candidates=%s", len(results))
 
     return results
+
+
+def iter_source_candidates(
+    sources: Iterable[Any],
+    *,
+    max_per_source: int = DEFAULT_MAX_VIDEOS_PER_SOURCE,
+    hydrate_missing_duration: bool = True,
+    seen: Any | None = None,
+) -> Iterable[Candidate]:
+    """Yield candidates in source order, hydrating and skipping seen URLs one at a time."""
+    failures: list[tuple[str, str]] = []
+    yielded = 0
+
+    for raw_source in sources:
+        if isinstance(raw_source, str):
+            configured_url = raw_source
+            source_type = "youtube_channels"
+            source_id = None
+            source_label = None
+            source_active = True
+            local_max = max_per_source
+            local_hydrate = hydrate_missing_duration
+            title_blocklist: tuple[str, ...] = ()
+            title_allowlist: tuple[str, ...] = ()
+        else:
+            configured_url = str(_source_attr(raw_source, "url", "") or "")
+            source_type = str(_source_attr(raw_source, "source_type", "youtube_channels"))
+            source_id = _source_attr(raw_source, "source_id", None)
+            source_label = _source_attr(raw_source, "label", None)
+            source_active = bool(_source_attr(raw_source, "active", True))
+            local_max = int(_source_attr(raw_source, "max_videos_per_source", 0) or max_per_source)
+            local_hydrate = bool(_source_attr(raw_source, "hydrate_missing_duration", hydrate_missing_duration))
+            title_blocklist = tuple(_source_attr(raw_source, "title_blocklist", ()) or ())
+            title_allowlist = tuple(_source_attr(raw_source, "title_allowlist", ()) or ())
+
+        if not source_active:
+            continue
+
+        source_url = _normalise_source_url(configured_url, source_type)
+        log.info(
+            "Source being checked: source_id=%s type=%s url=%s max_items=%s",
+            source_id or "<legacy>",
+            source_type,
+            source_url,
+            local_max,
+        )
+        source_count = 0
+        for index in range(1, local_max + 1):
+            try:
+                info = _flat_extract_one(source_url, index)
+            except SourceCheckError as exc:
+                log.warning("Source check failed for %s item %s: %s", source_url, index, exc)
+                failures.append((source_url, str(exc)))
+                break
+
+            entries = list(_entries(info))
+            if not entries:
+                continue
+            for entry in entries:
+                cand = _entry_to_candidate(
+                    entry,
+                    source_url=configured_url,
+                    source_id=str(source_id) if source_id else None,
+                    source_type=source_type,
+                    source_label=str(source_label) if source_label else None,
+                    hydrate_missing_duration=local_hydrate,
+                    title_blocklist=title_blocklist,
+                    title_allowlist=title_allowlist,
+                )
+                if cand is None:
+                    continue
+                cand.extra.update(
+                    {
+                        "source_id": str(source_id) if source_id else None,
+                        "source_type": source_type,
+                        "source_label": str(source_label) if source_label else None,
+                        "hydrate_missing_duration": local_hydrate,
+                        "title_blocklist": list(title_blocklist),
+                        "title_allowlist": list(title_allowlist),
+                    }
+                )
+                source_count += 1
+                if seen is not None and seen.is_seen(video_id=cand.video_id, url=cand.url):
+                    log.info("Skipping seen candidate before hydration: url=%s", cand.url)
+                    continue
+                if local_hydrate and (cand.duration_seconds is None or not cand.upload_date):
+                    log.info("Hydrating candidate metadata: url=%s", cand.url)
+                    cand = _hydrate_metadata(cand)
+                yielded += 1
+                yield cand
+        log.info(
+            "Candidate videos inspected for source_id=%s: %s (yielded_total=%s)",
+            source_id or "<legacy>",
+            source_count,
+            yielded,
+        )
+
+    if yielded == 0 and failures:
+        joined = "; ".join(f"{u}: {e}" for u, e in failures)
+        raise SourceCheckError(f"All sources failed to check: {joined}")

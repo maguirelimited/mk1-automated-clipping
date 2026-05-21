@@ -1,14 +1,14 @@
 # Migration Notes: Internal Job API
 
-The clipping server no longer depends on n8n as part of core processing. External automation can still call the HTTP API, but the pipeline now owns job creation, status, artifacts, and failure evidence.
+The clipping server no longer depends on n8n as part of core processing. n8n should only trigger source input (`POST /run-funnel` on port 5060). When input is ready, the input service automatically enqueues clipping on video-automation (`POST /jobs`).
 
 ## New Flow
 
-1. Send a source video to `POST /jobs`.
-2. The API immediately creates a job folder with `report.json` and `review.md`, returns `job_id`, `status`, `status_url`, and `outputs_url`.
-3. An internal worker processes one job at a time by default: transcription, AI clip selection, timestamp validation/repair, ffmpeg clipping, analytics, and artifact writes.
-4. Poll `GET /jobs/<job_id>` for `queued`, `running`, `success`, or `failed`.
-5. Fetch completed clip metadata from `GET /jobs/<job_id>/outputs`; clip files remain available through `/output/<clip_file>`.
+1. n8n (or cron) calls `POST /run-funnel` with `{ "funnel_id": "..." }`.
+2. On `input_ready`, the input service calls video-automation `POST /jobs` with `input_id` (no n8n clipping step).
+3. The clipping API creates a job folder with `report.json` and `review.md`, returns `job_id`, and an internal worker runs transcription, selection, validation, clipping, and analytics.
+4. Inspect progress via `GET /jobs/<job_id>` or job folders under `video-automation/jobs/`.
+5. Clips land in `video-automation/output/`; metadata in `GET /jobs/<job_id>/outputs` and `/output/<clip_file>`.
 
 ## Example Requests
 
@@ -17,7 +17,7 @@ Upload and enqueue in one call:
 ```bash
 curl -sS -X POST http://127.0.0.1:5050/jobs \
   -F "video_file=@/path/to/source.mp4" \
-  -F 'selection={"max_clips":3,"min_duration_sec":30,"max_duration_sec":120}'
+  -F 'selection={"max_clips":8,"min_duration_sec":30,"max_duration_sec":120}'
 ```
 
 Process an existing file in `video-automation/input/`:
@@ -41,7 +41,7 @@ curl -sS http://127.0.0.1:5050/jobs/<job_id>/outputs
 
 `POST /upload` remains as an optional helper, but callers can upload directly to `POST /jobs`.
 
-Automation platforms, including n8n, should call `POST /jobs`, poll `status_url`, and retrieve outputs from `outputs_url`. No direct webhook delivery is part of the core pipeline.
+n8n does not need to call `POST /jobs`, poll status, or receive webhooks. Manual/API access to `/jobs` remains for debugging and future tooling.
 
 ## Configuration
 

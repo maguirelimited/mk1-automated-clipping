@@ -1,0 +1,94 @@
+{
+  "created_at": "2026-05-21T19:16:27.037468+00:00",
+  "error": "clipping_enqueue_failed: clipping_unreachable: <urlopen error [Errno 61] Connection refused>",
+  "file_path": "/Users/anthonymaguire/VAmk0.4/video-automation/input/mfm_business_ai_001_source.mp4",
+  "funnel_id": "mfm_business_ai_001",
+  "funnel_policy": {
+    "analytics_config": {
+      "enabled": false,
+      "event_namespace": "mfm_business_ai_001",
+      "track_fields": [
+        "source_url",
+        "source_title",
+        "clip_count",
+        "posting_status"
+      ],
+      "webhook_url": ""
+    },
+    "max_downloads_per_run": 1,
+    "max_duration_seconds": 10800,
+    "min_duration_seconds": 1500,
+    "pipeline_profile": "mfm_business_ai_001",
+    "posting_config": {
+      "default_caption_style": "business-insight",
+      "enabled": false,
+      "hashtags": [
+        "business",
+        "productivity",
+        "aitools",
+        "startups",
+        "entrepreneurship",
+        "saas"
+      ],
+      "mode": "manual_review",
+      "platforms": [
+        "youtube_shorts"
+      ],
+      "requires_human_approval": true
+    },
+    "title_allowlist": [],
+    "title_blocklist": [
+      "shorts",
+      "short",
+      "clip",
+      "clips",
+      "highlight",
+      "highlights",
+      "trailer",
+      "teaser",
+      "preview",
+      "compilation"
+    ]
+  },
+  "input_id": "input_20260521T191627Z_67f77278",
+  "job_id": "input_20260521T191627Z_67f77278",
+  "result": {},
+  "retry": {
+    "attempt_count": 1,
+    "last_attempt_at": "2026-05-21T19:16:27.037468+00:00",
+    "max_attempts": 1
+  },
+  "schema_version": 1,
+  "source_metadata": {
+    "channel": "My First Million",
+    "duration_seconds": 2923,
+    "source_id": "my_first_million",
+    "source_label": "My First Million",
+    "source_type": "youtube_channel",
+    "source_url": "https://www.youtube.com/@MyFirstMillionPod/videos",
+    "timestamp": 1779186634,
+    "title": "Gary Vee runs 7 businesses doing $10M+ each",
+    "upload_date": "20260519",
+    "video_id": "byAExsTL4g0"
+  },
+  "source_url": "https://www.youtube.com/watch?v=byAExsTL4g0",
+  "state": "failed",
+  "state_history": [
+    {
+      "at": "2026-05-21T19:16:27.037468+00:00",
+      "state": "discovered"
+    },
+    {
+      "at": "2026-05-21T19:17:01.255485+00:00",
+      "from_state": "discovered",
+      "state": "downloaded"
+    },
+    {
+      "at": "2026-05-21T19:17:01.285017+00:00",
+      "error": "clipping_enqueue_failed: clipping_unreachable: <urlopen error [Errno 61] Connection refused>",
+      "from_state": "downloaded",
+      "state": "failed"
+    }
+  ],
+  "updated_at": "2026-05-21T19:17:01.285017+00:00"
+}

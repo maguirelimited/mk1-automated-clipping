@@ -1,0 +1,96 @@
+{
+  "created_at": "2026-05-20T00:21:18.107090+00:00",
+  "error": null,
+  "file_path": "/Users/anthonymaguire/VAmk0.4/video-automation/input/business_podcasts_001_source.mp4",
+  "funnel_id": "business_podcasts_001",
+  "funnel_policy": {
+    "analytics_config": {
+      "enabled": false,
+      "event_namespace": "business_podcasts_001",
+      "track_fields": [
+        "source_url",
+        "clip_count",
+        "posting_status"
+      ],
+      "webhook_url": ""
+    },
+    "max_downloads_per_run": 1,
+    "max_duration_seconds": 10800,
+    "min_duration_seconds": 1500,
+    "pipeline_profile": "business_podcasts_001",
+    "posting_config": {
+      "default_caption_style": "business-insight",
+      "enabled": false,
+      "hashtags": [
+        "business",
+        "founders",
+        "entrepreneurship"
+      ],
+      "mode": "manual_review",
+      "platforms": [],
+      "requires_human_approval": true
+    },
+    "title_allowlist": [],
+    "title_blocklist": [
+      "shorts",
+      "short",
+      "clip",
+      "clips",
+      "highlight",
+      "highlights",
+      "trailer",
+      "teaser",
+      "preview",
+      "compilation"
+    ]
+  },
+  "input_id": "input_20260520T002118Z_aff092ac",
+  "job_id": "input_20260520T002118Z_aff092ac",
+  "result": {
+    "clip_count": 3,
+    "pipeline_job_id": "job_20260520T002334Z_d326888a",
+    "run_id": "5476c306264c4a969c26bae141f6b9f8"
+  },
+  "retry": {
+    "attempt_count": 1,
+    "last_attempt_at": "2026-05-20T00:21:18.107090+00:00",
+    "max_attempts": 1
+  },
+  "schema_version": 1,
+  "source_metadata": {
+    "channel": "The Diary Of A CEO",
+    "duration_seconds": 6049,
+    "source_id": "diary_of_a_ceo",
+    "source_label": "The Diary Of A CEO",
+    "source_type": "youtube_channel",
+    "source_url": "https://www.youtube.com/@TheDiaryOfACEO/videos",
+    "timestamp": 1777532441,
+    "title": "Stock Expert: Becoming Rich Is Simple, But You Won\u2019t Do It!",
+    "upload_date": "20260430",
+    "video_id": "jLFG_FZKbks"
+  },
+  "source_url": "https://www.youtube.com/watch?v=jLFG_FZKbks",
+  "state": "succeeded",
+  "state_history": [
+    {
+      "at": "2026-05-20T00:21:18.107090+00:00",
+      "state": "discovered"
+    },
+    {
+      "at": "2026-05-20T00:23:34.306342+00:00",
+      "from_state": "discovered",
+      "state": "downloaded"
+    },
+    {
+      "at": "2026-05-20T00:23:35.518650+00:00",
+      "from_state": "downloaded",
+      "state": "processing"
+    },
+    {
+      "at": "2026-05-20T00:39:34.950324+00:00",
+      "from_state": "processing",
+      "state": "succeeded"
+    }
+  ],
+  "updated_at": "2026-05-20T00:39:34.950324+00:00"
+}

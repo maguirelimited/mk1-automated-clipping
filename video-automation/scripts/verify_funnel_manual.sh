@@ -3,12 +3,12 @@
 # Run from repo root or video-automation; requires a running clipper and a file in input/.
 #
 # 1) Default funnel (uses defaults.default_funnel_id in pipeline_config.json when set):
-#    curl -sS -X POST http://127.0.0.1:5050/process \
+#    curl -sS -X POST http://127.0.0.1:5050/jobs \
 #      -H 'Content-Type: application/json' \
 #      -d '{"video":"YOUR_FILE.mp4"}' | jq '{funnel_id, funnel_name, enabled_platforms, funnel_policy_summary, funnel}'
 #
 # 2) Explicit funnel:
-#    curl -sS -X POST http://127.0.0.1:5050/process \
+#    curl -sS -X POST http://127.0.0.1:5050/jobs \
 #      -H 'Content-Type: application/json' \
 #      -d '{"video":"YOUR_FILE.mp4","funnel_id":"business_clips_test"}' | jq '{funnel_id, enabled_platforms, funnel}'
 #

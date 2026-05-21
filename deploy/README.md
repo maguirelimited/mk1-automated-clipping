@@ -13,7 +13,7 @@ runtime stack, setting real absolute paths, and keeping runtime storage durable.
   validates, clips, and writes analytics events.
 
 Both services are intentionally independent. n8n or another scheduler should
-call source-input first, then hand the ready file to video-automation.
+call source-input only (`POST /run-funnel`); input_ready auto-enqueues clipping on video-automation.
 
 ## Fresh Ubuntu/Linux Setup
 
@@ -165,15 +165,12 @@ This exercises the service boundary without changing pipeline behavior.
    If `INPUT_SERVICE_SECRET` is configured, add
    `-H "X-Input-Service-Secret: $INPUT_SERVICE_SECRET"`.
 
-3. If the response returns `status: "input_ready"`, process the basename that
-   was copied into `video-automation/input`. The default copied filename is
-   `<funnel_id>_source.mp4`:
+3. If the response returns `status: "input_ready"`, source-input has already
+   enqueued clipping on video-automation through `POST /jobs`. Inspect the
+   returned metadata or `video-automation/jobs/` for the created job.
 
    ```bash
-   curl -fsS \
-     -H "Content-Type: application/json" \
-     -d '{"video":"business_podcasts_001_source.mp4","pipeline_profile":"business_podcasts_001"}' \
-     http://127.0.0.1:5050/process
+   curl -fsS http://127.0.0.1:5050/jobs/<job_id>
    ```
 
 4. Fetch one returned clip URL:
@@ -237,34 +234,13 @@ In ephemeral containers or short-lived VMs, mount these as volumes. Losing
 `seen_urls.json` can cause duplicate source selection; losing `jobs`, `output`,
 or `analytics` removes audit and delivery artifacts.
 
-## n8n and Linux Paths
-
-The n8n context files under `video-automation/context/n8n-context/` are examples
-from a developer setup. Any old macOS host paths such as `/Users/...` are not
-portable deployment values.
-
-On Linux, configure n8n volumes/workflows to either:
-
-- use real Linux host paths, for example `/var/lib/mk04/video-automation/input`;
-  or
-- rely on API-returned paths and `/output/<clip_file>` URLs instead of hardcoded
-  host paths.
-
-For Docker Engine on Linux, the compose example includes
-`host.docker.internal:host-gateway` so n8n containers can reach services running
-on the host.
-
 ## Normal Orchestration
 
 1. `POST /run-funnel` to source-input with `{ "funnel_id": "..." }`.
-2. If `status == "input_ready"`, use the returned `video_path` or the predictable
-   copied basename in `video-automation/input/`.
-3. `POST /process` to video-automation with the basename and, if needed,
-   `pipeline_profile` from source-input. Avoid sending `selection` overrides
-   unless it is an explicit runtime exception.
-4. Fetch clips from `/output/<clip_file>`.
-5. Post platform performance back to `POST /analytics/feedback` with `job_id`,
-   `clip_id`, `platform`, `posted_url`, and `metrics`.
+2. On `input_ready`, source-input enqueues video-automation `POST /jobs` internally.
+3. Clips appear under `video-automation/output/`; inspect `video-automation/jobs/<job_id>/`.
+4. Optional later: external upload via other tools (not part of core pipeline).
+5. Optional: `POST /analytics/feedback` on video-automation for performance metrics.
 
 ## Common Failures
 
@@ -279,8 +255,3 @@ on the host.
 - **source `/doctor` says funnels config invalid**: fix
   `source-input/input_service/config/funnels.json`; use `GET /funnels` to view
   the validated manifest.
-- **n8n cannot reach host services on Linux Docker**: keep the
-  `host.docker.internal:host-gateway` mapping or use the host IP reachable from
-  the container.
-- **n8n cannot download clips**: ensure `/output/<clip_file>` is reachable from
-  n8n and `video-automation/output` is persistent.

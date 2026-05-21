@@ -16,6 +16,32 @@ from flask import Flask, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
+
+
+def _load_project_env_file() -> None:
+    """Load ``video-automation/.env`` when present (does not override existing env)."""
+    env_path = os.path.join(_PROJECT_DIR, ".env")
+    if not os.path.isfile(env_path):
+        return
+    try:
+        with open(env_path, "r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                if not key or key in os.environ:
+                    continue
+                value = value.strip().strip('"').strip("'")
+                os.environ[key] = value
+    except OSError:
+        pass
+
+
+_load_project_env_file()
+
 _SCRIPTS_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "scripts"))
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
@@ -156,6 +182,105 @@ class SelectorCallError(RuntimeError):
         super().__init__(message)
         self.details = details
         self.status_code = status_code
+
+
+def _progress_enabled() -> bool:
+    return os.environ.get("PIPELINE_PROGRESS", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _progress(message: str, *, job_id: str | None = None) -> None:
+    """Human-readable pipeline breadcrumbs on the app server terminal."""
+    if not _progress_enabled():
+        return
+    prefix = "[pipeline]"
+    if job_id:
+        prefix = f"[pipeline job={job_id}]"
+    print(f"{prefix} {message}", flush=True)
+
+
+def _output_funnel_handoff_enabled() -> bool:
+    raw = os.environ.get("OUTPUT_FUNNEL_HANDOFF_ENABLED", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _output_funnel_url() -> str | None:
+    raw = os.environ.get("OUTPUT_FUNNEL_URL", "http://127.0.0.1:5055").strip()
+    return raw.rstrip("/") if raw else None
+
+
+def _output_funnel_timeout_sec() -> float:
+    raw = os.environ.get("OUTPUT_FUNNEL_HANDOFF_TIMEOUT_SEC", "2").strip()
+    try:
+        return max(0.1, float(raw))
+    except ValueError:
+        return 2.0
+
+
+def _try_output_funnel_handoff(report: dict[str, Any], *, report_path: str) -> dict[str, Any]:
+    """Best-effort downstream registration; never blocks successful clip output."""
+    if not _output_funnel_handoff_enabled():
+        return {"enabled": False, "ok": False, "reason": "disabled"}
+    base_url = _output_funnel_url()
+    if not base_url:
+        return {"enabled": False, "ok": False, "reason": "missing_output_funnel_url"}
+    payload = {
+        "report_path": os.path.abspath(report_path),
+        "payload": report,
+    }
+    try:
+        body = json.dumps(payload).encode("utf-8")
+        req = urlrequest.Request(
+            f"{base_url}/registrations/from-job",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlrequest.urlopen(req, timeout=_output_funnel_timeout_sec()) as resp:
+            text = resp.read().decode("utf-8", errors="replace")
+            try:
+                parsed = json.loads(text or "{}")
+            except json.JSONDecodeError:
+                parsed = {"raw_response": text[:500]}
+            ok = 200 <= int(resp.status) < 300 and parsed.get("success") is not False
+            return {
+                "enabled": True,
+                "ok": ok,
+                "url": base_url,
+                "status_code": int(resp.status),
+                "response": parsed,
+                "at": now_iso(),
+            }
+    except Exception as exc:
+        return {
+            "enabled": True,
+            "ok": False,
+            "url": base_url,
+            "error": repr(exc),
+            "at": now_iso(),
+        }
+
+
+def _output_funnel_schedule_lines(handoff: dict[str, Any]) -> list[str]:
+    response = handoff.get("response") if isinstance(handoff.get("response"), dict) else {}
+    processing = response.get("processing") if isinstance(response.get("processing"), dict) else {}
+    schedule = processing.get("schedule") if isinstance(processing.get("schedule"), dict) else {}
+    results = schedule.get("results") if isinstance(schedule.get("results"), list) else []
+    lines: list[str] = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        upload_job_id = item.get("upload_job_id")
+        if item.get("scheduled") is True:
+            publish_at = item.get("platform_publish_at") or item.get("scheduled_at")
+            lines.append(f"upload_job_id={upload_job_id} publish_at={publish_at}")
+        else:
+            lines.append(f"upload_job_id={upload_job_id} schedule_failed={item.get('reason')}")
+    return lines
 
 
 def _fail(message: str, *, log_detail=None, status_code=500):
@@ -1175,6 +1300,11 @@ def _execute_job(task: dict[str, Any]) -> None:
     job_id = str(task["job_id"])
     input_id = task.get("input_id")
     video_path = str(task["video_path"])
+    _progress(
+        f"Worker picked up job — {os.path.basename(video_path)}"
+        + (f" (input_id={input_id})" if input_id else ""),
+        job_id=job_id,
+    )
     try:
         _update_job_report(
             job,
@@ -1227,6 +1357,14 @@ def _execute_job(task: dict[str, Any]) -> None:
             write_json(job["report_path"], report)
             write_review(job["review_path"], report)
         _sync_input_ledger_terminal(str(input_id) if input_id else None, body, int(status_code))
+        if body.get("success"):
+            clip_n = len(body.get("clips") or [])
+            _progress(f"Job finished OK — {clip_n} clip(s)", job_id=job_id)
+        else:
+            _progress(
+                f"Job finished with error: {body.get('error') or 'unknown'}",
+                job_id=job_id,
+            )
     except Exception as exc:
         err = categorize_error("pipeline", "worker_exception", "Job worker failed", repr(exc))
         report = _load_json_object(job["report_path"]) or {}
@@ -1247,6 +1385,7 @@ def _execute_job(task: dict[str, Any]) -> None:
                 input_ledger.mark_failed(str(input_id), f"pipeline_exception: {exc}")
             except input_ledger.LedgerError:
                 print("[jobs] input ledger exception update failed", flush=True)
+        _progress(f"Job crashed: {exc}", job_id=job_id)
     finally:
         _JOB_QUEUE.task_done()
 
@@ -1419,6 +1558,10 @@ def _run_pipeline(
     selector_window_paths: list[str] = []
 
     maybe_copy(video_path, job["input_copy_path"])
+    jid = str(job["job_id"])
+    dur = report.get("video_duration_sec")
+    dur_note = f", {float(dur):.0f}s" if isinstance(dur, (int, float)) else ""
+    _progress(f"Starting — {os.path.basename(video_path)}{dur_note}", job_id=jid)
 
     try:
         if report["video_duration_sec"] is None:
@@ -1444,6 +1587,8 @@ def _run_pipeline(
         use_chunks = should_use_chunked_transcription(chunk_cfg, vd)
 
         if not use_chunks:
+            _progress("Transcribing (Whisper)…", job_id=jid)
+            report["current_stage"] = "transcription"
             t0 = time.perf_counter()
             transcribe = subprocess.run(
                 [PYTHON, script_transcribe, video_path],
@@ -1500,8 +1645,10 @@ def _run_pipeline(
                     status_code=422,
                 )
             write_json(job["normalized_transcript_path"], transcript_payload)
+            _progress("Transcription done — selecting clips…", job_id=jid)
 
             t1 = time.perf_counter()
+            report["current_stage"] = "selection"
             try:
                 candidate_segments, selector_summary = _select_candidates_from_transcript(
                     script_select=script_select,
@@ -1561,6 +1708,10 @@ def _run_pipeline(
                 return _fail("Invalid selection output", log_detail=str(e), status_code=500)
             stage_ms["selection_ms"] = int((time.perf_counter() - t1) * 1000)
             report["selector"] = selector_summary
+            _progress(
+                f"Selection done — {len(processed_segments)} segment(s) to clip",
+                job_id=jid,
+            )
 
         else:
             report["chunked"] = True
@@ -1596,10 +1747,19 @@ def _run_pipeline(
                     {"start_sec": float(s), "duration_sec": float(d)} for s, d in specs
                 ],
             }
+            _progress(
+                f"Long video — {num_chunks} chunk(s); transcribing each…",
+                job_id=jid,
+            )
+            report["current_stage"] = "transcription"
 
             zip_paths_offsets: list[tuple[str, float]] = []
             t0 = time.perf_counter()
             for idx, (start_sec, dur_sec) in enumerate(specs):
+                _progress(
+                    f"Chunk {idx + 1}/{num_chunks}: extract + transcribe…",
+                    job_id=jid,
+                )
                 chunk_vid = os.path.join(
                     chunk_job_dir, f"c_{idx:03d}_{job['job_id']}.mp4"
                 )
@@ -1660,6 +1820,7 @@ def _run_pipeline(
                 zip_paths_offsets.append((whisper_path, float(start_sec)))
 
             stage_ms["transcription_ms"] = int((time.perf_counter() - t0) * 1000)
+            _progress("All chunks transcribed — merging transcript…", job_id=jid)
 
             merged_path = os.path.abspath(
                 os.path.join(temp_root, f"{filename}_{job['job_id']}_merged.json")
@@ -1688,11 +1849,17 @@ def _run_pipeline(
                     status_code=422,
                 )
             write_json(job["normalized_transcript_path"], transcript_payload)
+            _progress("Merged transcript ready — selecting clips per chunk…", job_id=jid)
 
             t1 = time.perf_counter()
+            report["current_stage"] = "selection"
             combined_segments: list[dict] = []
             chunk_selector_summaries: list[dict[str, object]] = []
             for idx, (start_sec, dur_sec) in enumerate(specs):
+                _progress(
+                    f"Chunk {idx + 1}/{num_chunks}: selecting clips…",
+                    job_id=jid,
+                )
                 whisper_path_chunk = zip_paths_offsets[idx][0]
                 chunk_vid = os.path.join(
                     chunk_job_dir, f"c_{idx:03d}_{job['job_id']}.mp4"
@@ -1804,6 +1971,10 @@ def _run_pipeline(
                 report["errors"] = [err]
                 _mark_report_failed(report)
                 return _fail("Invalid selection output", log_detail=str(e), status_code=500)
+            _progress(
+                f"Selection done — {len(processed_segments)} segment(s) to clip",
+                job_id=jid,
+            )
 
         validated_segments, validation_issues = validate_and_repair_selection(
             processed_segments,
@@ -1832,11 +2003,15 @@ def _run_pipeline(
             },
         )
 
+        clip_total = len(validated_segments)
+        _progress(f"Clipping {clip_total} segment(s) with FFmpeg…", job_id=jid)
+        report["current_stage"] = "clipping"
         t2 = time.perf_counter()
         clips: list[dict[str, object]] = []
         for index, segment in enumerate(validated_segments, start=1):
             start = str(segment["start"]).strip()
             end = str(segment["end"]).strip()
+            _progress(f"Clip {index}/{clip_total} ({start}–{end})", job_id=jid)
             if filename_prefix:
                 clip_name = f"{filename_prefix}_clip_{index:02d}_{uuid.uuid4().hex[:8]}.mp4"
             else:
@@ -1943,6 +2118,26 @@ def _run_pipeline(
         stage_ms["total_ms"] = int((time.perf_counter() - total_started) * 1000)
         write_json(job["report_path"], report)
         write_review(job["review_path"], report)
+        _progress(f"Done — {len(clips)} clip(s) ready", job_id=jid)
+        handoff = _try_output_funnel_handoff(report, report_path=job["report_path"])
+        report["output_funnel_handoff"] = handoff
+        write_json(job["report_path"], report)
+        if handoff.get("ok") is True:
+            _progress("Output funnel handoff registered", job_id=jid)
+            for line in _output_funnel_schedule_lines(handoff):
+                _progress(f"Output funnel scheduled — {line}", job_id=jid)
+        elif handoff.get("enabled") is True:
+            warnings.append(
+                categorize_error(
+                    "output_funnel",
+                    "handoff_unavailable",
+                    "Output funnel handoff failed; clips remain available in video-automation outputs.",
+                    handoff,
+                )
+            )
+            report["warnings"] = warnings
+            write_json(job["report_path"], report)
+            _progress("Output funnel unavailable; clips remain ready locally", job_id=jid)
 
         run_id = uuid.uuid4().hex
         funnel_record = report.get("funnel")
@@ -2550,6 +2745,10 @@ def _create_job_from_payload(payload: dict[str, Any], *, compatibility_route: st
     }
     try:
         _enqueue_job(task)
+        _progress(
+            f"Queued — {os.path.basename(video_path)} (poll GET /jobs/{job_id})",
+            job_id=job_id,
+        )
     except Exception as exc:
         err = categorize_error("pipeline", "queue_error", "Failed to enqueue job", repr(exc))
         errors = report.get("errors") if isinstance(report.get("errors"), list) else []

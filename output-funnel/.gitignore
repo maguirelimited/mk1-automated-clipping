@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+
+# Local runtime state
+data/
+.env
+*.log
+
+# OAuth secrets / tokens
+credentials/
+*.client_secret.json
+*.token.json
