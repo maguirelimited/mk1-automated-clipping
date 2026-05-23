@@ -71,8 +71,9 @@ class StorageClippingPathTests(unittest.TestCase):
         from input_service.storage import store_ready
 
         funnel_id = "_smoketest_storage_verify"
+        input_id = "input_20260522T120000Z_abc123ef"
         dest_expected = (
-            MONO_ROOT / "video-automation" / "input" / f"{funnel_id}_source.mp4"
+            MONO_ROOT / "video-automation" / "input" / f"{input_id}_{funnel_id}_source.mp4"
         )
 
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
@@ -80,7 +81,7 @@ class StorageClippingPathTests(unittest.TestCase):
             src = Path(tmp.name)
 
         try:
-            out = store_ready(src, funnel_id)
+            out = store_ready(src, funnel_id, input_id=input_id)
             self.assertEqual(out.resolve(), dest_expected.resolve())
             self.assertTrue(out.is_file(), f"missing {out}")
             self.assertGreater(out.stat().st_size, 0)

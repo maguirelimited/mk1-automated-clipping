@@ -409,7 +409,7 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
             emit_progress("Valid — copying into pipeline input folder…", funnel_id=funnel.funnel_id)
             # store (video-automation input dir first; local READY_DIR as fallback)
             try:
-                ready_path = store_ready(dl.file_path, funnel.funnel_id)
+                ready_path = store_ready(dl.file_path, funnel.funnel_id, input_id=input_id)
             except StorageError as exc:
                 log.error("Storage failed for %s: %s", dl.file_path, exc)
                 try:
@@ -487,7 +487,6 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
                 "status_url": clipping.get("status_url"),
                 "outputs_url": clipping.get("outputs_url"),
             }
-            seen.mark_seen(video_id=cand.video_id, url=cand.url)
             return payload
     except SourceCheckError as exc:
         log.info(

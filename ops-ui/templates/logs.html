@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <h2>Service logs</h2>
+    <span class="muted">last {{ journal_lines }} lines per unit</span>
+  </div>
+  <form class="stack log-search" method="get" action="{{ url_for('logs') }}">
+    <label for="job">Job / upload ID filter</label>
+    <input id="job" name="job" type="text" value="{{ job_filter }}" placeholder="e.g. job_20260512T140000Z_abcdef12">
+    <label for="q">Search logs</label>
+    <input id="q" name="q" type="text" value="{{ query }}" placeholder="error, ffmpeg, traceback, funnel_id…">
+    <div class="actions">
+      <button type="submit">Apply filters</button>
+      <a class="button-link" href="{{ url_for('logs') }}">Clear</a>
+      <a class="button-link" href="{{ url_for('download_logs', q=query, job=job_filter) }}">Download filtered logs</a>
+    </div>
+  </form>
+</section>
+
+<section class="stack">
+  {% for unit in units %}
+    <article class="card">
+      <div class="card-head">
+        <div>
+          <p class="eyebrow">{{ unit.unit }}</p>
+          <h2>{{ unit.label }} logs</h2>
+        </div>
+        <span class="muted">{{ unit.matched_lines }} / {{ unit.total_lines }} lines</span>
+      </div>
+      <pre class="logs">{{ unit.text }}</pre>
+    </article>
+  {% endfor %}
+</section>
+{% endblock %}

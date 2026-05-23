@@ -26,6 +26,7 @@ def _write_json(path: Path, payload: object) -> None:
 @pytest.fixture()
 def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     server_app._JOB_WORKERS_STARTED = False
+    server_app._JOB_RECOVERY_DONE = False
     while True:
         try:
             server_app._JOB_QUEUE.get_nowait()
@@ -51,6 +52,7 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         },
     )
     monkeypatch.setenv("PIPELINE_CONFIG_PATH", str(cfg_path))
+    monkeypatch.delenv("VIDEO_AUTOMATION_SECRET", raising=False)
     for folder in paths.values():
         Path(folder).mkdir(parents=True, exist_ok=True)
     with server_app.app.test_client() as c:
@@ -164,6 +166,20 @@ def test_doctor_reports_linux_readiness_fields(client):
     assert "python_executable" in checks
     assert "flask_import" in checks
     assert "path_writable:input" in checks
+
+
+def test_secret_protects_non_health_endpoints(client, monkeypatch: pytest.MonkeyPatch):
+    c, _ = client
+    monkeypatch.setenv("VIDEO_AUTOMATION_SECRET", "secret-1")
+
+    health = c.get("/healthz")
+    assert health.status_code == 200
+
+    denied = c.get("/jobs")
+    assert denied.status_code == 401
+
+    allowed = c.get("/jobs", headers={"X-Video-Automation-Secret": "secret-1"})
+    assert allowed.status_code == 200
 
 
 def test_get_job_returns_status_payload(client):
@@ -410,7 +426,7 @@ def test_process_resolves_input_id_and_updates_ledger(
     assert updated["result"]["pipeline_job_id"] == body["job_id"]
 
 
-def test_post_jobs_creates_queued_job_from_existing_input(client, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def test_post_jobs_rejects_absolute_path_outside_input_root(client, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     c, jobs_root = client
     monkeypatch.setattr(
         server_app,
@@ -419,6 +435,25 @@ def test_post_jobs_creates_queued_job_from_existing_input(client, monkeypatch: p
     )
     monkeypatch.setattr(server_app, "_enqueue_job", lambda task: None)
     video_path = tmp_path / "source.mp4"
+    video_path.write_bytes(b"fake-video")
+
+    resp = c.post("/jobs", json={"video_path": str(video_path)})
+
+    assert resp.status_code == 400
+    assert "configured input folder" in resp.get_json()["error"]
+    assert list(jobs_root.glob("*/report.json")) == []
+
+
+def test_post_jobs_creates_queued_job_from_input_folder_path(client, monkeypatch: pytest.MonkeyPatch):
+    c, jobs_root = client
+    monkeypatch.setattr(
+        server_app,
+        "resolve_http_policy_bundle",
+        lambda **_: {"selection": {}, "policy_audit": {}, "models_effective": {}},
+    )
+    monkeypatch.setattr(server_app, "_enqueue_job", lambda task: None)
+    input_root = Path(server_app.ensure_paths(server_app.load_config())["input"])
+    video_path = input_root / "source.mp4"
     video_path.write_bytes(b"fake-video")
 
     resp = c.post("/jobs", json={"video_path": str(video_path)})
@@ -432,6 +467,7 @@ def test_post_jobs_creates_queued_job_from_existing_input(client, monkeypatch: p
     report = json.loads(reports[0].read_text(encoding="utf-8"))
     assert report["job_id"] == data["job_id"]
     assert report["status"] == "queued"
+    assert (reports[0].parent / "task.json").is_file()
 
 
 def test_post_jobs_missing_input_writes_failed_report(client):
@@ -448,3 +484,66 @@ def test_post_jobs_missing_input_writes_failed_report(client):
     report = json.loads(reports[0].read_text(encoding="utf-8"))
     assert report["status"] == "failed"
     assert report["errors"][0]["category"] == "input_video_not_found"
+
+
+def test_recover_pending_jobs_requeues_disk_task(client, monkeypatch: pytest.MonkeyPatch):
+    c, jobs_root = client
+    input_root = Path(server_app.ensure_paths(server_app.load_config())["input"])
+    video_path = input_root / "recover.mp4"
+    video_path.write_bytes(b"fake-video")
+    job_id = "job_20260522T120000Z_abc123ef"
+    job_dir = jobs_root / f"recover_{job_id}"
+    job_dir.mkdir(parents=True)
+    report_path = job_dir / "report.json"
+    task_path = job_dir / "task.json"
+    review_path = job_dir / "review.md"
+    job = {
+        "job_id": job_id,
+        "job_dir": str(job_dir),
+        "clips_dir": str(job_dir / "clips"),
+        "input_copy_path": str(job_dir / "input_recover.mp4"),
+        "transcript_copy_path": str(job_dir / "transcript.json"),
+        "normalized_transcript_path": str(job_dir / "transcript_payload.json"),
+        "selection_path": str(job_dir / "selection.json"),
+        "report_path": str(report_path),
+        "task_path": str(task_path),
+        "analytics_path": str(job_dir / "analytics.json"),
+        "review_path": str(review_path),
+    }
+    _write_json(
+        report_path,
+        {
+            "job_id": job_id,
+            "input_video_name": "recover.mp4",
+            "input_video_path": str(video_path),
+            "status": "queued",
+            "created_at": "2026-05-22T12:00:00+00:00",
+            "errors": [],
+            "warnings": [],
+            "clips": [],
+        },
+    )
+    _write_json(
+        task_path,
+        {
+            "job_id": job_id,
+            "job": job,
+            "video_path": str(video_path),
+            "input_id": None,
+            "input_source": "input_folder",
+            "policy_bundle": {"selection": {}, "policy_audit": {}, "models_effective": {}},
+            "created_at": "2026-05-22T12:00:00+00:00",
+        },
+    )
+    server_app._JOB_RECOVERY_DONE = False
+    recovered: list[dict] = []
+    monkeypatch.setattr(server_app._JOB_QUEUE, "put", lambda task: recovered.append(task))
+    monkeypatch.setattr(server_app, "_ensure_job_workers_started", lambda: None)
+
+    count = server_app._recover_pending_jobs_once()
+
+    assert count == 1
+    assert recovered[0]["job_id"] == job_id
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["status"] == "queued"
+    assert report["recovered_at"]

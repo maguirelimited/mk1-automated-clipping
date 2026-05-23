@@ -1,9 +1,9 @@
 """Move a validated media file into the clipping service input folder.
 
 Primary destination is ``video_automation_inputs_dir()`` (typically
-``<repo>/video-automation/input``) with a predictable flat name
-``{funnel_id}_source.mp4`` (see ``paths.clipping_input_video_path``) for
-video-automation ``POST /jobs`` via ``input_id``.
+``<repo>/video-automation/input``) with an immutable ``input_id``-keyed name
+(see ``paths.clipping_input_video_path``) for video-automation ``POST /jobs``
+via ``input_id``.
 
 Legacy fallback (unchanged layout): if the primary store fails and the download
 file still exists, we store under ``data/inputs/ready/<funnel_id>/source.mp4``
@@ -70,12 +70,12 @@ def _atomic_store_ready(downloaded_file: Path, dest: Path) -> Path:
     return resolved
 
 
-def store_ready(downloaded_file: Path, funnel_id: str) -> Path:
-    """Move ``downloaded_file`` into the clipping input slot for ``funnel_id``.
+def store_ready(downloaded_file: Path, funnel_id: str, *, input_id: str | None = None) -> Path:
+    """Move ``downloaded_file`` into the immutable clipping input slot.
 
     Returns the absolute destination path. Raises ``StorageError`` on failure.
     """
-    primary = paths.clipping_input_video_path(funnel_id)
+    primary = paths.clipping_input_video_path(funnel_id, input_id=input_id)
     try:
         return _atomic_store_ready(downloaded_file, primary)
     except StorageError as exc:
@@ -91,7 +91,7 @@ def store_ready(downloaded_file: Path, funnel_id: str) -> Path:
                 "Primary store failed and the source download file is no longer present: "
                 f"{exc}"
             ) from exc
-        fallback = paths.ready_video_path(funnel_id)
+        fallback = paths.ready_video_path(funnel_id, input_id=input_id)
         return _atomic_store_ready(downloaded_file, fallback)
 
 

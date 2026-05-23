@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .debug_log import agent_debug_log
 from .models import RouteResult, UploadStatus
 from .store import OutputStore
 
@@ -76,6 +77,17 @@ def route_upload_job(
 
     sorted_profiles = sorted(profiles, key=lambda p: int(p.get("priority") or 1000))
     last_reason: str | None = None
+    agent_debug_log(
+        hypothesis_id="D",
+        location="router.py:route_upload_job",
+        message="routing attempt",
+        data={
+            "upload_job_id": upload_job_id,
+            "platform": upload_job.get("platform"),
+            "funnel_id": _funnel_id(source_clip),
+            "profile_count": len(sorted_profiles),
+        },
+    )
     for profile in sorted_profiles:
         matched, reason = profile_matches(source_clip, upload_job, profile)
         if matched:

@@ -12,7 +12,7 @@ def preferred_media_path(clip: SourceClip | dict[str, Any]) -> str | None:
     if isinstance(clip, SourceClip):
         candidates = (clip.job_clip_path, clip.clip_path)
     else:
-        candidates = (clip.get("job_clip_path"), clip.get("clip_path"))
+        candidates = (clip.get("rendered_asset_path"), clip.get("job_clip_path"), clip.get("clip_path"))
     for raw in candidates:
         if isinstance(raw, str) and raw.strip():
             return os.path.abspath(os.path.expanduser(raw.strip()))

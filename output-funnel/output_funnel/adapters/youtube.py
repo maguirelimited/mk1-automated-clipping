@@ -81,10 +81,13 @@ class YouTubeAdapter(PlatformAdapter):
         media_path = preferred_media_path(source_clip)
         if not media_path or not os.path.isfile(media_path) or os.path.getsize(media_path) <= 0:
             return "media_file_unavailable"
-        publish_at = parse_iso_datetime(str(upload_job.get("platform_publish_at") or ""))
+        publish_at = parse_iso_datetime(
+            str(upload_job.get("platform_publish_at") or upload_job.get("publish_at") or "")
+        )
         if publish_at is None:
             return "missing_or_invalid_publish_at"
-        if publish_at <= datetime.now(UTC) + timedelta(minutes=15):
+        min_lead_minutes = _min_publish_at_lead_minutes()
+        if publish_at <= datetime.now(UTC) + timedelta(minutes=min_lead_minutes):
             return "publish_at_not_safely_future"
         style = profile.get("metadata_style") if isinstance(profile.get("metadata_style"), dict) else {}
         if str(style.get("privacy_status") or "private") != "private":
@@ -97,7 +100,9 @@ class YouTubeAdapter(PlatformAdapter):
 
     def _build_body(self, upload_job: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
         style = profile.get("metadata_style") if isinstance(profile.get("metadata_style"), dict) else {}
-        publish_at = parse_iso_datetime(str(upload_job.get("platform_publish_at") or ""))
+        publish_at = parse_iso_datetime(
+            str(upload_job.get("platform_publish_at") or upload_job.get("publish_at") or "")
+        )
         return {
             "snippet": {
                 "title": str(upload_job.get("normalized_title") or ""),
@@ -128,6 +133,26 @@ class YouTubeAdapter(PlatformAdapter):
             raise RuntimeError("YouTube token file env var is not configured")
         credentials = Credentials.from_authorized_user_file(token_file, scopes=[YOUTUBE_UPLOAD_SCOPE])
         return build("youtube", "v3", credentials=credentials)
+
+
+def _min_publish_at_lead_minutes() -> int:
+    raw = os.environ.get("OUTPUT_FUNNEL_YT_MIN_PUBLISH_LEAD_MINUTES", "").strip()
+    if raw:
+        try:
+            return max(15, int(raw))
+        except ValueError:
+            pass
+    try:
+        from output_funnel.config import load_settings
+
+        cfg = load_settings()
+        yt = cfg.get("youtube") if isinstance(cfg.get("youtube"), dict) else {}
+        value = yt.get("min_publish_at_lead_minutes")
+        if value is not None:
+            return max(15, int(value))
+    except Exception:
+        pass
+    return 15
 
 
 def _safe_response(response: dict[str, Any]) -> dict[str, Any]:

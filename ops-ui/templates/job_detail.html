@@ -1,0 +1,319 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <div>
+      <p class="eyebrow">{{ kind }} job</p>
+      <h2 class="mono">{{ job_id }}</h2>
+    </div>
+    <span class="pill {{ status|status_class }}">{{ status }}</span>
+  </div>
+  <div class="actions">
+    <a class="button-link" href="{{ url_for('failed_jobs') }}">← Failed jobs</a>
+    <a class="button-link" href="{{ url_for('logs', job=job_id) }}">Filter service logs</a>
+    {% if can_rerun %}
+      <form method="post" action="{{ url_for('retry_video_job', job_id=job_id) }}">
+        <button type="submit">Rerun clipping job</button>
+      </form>
+    {% endif %}
+    {% if can_retry_upload %}
+      <form method="post" action="{{ url_for('retry_upload', upload_job_id=job_id) }}">
+        <button type="submit">Retry upload</button>
+      </form>
+    {% endif %}
+    {% if kind == 'upload' %}
+      <a class="button-link" href="{{ url_for('publishing') }}">← Upload queue</a>
+      {% if can_manual_upload %}
+        <form method="post" action="{{ url_for('manual_upload', upload_job_id=job_id) }}">
+          <button type="submit">Upload now</button>
+        </form>
+      {% elif uploads_paused %}
+        <span class="muted">Manual upload blocked (emergency stop).</span>
+      {% endif %}
+      {% if can_cancel %}
+        <form method="post" action="{{ url_for('cancel_upload', upload_job_id=job_id) }}">
+          <button type="submit">Cancel upload</button>
+        </form>
+      {% endif %}
+    {% endif %}
+  </div>
+</section>
+
+{% if kind == 'upload' %}
+<section class="grid grid-2">
+  <article class="card">
+    <div class="card-head"><h2>Platform visibility</h2></div>
+    <dl>
+      <div><dt>Publish confirmation</dt><dd><span class="pill {{ publish_confirmation|status_class }}">{{ publish_confirmation }}</span></dd></div>
+      <div><dt>Platform video ID</dt><dd class="mono">{{ platform_video_id or '—' }}</dd></div>
+      <div><dt>Platform state</dt><dd>{{ platform_state or '—' }}</dd></div>
+      <div><dt>Upload processing</dt><dd>{{ status }}</dd></div>
+      <div><dt>Last error</dt><dd>{{ errors or '—' }}</dd></div>
+    </dl>
+  </article>
+  <article class="card">
+    <div class="card-head"><h2>Upload latency</h2></div>
+    <dl>
+      <div><dt>Upload duration</dt><dd>{{ upload_latency.upload_duration_label }}</dd></div>
+      <div><dt>Queue wait</dt><dd>{{ upload_latency.queue_wait_label }}</dd></div>
+      <div><dt>Upload started</dt><dd>{{ upload_latency.upload_started_at or '—' }}</dd></div>
+      <div><dt>Uploaded at</dt><dd>{{ upload_latency.uploaded_at or '—' }}</dd></div>
+    </dl>
+  </article>
+</section>
+
+{% if can_reschedule %}
+<section class="card">
+  <div class="card-head"><h2>Reschedule upload</h2><span class="muted">ISO UTC timestamp</span></div>
+  <form class="stack inline-form" method="post" action="{{ url_for('reschedule_upload', upload_job_id=job_id) }}">
+    <label for="publish_at">New publish at</label>
+    <input id="publish_at" name="publish_at" type="text" placeholder="2026-05-24T18:00:00Z" required>
+    <button type="submit">Reschedule</button>
+  </form>
+</section>
+{% endif %}
+
+{% if upload_attempts %}
+<section class="card">
+  <div class="card-head"><h2>Upload attempts</h2><span class="muted">{{ upload_attempts|length }} rows</span></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>When</th><th>Status</th><th>Error</th><th>Retryable</th></tr></thead>
+      <tbody>
+        {% for attempt in upload_attempts %}
+          <tr>
+            <td>{{ attempt.attempted_at }}</td>
+            <td><span class="pill {{ attempt.status|status_class }}">{{ attempt.status }}</span></td>
+            <td>{{ attempt.error_message or attempt.error_category or '—' }}</td>
+            <td>{{ 'yes' if attempt.retryable else 'no' }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% endif %}
+
+{% if pipeline_stages %}
+<section class="card">
+  <div class="card-head"><h2>Pipeline stages</h2><span class="muted">derived from timings + current stage</span></div>
+  <ol class="stage-list">
+    {% for stage in pipeline_stages %}
+      <li class="stage-item stage-{{ stage.state }}">
+        <span class="stage-label">{{ stage.label }}</span>
+        <span class="stage-meta">{{ stage.duration_label }}</span>
+        <span class="pill {{ stage.state }}">{{ stage.state }}</span>
+      </li>
+    {% endfor %}
+  </ol>
+</section>
+{% endif %}
+
+<section class="grid grid-2">
+  <article class="card">
+    <div class="card-head"><h2>Status</h2></div>
+    <dl>
+      {% for label, value in status_rows %}
+        <div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>
+      {% endfor %}
+    </dl>
+  </article>
+
+  <article class="card">
+    <div class="card-head"><h2>Stage timings</h2></div>
+    {% if stage_timings %}
+      <dl>
+        {% for name, ms in stage_timings.items() %}
+          <div><dt>{{ name }}</dt><dd>{{ ms }} ms</dd></div>
+        {% endfor %}
+      </dl>
+    {% else %}
+      <p class="muted">No stage timings recorded.</p>
+    {% endif %}
+  </article>
+</section>
+
+{% if funnel %}
+<section class="card">
+  <div class="card-head"><h2>Funnel &amp; pipeline profile</h2></div>
+  <dl>
+    <div><dt>Funnel ID</dt><dd>{{ funnel.funnel_id or '—' }}</dd></div>
+    <div><dt>Pipeline profile</dt><dd>{{ funnel.pipeline_profile or '—' }}</dd></div>
+    {% if funnel.platform %}<div><dt>Platform</dt><dd>{{ funnel.platform }} / {{ funnel.channel_id or '—' }}</dd></div>{% endif %}
+    {% if funnel.funnel_config %}<div><dt>Funnel config</dt><dd class="mono">{{ funnel.funnel_config }}</dd></div>{% endif %}
+    {% if funnel.selection_source %}<div><dt>Selection source</dt><dd>{{ funnel.selection_source }}</dd></div>{% endif %}
+  </dl>
+  {% if funnel.policy_resolution %}
+    <details class="artifact-block">
+      <summary>Policy resolution JSON</summary>
+      <pre class="logs">{{ funnel.policy_resolution | tojson(indent=2) }}</pre>
+    </details>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if input_source %}
+<section class="card">
+  <div class="card-head"><h2>Input source</h2><span class="muted">source-input ledger</span></div>
+  {% if input_source.available %}
+    <dl>
+      <div><dt>State</dt><dd>{{ input_source.state }}</dd></div>
+      <div><dt>Funnel</dt><dd>{{ input_source.funnel_id or '—' }}</dd></div>
+      <div><dt>File</dt><dd class="mono">{{ input_source.file_path or '—' }}</dd></div>
+      <div><dt>URL</dt><dd>{{ input_source.source_url or '—' }}</dd></div>
+      <div><dt>Ledger path</dt><dd class="mono">{{ input_source.ledger_path }}</dd></div>
+    </dl>
+    <details class="artifact-block">
+      <summary>Full ledger record</summary>
+      <pre class="logs">{{ input_source.record | tojson(indent=2) }}</pre>
+    </details>
+  {% else %}
+    <p class="muted">{{ input_source.reason or 'Input ledger record unavailable on this host.' }}</p>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if transcript.stats or transcript.segments or transcript.preview_text %}
+<section class="card">
+  <div class="card-head"><h2>Transcript</h2>
+    {% if transcript.stats.available %}<span class="muted">{{ transcript.stats.segment_count }} segments</span>{% endif %}
+  </div>
+  {% if transcript.stats.available %}
+    <dl>
+      <div><dt>Language</dt><dd>{{ transcript.stats.language or '—' }}</dd></div>
+      <div><dt>Chars</dt><dd>{{ transcript.stats.text_char_count }}</dd></div>
+      <div><dt>Duration</dt><dd>{{ transcript.stats.duration_sec or '—' }} s</dd></div>
+      <div><dt>Artifact</dt><dd class="mono">{{ transcript.path or '—' }}</dd></div>
+    </dl>
+  {% endif %}
+  {% if transcript.preview_text %}
+    <details class="artifact-block" open>
+      <summary>Transcript text preview</summary>
+      <pre class="logs">{{ transcript.preview_text }}</pre>
+    </details>
+  {% endif %}
+  {% if transcript.segments %}
+    <details class="artifact-block">
+      <summary>Timed segments (first {{ transcript.segments|length }})</summary>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Start</th><th>End</th><th>Text</th></tr></thead>
+          <tbody>
+            {% for seg in transcript.segments %}
+              <tr>
+                <td>{{ seg.start }}</td>
+                <td>{{ seg.end }}</td>
+                <td>{{ seg.text }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  {% endif %}
+  {% if transcript.json_text %}
+    <details class="artifact-block">
+      <summary>Transcript JSON</summary>
+      <pre class="logs">{{ transcript.json_text }}</pre>
+    </details>
+  {% elif transcript.error %}
+    <p class="muted">{{ transcript.error }}</p>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if selection_summary.available %}
+<section class="card">
+  <div class="card-head"><h2>Selection JSON</h2><span class="muted">{{ selection_summary.clip_count }} clips</span></div>
+  {% if artifact_views.selection and artifact_views.selection.ok %}
+    <pre class="logs">{{ artifact_views.selection.text }}</pre>
+  {% else %}
+    <pre class="logs">{{ selection_summary | tojson(indent=2) }}</pre>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if artifact_views.report or artifact_views.analytics %}
+<section class="card">
+  <div class="card-head"><h2>Metadata JSON</h2></div>
+  {% for key in ['report', 'analytics'] %}
+    {% if artifact_views[key] and artifact_views[key].ok %}
+      <details class="artifact-block">
+        <summary>{{ key }}.json</summary>
+        <pre class="logs">{{ artifact_views[key].text }}</pre>
+      </details>
+    {% endif %}
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if clips %}
+<section class="card">
+  <div class="card-head"><h2>Generated clips</h2><span class="muted">{{ clips|length }}</span></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Title</th><th>Score</th><th>Span</th><th>File</th><th>Size</th></tr></thead>
+      <tbody>
+        {% for clip in clips %}
+          <tr>
+            <td>{{ clip.title }}</td>
+            <td>{{ clip.score or '—' }}</td>
+            <td>{{ clip.start }} – {{ clip.end }}</td>
+            <td class="mono">{{ clip.path or '—' }}</td>
+            <td>{{ clip.size_bytes|bytes if clip.size_bytes else ('yes' if clip.exists else 'missing') }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{% if ffmpeg_output %}
+<section class="card">
+  <div class="card-head"><h2>ffmpeg / ffprobe / whisper output</h2></div>
+  {% for block in ffmpeg_output %}
+    <pre class="logs">{{ block }}</pre>
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if tracebacks %}
+<section class="card">
+  <div class="card-head"><h2>Error tracebacks</h2></div>
+  {% for block in tracebacks %}
+    <pre class="logs traceback">{{ block }}</pre>
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if errors %}
+<section class="card">
+  <div class="card-head"><h2>Errors</h2></div>
+  <pre class="logs">{{ errors }}</pre>
+</section>
+{% endif %}
+
+{% if warnings %}
+<section class="card">
+  <div class="card-head"><h2>Warnings</h2></div>
+  <pre class="logs">{{ warnings }}</pre>
+</section>
+{% endif %}
+
+{% if job_logs %}
+<section class="card">
+  <div class="card-head"><h2>Per-job service logs</h2><a href="{{ url_for('logs', job=job_id) }}">Open in log viewer →</a></div>
+  <pre class="logs">{{ job_logs }}</pre>
+</section>
+{% endif %}
+
+{% if debug_json %}
+<section class="card">
+  <div class="card-head"><h2>Debug payload</h2><span class="muted">from service API</span></div>
+  <pre class="logs">{{ debug_json }}</pre>
+</section>
+{% endif %}
+{% endblock %}

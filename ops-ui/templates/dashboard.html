@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="grid grid-3">
+  {% for service in services %}
+    <article class="card service-card">
+      <div class="card-head">
+        <div>
+          <p class="eyebrow">{{ service.unit }}</p>
+          <h2>{{ service.label }}</h2>
+        </div>
+        <span class="pill {{ service.systemd.active_state|status_class }}">{{ service.systemd.active_state }}</span>
+      </div>
+      <dl>
+        <div><dt>HTTP</dt><dd class="{{ 'ok-text' if service.http_ok else 'bad-text' }}">{{ service.status_code or 'offline' }}</dd></div>
+        <div><dt>systemd</dt><dd>{{ service.systemd.sub_state or service.systemd.load_state }}</dd></div>
+        <div><dt>URL</dt><dd>{{ service.base_url }}</dd></div>
+      </dl>
+      <div class="actions">
+        {% for action in ["start", "stop", "restart"] %}
+          <form method="post" action="{{ url_for('service_control', service_key=service.key, action=action) }}">
+            <button type="submit">{{ action }}</button>
+          </form>
+        {% endfor %}
+      </div>
+    </article>
+  {% endfor %}
+</section>
+
+<section class="grid grid-2">
+  <article class="card">
+    <div class="card-head">
+      <div>
+        <p class="eyebrow">manual funnel · <a href="{{ url_for('funnels_page') }}">all funnels</a></p>
+        <h2>Ingestion Control</h2>
+      </div>
+      <span class="pill {{ 'bad' if controls.ingestion_paused else 'ok' }}">{{ 'paused' if controls.ingestion_paused else 'live' }}</span>
+    </div>
+    <p class="hint muted">Pauses UI funnel runs and <code>POST /run-funnel</code> (not direct <code>POST /jobs</code>).</p>
+    <form class="stack" method="post" action="{{ url_for('run_funnel') }}">
+      <label for="funnel_id">Funnel</label>
+      <select id="funnel_id" name="funnel_id">
+        {% for funnel in funnels %}
+          <option value="{{ funnel.funnel_id }}" {{ '' if funnel.active else 'disabled' }}>
+            {{ funnel.funnel_id }}{% if not funnel.active %} (inactive){% endif %}
+          </option>
+        {% endfor %}
+      </select>
+      <button type="submit" {{ 'disabled' if controls.ingestion_paused else '' }}>Run funnel now</button>
+    </form>
+    <div class="actions">
+      <form method="post" action="{{ url_for('set_control', control='ingestion_paused', state='pause' if not controls.ingestion_paused else 'resume') }}">
+        <button type="submit">{{ 'Resume input service' if controls.ingestion_paused else 'Pause input service (run-funnel)' }}</button>
+      </form>
+    </div>
+    {% if not funnels %}
+      <p class="muted">No funnels loaded from source-input.</p>
+    {% endif %}
+  </article>
+
+  <article class="card">
+    <div class="card-head">
+      <div>
+        <p class="eyebrow">output funnel</p>
+        <h2>Upload Control</h2>
+      </div>
+      <span class="pill {{ 'bad' if controls.uploads_paused else 'ok' }}">{{ 'stopped' if controls.uploads_paused else 'live' }}</span>
+    </div>
+    <p class="hint muted">Stops output-funnel upload-due and the background upload worker (not every API path).</p>
+    <p class="muted">Planning is safe scheduling work. Uploading can touch platform APIs.</p>
+    <div class="actions">
+      <form method="post" action="{{ url_for('plan_due') }}">
+        <button type="submit">Plan due uploads</button>
+      </form>
+      <form method="post" action="{{ url_for('upload_due') }}">
+        <button type="submit" {{ 'disabled' if controls.uploads_paused else '' }}>Upload due jobs</button>
+      </form>
+      <form method="post" action="{{ url_for('set_control', control='uploads_paused', state='pause' if not controls.uploads_paused else 'resume') }}">
+        <button type="submit">{{ 'Resume uploads' if controls.uploads_paused else 'Emergency stop uploads' }}</button>
+      </form>
+    </div>
+  </article>
+</section>
+
+<section class="grid grid-4">
+  <article class="card metric"><span>Video Queued</span><strong>{{ video_counts.get('queued', 0) }}</strong></article>
+  <article class="card metric"><span>Video Running</span><strong>{{ video_counts.get('running', 0) }}</strong></article>
+  <article class="card metric"><span>Video Failed</span><strong>{{ video_counts.get('failed', 0) }}</strong></article>
+  <article class="card metric"><span>Uploads Failed</span><strong>{{ upload_counts.get('failed_upload', 0) + upload_counts.get('failed_retryable', 0) + upload_counts.get('failed_terminal', 0) }}</strong></article>
+</section>
+
+<section class="grid grid-2">
+  <article class="card">
+    <div class="card-head">
+      <h2>Video Jobs</h2>
+      <span class="muted">{{ video_jobs|length }} latest</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Job</th><th>Status</th><th>Stage</th><th>Clips</th><th>Created</th></tr></thead>
+        <tbody>
+          {% for job in video_jobs[:15] %}
+            <tr>
+              <td class="mono"><a href="{{ url_for('video_job_detail', job_id=job.job_id) }}">{{ job.job_id }}</a></td>
+              <td><span class="pill {{ job.status|status_class }}">{{ job.status }}</span></td>
+              <td>{{ job.current_stage }}</td>
+              <td>{{ job.clip_count }}</td>
+              <td>{{ job.created_at }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="5" class="muted">No video jobs visible.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+
+  <article class="card">
+    <div class="card-head">
+      <h2>Upload Queue</h2>
+      <a href="{{ url_for('publishing') }}">Full queue →</a>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>ID</th><th>Platform</th><th>Channel</th><th>Status</th><th>Retries</th><th>Upload</th><th>Title</th></tr></thead>
+        <tbody>
+          {% for job in upload_jobs[:15] %}
+            <tr>
+              <td class="mono"><a href="{{ url_for('upload_job_detail', upload_job_id=job.id) }}">{{ job.id }}</a></td>
+              <td>{{ job.platform or '—' }}</td>
+              <td class="mono">{{ job.channel_id or '—' }}</td>
+              <td><span class="pill {{ job.status|status_class }}">{{ job.status }}</span></td>
+              <td>{{ job.attempt_count or 0 }}</td>
+              <td>{{ job.upload_at or job.publish_at }}</td>
+              <td>{{ job.normalized_title or job.source_title or job.clip_id }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="7" class="muted">No upload jobs visible.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+</section>
+
+<section class="grid grid-2">
+  <article class="card">
+    <div class="card-head">
+      <h2>Recent Failures</h2>
+      <a href="{{ url_for('failed_jobs') }}">View all →</a>
+    </div>
+    <ul class="events">
+      {% for failure in failures %}
+        <li>
+          <span class="pill bad">{{ failure.service }}</span>
+          <strong>
+            {% if failure.service == 'video-automation' %}
+              <a href="{{ url_for('video_job_detail', job_id=failure.id) }}">{{ failure.id }}</a>
+            {% elif failure.id %}
+              <a href="{{ url_for('upload_job_detail', upload_job_id=failure.id) }}">{{ failure.id }}</a>
+            {% else %}
+              {{ failure.id }}
+            {% endif %}
+          </strong>
+          <span>{{ failure.status }}: {{ failure.detail }}</span>
+          <time>{{ failure.time }}</time>
+        </li>
+      {% else %}
+        <li class="muted">No recent failures in the visible job windows.</li>
+      {% endfor %}
+    </ul>
+  </article>
+
+  <article class="card">
+    <div class="card-head"><h2>Machine</h2><span class="muted">{{ machine.platform }}</span></div>
+    <dl class="machine">
+      <div><dt>CPU cores</dt><dd>{{ machine.cpu_count }}</dd></div>
+      <div><dt>Load avg</dt><dd>{{ machine.load_avg[0] }}, {{ machine.load_avg[1] }}, {{ machine.load_avg[2] }}</dd></div>
+      <div><dt>RAM</dt><dd>{{ machine.memory.used|bytes }} / {{ machine.memory.total|bytes }} ({{ machine.memory.percent or 'unknown' }}%)</dd></div>
+      <div><dt>Disk</dt><dd>{{ machine.disk.used|bytes }} / {{ machine.disk.total|bytes }} ({{ machine.disk.percent }}%)</dd></div>
+      <div><dt>GPU</dt>
+        <dd>
+          {% if machine.gpu.available and machine.gpu.gpus %}
+            {% for gpu in machine.gpu.gpus %}
+              {{ gpu.name }}: {{ gpu.utilization_percent }}% util, {{ gpu.memory_used_mb }}/{{ gpu.memory_total_mb }} MB, {{ gpu.temperature_c }}°C{% if not loop.last %}; {% endif %}
+            {% endfor %}
+          {% else %}
+            {{ machine.gpu.summary }}
+          {% endif %}
+        </dd>
+      </div>
+    </dl>
+  </article>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Operator Actions</h2><span class="muted">local audit</span></div>
+  <ul class="events">
+    {% for action in actions %}
+      <li>
+        <span class="pill {{ 'ok' if action.ok else 'bad' }}">{{ action.action }}</span>
+        <strong>{{ action.target }}</strong>
+        <span>{{ action.message }}</span>
+        <time>{{ action.created_at }}</time>
+      </li>
+    {% else %}
+      <li class="muted">No UI actions yet.</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

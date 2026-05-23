@@ -1,5 +1,6 @@
 import json
 import os
+import hmac
 import subprocess
 import sys
 import uuid
@@ -100,6 +101,31 @@ PIPELINE_NAME = "mk0.4"
 _JOB_QUEUE: "queue.Queue[dict[str, Any]]" = queue.Queue()
 _JOB_WORKERS_STARTED = False
 _JOB_WORKERS_LOCK = threading.Lock()
+_JOB_RECOVERY_DONE = False
+
+
+def _secret_configured(env_name: str) -> str:
+    return os.environ.get(env_name, "").strip()
+
+
+def _check_shared_secret(env_name: str, header_name: str) -> tuple[Any, int] | None:
+    expected = _secret_configured(env_name)
+    if not expected:
+        return None
+    provided = (request.headers.get(header_name) or "").strip()
+    if not hmac.compare_digest(provided, expected):
+        return _fail(
+            f"unauthorized: missing or invalid {header_name}",
+            status_code=401,
+        )
+    return None
+
+
+@app.before_request
+def _require_video_automation_secret():
+    if request.endpoint in {"healthz"}:
+        return None
+    return _check_shared_secret("VIDEO_AUTOMATION_SECRET", "X-Video-Automation-Secret")
 
 
 def _debug_log(hypothesis_id: str, location: str, message: str, data: dict):
@@ -221,6 +247,36 @@ def _output_funnel_timeout_sec() -> float:
         return 2.0
 
 
+def _agent_debug_log(
+    *,
+    hypothesis_id: str,
+    location: str,
+    message: str,
+    data: dict[str, Any] | None = None,
+    run_id: str = "pre-fix",
+) -> None:
+    # #region agent log
+    try:
+        payload = {
+            "sessionId": "8aae3e",
+            "timestamp": int(time.time() * 1000),
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data or {},
+            "runId": run_id,
+        }
+        with open(
+            "/Users/anthonymaguire/VAmk0.4/.cursor/debug-8aae3e.log",
+            "a",
+            encoding="utf-8",
+        ) as handle:
+            handle.write(json.dumps(payload, default=str) + "\n")
+    except Exception:
+        pass
+    # #endregion
+
+
 def _try_output_funnel_handoff(report: dict[str, Any], *, report_path: str) -> dict[str, Any]:
     """Best-effort downstream registration; never blocks successful clip output."""
     if not _output_funnel_handoff_enabled():
@@ -228,16 +284,33 @@ def _try_output_funnel_handoff(report: dict[str, Any], *, report_path: str) -> d
     base_url = _output_funnel_url()
     if not base_url:
         return {"enabled": False, "ok": False, "reason": "missing_output_funnel_url"}
+    funnel = report.get("funnel") if isinstance(report.get("funnel"), dict) else {}
+    _agent_debug_log(
+        hypothesis_id="A",
+        location="app.py:_try_output_funnel_handoff",
+        message="handoff payload funnel context",
+        data={
+            "job_id": report.get("job_id"),
+            "top_level_funnel_id": report.get("funnel_id"),
+            "funnel_record_funnel_id": funnel.get("funnel_id"),
+            "clip_count": len(report.get("clips") or []),
+            "handoff_url": base_url,
+        },
+    )
     payload = {
         "report_path": os.path.abspath(report_path),
         "payload": report,
     }
     try:
         body = json.dumps(payload).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        secret = os.environ.get("OUTPUT_FUNNEL_SECRET", "").strip()
+        if secret:
+            headers["X-Output-Funnel-Secret"] = secret
         req = urlrequest.Request(
             f"{base_url}/registrations/from-job",
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         with urlrequest.urlopen(req, timeout=_output_funnel_timeout_sec()) as resp:
@@ -247,6 +320,20 @@ def _try_output_funnel_handoff(report: dict[str, Any], *, report_path: str) -> d
             except json.JSONDecodeError:
                 parsed = {"raw_response": text[:500]}
             ok = 200 <= int(resp.status) < 300 and parsed.get("success") is not False
+            processing = parsed.get("processing") if isinstance(parsed.get("processing"), dict) else {}
+            schedule = processing.get("schedule") if isinstance(processing.get("schedule"), dict) else {}
+            _agent_debug_log(
+                hypothesis_id="C",
+                location="app.py:_try_output_funnel_handoff",
+                message="handoff response received",
+                data={
+                    "ok": ok,
+                    "status_code": int(resp.status),
+                    "has_processing": bool(processing),
+                    "auto_schedule_enabled": processing.get("auto_schedule_enabled"),
+                    "schedule_results": schedule.get("results"),
+                },
+            )
             return {
                 "enabled": True,
                 "ok": ok,
@@ -256,6 +343,12 @@ def _try_output_funnel_handoff(report: dict[str, Any], *, report_path: str) -> d
                 "at": now_iso(),
             }
     except Exception as exc:
+        _agent_debug_log(
+            hypothesis_id="C",
+            location="app.py:_try_output_funnel_handoff",
+            message="handoff request failed",
+            data={"error": repr(exc), "handoff_url": base_url},
+        )
         return {
             "enabled": True,
             "ok": False,
@@ -766,6 +859,8 @@ def _request_payload() -> dict[str, Any]:
 
 
 def _resolve_job_video_input(payload: dict[str, Any]) -> tuple[str | None, str, str, dict[str, Any] | None]:
+    config = load_config()
+    input_root = os.path.abspath(ensure_paths(config)["input"])
     file_storage = request.files.get("video_file") or request.files.get("file")
     if file_storage is not None and getattr(file_storage, "filename", ""):
         _, video_path = _save_uploaded_video_file(file_storage)
@@ -787,9 +882,11 @@ def _resolve_job_video_input(payload: dict[str, Any]) -> tuple[str | None, str, 
     else:
         raise ValueError("Missing input video. Send multipart `video_file`, JSON `video`, `video_path`, or `input_id`.")
 
-    candidate = os.path.abspath(os.path.expanduser(video_arg))
     if os.path.isabs(video_arg) or os.sep in video_arg or (os.altsep and os.altsep in video_arg):
-        return None, candidate, "existing_path", None
+        candidate = os.path.abspath(os.path.expanduser(video_arg))
+        if not _is_inside(input_root, candidate):
+            raise ValueError("Existing video paths must stay inside the configured input folder.")
+        return None, candidate, "input_folder_path", None
 
     _, input_video_path = _resolve_input_video_path(os.path.basename(video_arg.rstrip("/")))
     return None, os.path.abspath(input_video_path), "input_folder", None
@@ -932,7 +1029,9 @@ def _job_summary(report: dict[str, Any], job_dir: str) -> dict[str, object]:
         "status": report.get("status"),
         "current_stage": _current_stage_from_report(report),
         "created_at": report.get("created_at"),
+        "started_at": report.get("started_at"),
         "completed_at": report.get("completed_at"),
+        "input_id": report.get("input_id"),
         "clip_count": len(clips),
         "warning_count": len(warnings),
         "error_count": len(errors),
@@ -1246,6 +1345,82 @@ def _create_queued_report(
     return report
 
 
+def _persist_job_task(job: dict[str, str], task: dict[str, Any]) -> None:
+    payload = {
+        "job_id": task["job_id"],
+        "job": task["job"],
+        "video_path": task["video_path"],
+        "input_id": task.get("input_id"),
+        "input_source": task.get("input_source"),
+        "input_ledger_state": task.get("input_ledger_state"),
+        "policy_bundle": task.get("policy_bundle") or {},
+        "created_at": now_iso(),
+    }
+    write_json(job["task_path"], payload)
+
+
+def _load_recoverable_tasks() -> list[dict[str, Any]]:
+    tasks: list[dict[str, Any]] = []
+    for _job_dir, _report_path, report in _iter_job_reports():
+        status = str(report.get("status") or "")
+        if status not in {"queued", "running"}:
+            continue
+        task_path = os.path.join(_job_dir, "task.json")
+        task = _load_json_object(task_path)
+        if not isinstance(task, dict):
+            continue
+        video_path = os.path.abspath(str(task.get("video_path") or ""))
+        if not video_path or not os.path.isfile(video_path):
+            errors = report.get("errors") if isinstance(report.get("errors"), list) else []
+            errors.append(
+                categorize_error(
+                    "pipeline",
+                    "recovery_input_missing",
+                    "Queued job could not be recovered because its input file is missing.",
+                    {"video_path": video_path, "task_path": task_path},
+                )
+            )
+            report.update(
+                {
+                    "status": "failed",
+                    "current_stage": "failed",
+                    "completed_at": now_iso(),
+                    "errors": errors,
+                }
+            )
+            write_json(_report_path, report)
+            continue
+        task["video_path"] = video_path
+        tasks.append(task)
+    tasks.sort(key=lambda item: str(item.get("created_at") or ""))
+    return tasks
+
+
+def _recover_pending_jobs_once() -> int:
+    global _JOB_RECOVERY_DONE
+    if _JOB_RECOVERY_DONE:
+        return 0
+    _JOB_RECOVERY_DONE = True
+    recovered = 0
+    for task in _load_recoverable_tasks():
+        job = task.get("job")
+        if not isinstance(job, dict):
+            continue
+        _update_job_report(
+            job,
+            {
+                "status": "queued",
+                "current_stage": "queued",
+                "recovered_at": now_iso(),
+            },
+        )
+        _JOB_QUEUE.put(task)
+        recovered += 1
+    if recovered:
+        _progress(f"Recovered {recovered} queued/running job(s) from disk")
+    return recovered
+
+
 def _update_job_report(job: dict[str, str], updates: dict[str, Any]) -> dict[str, Any]:
     report = _load_json_object(job["report_path"]) or {}
     report.update(updates)
@@ -1396,7 +1571,7 @@ def _job_worker_loop() -> None:
         _execute_job(task)
 
 
-def _ensure_job_workers_started() -> None:
+def _ensure_job_workers_started(*, recover_pending: bool = True) -> None:
     global _JOB_WORKERS_STARTED
     cfg = _async_config()
     if not bool(cfg["enabled"]):
@@ -1414,12 +1589,17 @@ def _ensure_job_workers_started() -> None:
             )
             thread.start()
         _JOB_WORKERS_STARTED = True
+    if recover_pending:
+        _recover_pending_jobs_once()
 
 
-def _enqueue_job(task: dict[str, Any]) -> None:
-    _ensure_job_workers_started()
+def _enqueue_job(task: dict[str, Any], *, recover_pending: bool = True) -> None:
+    _ensure_job_workers_started(recover_pending=recover_pending)
     if not bool(_async_config()["enabled"]):
         raise RuntimeError("Async worker is disabled in configuration")
+    job = task.get("job")
+    if isinstance(job, dict):
+        _persist_job_task(job, task)
     _JOB_QUEUE.put(task)
 
 
@@ -2744,6 +2924,8 @@ def _create_job_from_payload(payload: dict[str, Any], *, compatibility_route: st
         "policy_bundle": bundle,
     }
     try:
+        _persist_job_task(job, task)
+        _ensure_job_workers_started(recover_pending=False)
         _enqueue_job(task)
         _progress(
             f"Queued — {os.path.basename(video_path)} (poll GET /jobs/{job_id})",

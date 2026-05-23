@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="grid grid-3">
+  <article class="card metric"><span>Failed rows</span><strong>{{ failed_count }}</strong></article>
+  <article class="card metric"><span>Dead letter</span><strong>{{ dead_letter_count }}</strong></article>
+  <article class="card metric">
+    <span>Bulk actions</span>
+    <form method="post" action="{{ url_for('retry_all_uploads') }}">
+      <button type="submit">Retry all failed uploads</button>
+    </form>
+  </article>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Failed Jobs</h2>
+    <span class="muted">clip + upload failures</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Service</th>
+          <th>ID</th>
+          <th>Status</th>
+          <th>Failed stage</th>
+          <th>Reason</th>
+          <th>Retries</th>
+          <th>Failed at</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in failures %}
+          <tr>
+            <td><span class="pill bad">{{ row.service }}</span></td>
+            <td class="mono">
+              {% if row.service == 'video-automation' %}
+                <a href="{{ url_for('video_job_detail', job_id=row.id) }}">{{ row.id }}</a>
+              {% else %}
+                <a href="{{ url_for('upload_job_detail', upload_job_id=row.id) }}">{{ row.id }}</a>
+              {% endif %}
+            </td>
+            <td><span class="pill {{ row.status|status_class }}">{{ row.status }}</span></td>
+            <td>{{ row.stage }}</td>
+            <td>{{ row.reason }}</td>
+            <td>{{ row.retry_count }}</td>
+            <td>{{ row.failed_at }}</td>
+            <td class="actions">
+              {% if row.service == 'output-funnel' and row.can_retry_upload %}
+                <form method="post" action="{{ url_for('retry_upload', upload_job_id=row.id) }}">
+                  <button type="submit">Retry upload</button>
+                </form>
+              {% elif row.service == 'video-automation' and row.can_rerun %}
+                <form method="post" action="{{ url_for('retry_video_job', job_id=row.id) }}">
+                  <button type="submit">Rerun clipping job</button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="8" class="muted">No failed jobs in the current window.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="hint muted">
+    Failed stage is diagnostic only — mk1 has no safe stage-level resume. “Rerun clipping job” posts a new
+    <code>/jobs</code> using the stored <code>input_id</code> (reuses the downloaded file, does not re-run YouTube ingestion).
+  </p>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Dead-letter queue</h2>
+    <span class="muted">terminal / missed window</span>
+  </div>
+  <p class="hint muted">
+    Uploads land here after <code>failed_terminal</code> (max attempts exhausted) or
+    <code>missed_upload_window</code>. The publisher auto-marks these; you can still try “Retry upload”
+    to move them back to planned/pending when appropriate.
+  </p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Status</th>
+          <th>Reason</th>
+          <th>Retries</th>
+          <th>Platform</th>
+          <th>Failed at</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in dead_letter %}
+          <tr>
+            <td class="mono"><a href="{{ url_for('upload_job_detail', upload_job_id=row.id) }}">{{ row.id }}</a></td>
+            <td><span class="pill bad">{{ row.status }}</span></td>
+            <td>{{ row.reason }}</td>
+            <td>{{ row.retry_count }}</td>
+            <td>{{ row.platform or '—' }} / {{ row.channel_id or '—' }}</td>
+            <td>{{ row.failed_at }}</td>
+            <td>
+              {% if row.can_retry_upload %}
+                <form method="post" action="{{ url_for('retry_upload', upload_job_id=row.id) }}">
+                  <button type="submit">Retry upload</button>
+                </form>
+              {% else %}
+                <span class="muted">—</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="7" class="muted">No dead-letter uploads right now.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

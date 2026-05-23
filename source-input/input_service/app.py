@@ -22,6 +22,7 @@ import os
 import shutil
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,33 @@ log = logging.getLogger("input_service.app")
 
 
 _RUN_LOCK = threading.Lock()
+_DEBUG_LOG_PATH = "/Users/anthonymaguire/VAmk0.4/.cursor/debug-8aae3e.log"
+
+
+def _agent_debug_log(
+    *,
+    hypothesis_id: str,
+    location: str,
+    message: str,
+    data: dict[str, Any] | None = None,
+    run_id: str = "pre-fix",
+) -> None:
+    # #region agent log
+    try:
+        payload = {
+            "sessionId": "8aae3e",
+            "timestamp": int(time.time() * 1000),
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data or {},
+            "runId": run_id,
+        }
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, default=str) + "\n")
+    except Exception:
+        pass
+    # #endregion
 
 
 def _failed(funnel_id: str | None, error: str) -> dict[str, Any]:
@@ -63,6 +91,24 @@ def _check_secret() -> tuple[dict, int] | None:
 def create_app() -> Flask:
     paths.ensure_dirs()
     app = Flask(__name__)
+
+    @app.before_request
+    def _log_incoming_request():
+        # #region agent log
+        _agent_debug_log(
+            hypothesis_id="F1",
+            location="app.py:before_request",
+            message="incoming HTTP request",
+            data={
+                "method": request.method,
+                "path": request.path,
+                "remote_addr": request.remote_addr,
+                "host": request.host,
+                "content_type": request.content_type,
+                "has_json": request.is_json,
+            },
+        )
+        # #endregion
 
     @app.get("/healthz")
     def healthz():
@@ -203,11 +249,38 @@ def create_app() -> Flask:
         except FunnelInvalidError as exc:
             return jsonify(_failed(None, f"invalid_funnels_config: {exc}")), 500
 
-    @app.post("/run-funnel")
+    @app.route("/run-funnel", methods=["GET", "POST"])
     def run_funnel_endpoint():
+        if request.method != "POST":
+            # #region agent log
+            _agent_debug_log(
+                hypothesis_id="F4",
+                location="app.py:run_funnel_endpoint",
+                message="run-funnel rejected non-POST method",
+                data={"method": request.method},
+            )
+            # #endregion
+            return (
+                jsonify(
+                    _failed(
+                        None,
+                        "method_not_allowed: use POST with JSON body {\"funnel_id\": \"...\"}",
+                    )
+                ),
+                405,
+            )
+
         # Auth (optional)
         auth_err = _check_secret()
         if auth_err is not None:
+            # #region agent log
+            _agent_debug_log(
+                hypothesis_id="F3",
+                location="app.py:run_funnel_endpoint",
+                message="run-funnel auth rejected",
+                data={"has_secret_header": bool(request.headers.get("X-Input-Service-Secret"))},
+            )
+            # #endregion
             body, code = auth_err
             return jsonify(body), code
 
@@ -215,13 +288,42 @@ def create_app() -> Flask:
         try:
             data = request.get_json(force=True, silent=False) or {}
         except Exception as exc:
+            # #region agent log
+            _agent_debug_log(
+                hypothesis_id="F5",
+                location="app.py:run_funnel_endpoint",
+                message="run-funnel invalid JSON",
+                data={"error": repr(exc)},
+            )
+            # #endregion
             return jsonify(_failed(None, f"invalid_json: {exc}")), 400
 
         if not isinstance(data, dict):
             return jsonify(_failed(None, "invalid_body: expected JSON object")), 400
 
+        from .control_gate import ingestion_paused
+
+        if ingestion_paused():
+            return (
+                jsonify(
+                    _failed(
+                        str(data.get("funnel_id") or ""),
+                        "ingestion_paused: funnel runs are paused by operator controls",
+                    )
+                ),
+                503,
+            )
+
         funnel_id = data.get("funnel_id")
         if not funnel_id or not isinstance(funnel_id, str):
+            # #region agent log
+            _agent_debug_log(
+                hypothesis_id="F5",
+                location="app.py:run_funnel_endpoint",
+                message="run-funnel missing funnel_id",
+                data={"body_keys": sorted(data.keys())},
+            )
+            # #endregion
             return jsonify(_failed(None, "missing_funnel_id")), 400
 
         # Single-run lock
@@ -264,8 +366,24 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    host = os.environ.get("INPUT_SERVICE_HOST", "127.0.0.1")
+    host = os.environ.get("INPUT_SERVICE_HOST", "0.0.0.0")
     port = int(os.environ.get("INPUT_SERVICE_PORT", "5060"))
     debug = os.environ.get("INPUT_SERVICE_DEBUG", "0") == "1"
     log.info("Starting input_service on %s:%s (debug=%s)", host, port, debug)
+    if host in ("127.0.0.1", "localhost"):
+        log.warning(
+            "Bound to %s only — n8n running inside Docker will NOT be able to reach "
+            "http://host.docker.internal:%s/run-funnel because that arrives on a non-loopback "
+            "interface. Set INPUT_SERVICE_HOST=0.0.0.0 to accept Docker-bridge traffic.",
+            host,
+            port,
+        )
+    else:
+        log.info(
+            "n8n in Docker must POST to http://host.docker.internal:%s/run-funnel "
+            "(use http:// not https:// — this service is plain HTTP only; "
+            "do not use http://localhost:%s — that points inside the n8n container)",
+            port,
+            port,
+        )
     app.run(host=host, port=port, debug=debug, threaded=True)

@@ -5,6 +5,7 @@ import math
 import os
 import shutil
 import subprocess
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -366,6 +367,7 @@ def create_job_paths(
         "normalized_transcript_path": os.path.join(job_dir, "transcript_payload.json"),
         "selection_path": os.path.join(job_dir, "selection.json"),
         "report_path": os.path.join(job_dir, "report.json"),
+        "task_path": os.path.join(job_dir, "task.json"),
         "analytics_path": os.path.join(job_dir, "analytics.json"),
         "review_path": os.path.join(job_dir, "review.md"),
     }
@@ -426,8 +428,21 @@ def build_funnel_job_record(
 
 
 def write_json(path: str, payload: Any) -> None:
-    with open(path, "w", encoding="utf-8") as f:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        delete=False,
+        dir=os.path.dirname(path),
+        prefix=f".{os.path.basename(path)}.",
+        suffix=".tmp",
+    ) as f:
         json.dump(payload, f, indent=2)
+        f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+        tmp_path = f.name
+    os.replace(tmp_path, path)
 
 
 def write_review(path: str, report: dict[str, Any]) -> None:

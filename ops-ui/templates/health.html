@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <div>
+      <p class="eyebrow">system health</p>
+      <h2>Doctor &amp; readiness</h2>
+    </div>
+    <span class="pill {{ 'ok' if report.all_ok else 'bad' }}">{{ 'all checks ok' if report.all_ok else 'issues detected' }}</span>
+  </div>
+  <p class="hint muted">
+    Aggregates each service <code>/doctor</code> (or output-funnel <code>/healthz</code> + local SQLite check).
+    Paths are validated on the machine running Mission Control.
+  </p>
+</section>
+
+<section class="grid grid-3">
+  {% for doctor in report.doctors %}
+    <article class="card">
+      <div class="card-head">
+        <h2>{{ doctor.label }}</h2>
+        <span class="pill {{ 'ok' if doctor.ok else 'bad' }}">{{ 'ok' if doctor.ok else 'fail' }}</span>
+      </div>
+      {% if not doctor.http_ok %}
+        <p class="bad-text">{{ doctor.error or 'Service unreachable' }}</p>
+      {% endif %}
+      <ul class="check-list">
+        {% for check in doctor.checks %}
+          <li>
+            <span class="pill {{ 'ok' if check.ok else 'bad' }}">{{ check.name }}</span>
+            <span>{{ check.detail }}</span>
+          </li>
+        {% else %}
+          <li class="muted">No checks returned.</li>
+        {% endfor %}
+      </ul>
+      {% if doctor.db_check %}
+        <p class="muted">DB: {{ doctor.db_check.path }} — {{ doctor.db_check.detail }}
+          {% if doctor.db_check.upload_job_count is not none %} ({{ doctor.db_check.upload_job_count }} upload jobs){% endif %}
+        </p>
+      {% endif %}
+    </article>
+  {% endfor %}
+</section>
+
+<section class="grid grid-2">
+  <article class="card">
+    <div class="card-head"><h2>Machine</h2><span class="muted">{{ machine.platform }}</span></div>
+    <dl class="machine">
+      <div><dt>CPU cores</dt><dd>{{ machine.cpu_count }}</dd></div>
+      <div><dt>Load avg</dt><dd>{{ machine.load_avg[0] }}, {{ machine.load_avg[1] }}, {{ machine.load_avg[2] }}</dd></div>
+      <div><dt>RAM</dt><dd>{{ machine.memory.used|bytes }} / {{ machine.memory.total|bytes }} ({{ machine.memory.percent or 'unknown' }}%)</dd></div>
+      <div><dt>Disk</dt><dd>{{ machine.disk.used|bytes }} / {{ machine.disk.total|bytes }} ({{ machine.disk.percent }}%)</dd></div>
+    </dl>
+  </article>
+
+  <article class="card">
+    <div class="card-head"><h2>GPU</h2></div>
+    {% if machine.gpu.available and machine.gpu.gpus %}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Util %</th><th>VRAM</th><th>Temp °C</th></tr></thead>
+          <tbody>
+            {% for gpu in machine.gpu.gpus %}
+              <tr>
+                <td>{{ gpu.name }}</td>
+                <td>{{ gpu.utilization_percent }}</td>
+                <td>{{ gpu.memory_used_mb }} / {{ gpu.memory_total_mb }} MB</td>
+                <td>{{ gpu.temperature_c }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="muted">{{ machine.gpu.summary }}</p>
+    {% endif %}
+  </article>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Local paths</h2></div>
+  <dl>
+    <div><dt>Input ledger</dt><dd class="mono">{{ input_ledger_dir }}</dd></div>
+  </dl>
+</section>
+{% endblock %}

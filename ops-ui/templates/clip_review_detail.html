@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card notice-card">
+  <p class="notice">
+    <strong>Approval does not currently block publishing.</strong>
+    Approve/reject here is review metadata stored in ops-ui only until output-funnel reads <code>clip_reviews</code>.
+  </p>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <div>
+      <p class="eyebrow">clip inspection</p>
+      <h2>{{ clip.title }}</h2>
+      <p class="muted mono">Source job <a href="{{ job_detail_url }}">{{ clip.job_id }}</a> · clip {{ clip.clip_id }}</p>
+    </div>
+    <span class="pill {{ clip.review_status|status_class }}">{{ clip.review_status }} (metadata)</span>
+  </div>
+  <div class="actions">
+    <a class="button-link" href="{{ url_for('clip_review') }}">← Review queue</a>
+    <a class="button-link" href="{{ job_detail_url }}">Source clipping job</a>
+  </div>
+</section>
+
+<section class="grid grid-2">
+  <article class="card clip-preview-card">
+    <div class="card-head"><h2>Video preview</h2><span class="muted">optional; metadata below always shown</span></div>
+    {% if clip.preview_url %}
+      <video class="clip-player" controls preload="metadata" src="{{ clip.preview_url }}">
+        Your browser does not support inline video playback.
+      </video>
+      <p class="hint muted">If playback fails, use the file path and source job link below.</p>
+    {% else %}
+      <p class="muted">Inline preview unavailable (no clip filename for proxy).</p>
+    {% endif %}
+    <dl class="preview-fallback">
+      <div><dt>Clip file</dt><dd class="mono">{{ clip.clip_file or '—' }}</dd></div>
+      <div><dt>File path</dt><dd class="mono">{{ clip.clip_path }}</dd></div>
+      <div><dt>Source job</dt><dd class="mono"><a href="{{ job_detail_url }}">{{ clip.job_id }}</a></dd></div>
+    </dl>
+  </article>
+
+  <article class="card">
+    <div class="card-head"><h2>Clip metadata</h2></div>
+    <dl>
+      <div><dt>Generated title</dt><dd>{{ clip.title }}</dd></div>
+      <div><dt>AI score</dt><dd>{{ clip.ai_score }}</dd></div>
+      <div><dt>Clip timestamps</dt><dd class="mono">{{ clip.start }} – {{ clip.end }}</dd></div>
+      <div><dt>Clip duration</dt><dd>{{ clip.duration_label }}</dd></div>
+      <div><dt>Hook</dt><dd>{{ clip.hook or '—' }}</dd></div>
+      <div><dt>Selection reasoning</dt><dd>{{ clip.reason or '—' }}</dd></div>
+      <div><dt>Platform targets</dt><dd>{{ clip.platform_targets|join(', ') if clip.platform_targets else '—' }}</dd></div>
+      <div><dt>Pipeline profile</dt><dd>{{ clip.pipeline_profile }}</dd></div>
+      <div><dt>Original source</dt><dd>{{ clip.source_reference }}</dd></div>
+      {% if clip.flagged_high_quality %}<div><dt>High-quality flag</dt><dd><span class="pill ok">flagged (metadata)</span></dd></div>{% endif %}
+    </dl>
+  </article>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Transcript snippet</h2><span class="muted">timed lines overlapping clip span</span></div>
+  <pre class="logs">{{ clip.transcript_snippet }}</pre>
+</section>
+
+<section class="grid grid-2">
+  <article class="card">
+    <div class="card-head"><h2>Review actions</h2><span class="muted">metadata + rerun</span></div>
+    <div class="actions stack-actions">
+      <form method="post" action="{{ url_for('clip_review_approve', job_id=clip.job_id, clip_id=clip.clip_id) }}">
+        <input type="hidden" name="next" value="detail">
+        <button type="submit">Save approve (metadata)</button>
+      </form>
+      <form method="post" action="{{ url_for('clip_review_reject', job_id=clip.job_id, clip_id=clip.clip_id) }}">
+        <input type="hidden" name="next" value="detail">
+        <button type="submit">Save reject (metadata)</button>
+      </form>
+      <form method="post" action="{{ url_for('clip_review_requeue', job_id=clip.job_id, clip_id=clip.clip_id) }}">
+        <button type="submit" {{ '' if clip.can_requeue else 'disabled' }}>Rerun source job</button>
+      </form>
+      <form method="post" action="{{ url_for('clip_review_flag', job_id=clip.job_id, clip_id=clip.clip_id) }}">
+        <input type="hidden" name="flagged" value="{{ '0' if clip.flagged_high_quality else '1' }}">
+        <input type="hidden" name="next" value="detail">
+        <button type="submit">{{ 'Clear HQ flag' if clip.flagged_high_quality else 'Flag high-quality (metadata)' }}</button>
+      </form>
+    </div>
+    <p class="hint muted">
+      <strong>Rerun source job</strong> creates a new clipping job from the stored input (same as Recovery → Rerun).
+      It does not regenerate this clip alone. Prior review metadata for this clip id is kept.
+    </p>
+  </article>
+
+  <article class="card">
+    <div class="card-head"><h2>Feedback for AI tuning</h2></div>
+    <form class="stack" method="post" action="{{ url_for('clip_review_feedback', job_id=clip.job_id, clip_id=clip.clip_id) }}">
+      <input type="hidden" name="next" value="detail">
+      <label for="feedback_notes">Operator notes</label>
+      <textarea id="feedback_notes" name="feedback_notes" rows="5" placeholder="Why approve/reject? Hook quality, pacing, factual issues…">{{ clip.feedback_notes }}</textarea>
+      <button type="submit">Save feedback (local + analytics API)</button>
+    </form>
+    <p class="hint muted">Posts to video-automation <code>/analytics/feedback</code> when the service is reachable.</p>
+  </article>
+</section>
+
+{% if clip.selection_summary.available %}
+<section class="card">
+  <div class="card-head"><h2>Selection summary</h2><span class="muted">{{ clip.selection_summary.clip_count }} clips, {{ clip.selection_summary.validation_warning_count }} warnings</span></div>
+</section>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,245 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <div>
+      <p class="eyebrow">funnel management</p>
+      <h2>Funnels</h2>
+    </div>
+    <span class="pill {{ 'bad' if controls.ingestion_paused else 'ok' }}">
+      {{ 'ingestion paused' if controls.ingestion_paused else 'ingestion live' }}
+    </span>
+  </div>
+  <p class="hint muted">
+    Acquisition funnels from source-input, clip limits from video-automation config, upload cadence from
+    <code>{{ channel_profiles_path }}</code>.
+  </p>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Feature coverage</h2>
+    <span class="muted">checklist</span>
+  </div>
+  <div class="feature-matrix">
+    {% for group in feature_matrix %}
+      <div class="feature-group">
+        <h3>{{ group.group }}</h3>
+        <ul class="check-list feature-items">
+          {% for item in group.features %}
+            <li>
+              <span class="pill {{ item.status }}">{{ item.status }}</span>
+              <span>
+                {{ item.label }}
+                {% if item.note %}<span class="muted"> — {{ item.note }}</span>{% endif %}
+              </span>
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endfor %}
+  </div>
+</section>
+
+{% if rows %}
+<section class="card">
+  <div class="card-head">
+    <h2>Funnel overview</h2>
+    <span class="muted">{{ rows|length }} funnel(s)</span>
+  </div>
+  <div class="table-wrap">
+    <table class="funnel-table">
+      <thead>
+        <tr>
+          <th>Funnel</th>
+          <th>Status</th>
+          <th>Health</th>
+          <th>Last run</th>
+          <th>Last OK</th>
+          <th>Failures</th>
+          <th>Queue</th>
+          <th>Active jobs</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr id="funnel-{{ row.funnel_id }}">
+            <td>
+              <strong class="mono">{{ row.funnel_id }}</strong>
+              <div class="muted">{{ row.angle }}</div>
+            </td>
+            <td>
+              <span class="pill {{ row.operator_status|status_class }}">{{ row.operator_status }}</span>
+              {% if not row.config_active %}<div class="muted">config inactive</div>{% endif %}
+            </td>
+            <td><span class="pill {{ row.health|status_class }}">{{ row.health }}</span></td>
+            <td>
+              <div>{{ row.last_run_at }}</div>
+              <div class="muted">{{ row.last_run_state }}</div>
+            </td>
+            <td>{{ row.last_success_at }}</td>
+            <td>{{ row.failure_count }}</td>
+            <td>{{ row.queue_depth }}</td>
+            <td>V{{ row.active_video_jobs }} / U{{ row.active_upload_jobs }}</td>
+            <td class="actions">
+              <form method="post" action="{{ url_for('run_funnel') }}">
+                <input type="hidden" name="funnel_id" value="{{ row.funnel_id }}">
+                <input type="hidden" name="next" value="funnels">
+                <button type="submit" {{ '' if row.can_run else 'disabled' }}>Run</button>
+              </form>
+              {% if row.paused %}
+                <form method="post" action="{{ url_for('resume_funnel', funnel_id=row.funnel_id) }}">
+                  <button type="submit">Resume</button>
+                </form>
+              {% else %}
+                <form method="post" action="{{ url_for('pause_funnel', funnel_id=row.funnel_id) }}">
+                  <button type="submit">Pause</button>
+                </form>
+              {% endif %}
+              <a class="button-link" href="{{ url_for('funnels_page', log=row.funnel_id) }}#logs">Logs</a>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{% for row in rows %}
+<section class="card funnel-detail" id="detail-{{ row.funnel_id }}">
+  <div class="card-head">
+    <div>
+      <p class="eyebrow">configuration &amp; visibility</p>
+      <h2>{{ row.funnel_id }}</h2>
+    </div>
+    <span class="pill {{ row.health|status_class }}">{{ row.health }}</span>
+  </div>
+
+  <div class="grid grid-2">
+    <article>
+      <h3>Control</h3>
+      <dl>
+        <div><dt>Config enabled</dt><dd>{{ 'yes' if row.config_active else 'no (edit funnels.json)' }}</dd></div>
+        <div><dt>Operator pause</dt><dd>{{ 'yes' if row.paused else 'no' }}</dd></div>
+        <div><dt>Pipeline profile</dt><dd class="mono">{{ row.pipeline_profile }}</dd></div>
+        <div><dt>Source type</dt><dd>{{ row.source_type }}</dd></div>
+        <div><dt>Duration window</dt><dd>{{ row.duration_range }}</dd></div>
+        <div><dt>Max downloads / run</dt><dd>{{ row.max_downloads_per_run or '—' }}</dd></div>
+      </dl>
+    </article>
+    <article>
+      <h3>Publishing &amp; limits</h3>
+      <dl>
+        <div><dt>Platform targets</dt><dd>{{ row.platform_targets | join(', ') }}</dd></div>
+        <div><dt>Posting mode</dt><dd>{{ row.posting_mode }}{% if row.posting_enabled is not none %} (enabled={{ row.posting_enabled }}){% endif %}</dd></div>
+        <div><dt>Max clips / job</dt><dd>{{ row.max_clips }}</dd></div>
+        <div><dt>Max uploads / day</dt><dd>{{ row.max_uploads_per_day }}</dd></div>
+        <div><dt>Schedule</dt><dd>{{ row.schedule_summary }}</dd></div>
+      </dl>
+      {% if row.upload_timing %}
+        <h4>Upload timing</h4>
+        <dl>
+          {% for label, value in row.upload_timing %}
+            <div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>
+          {% endfor %}
+        </dl>
+      {% endif %}
+    </article>
+  </div>
+
+  <h3>Active sources</h3>
+  {% if row.active_sources %}
+    <ul class="source-list">
+      {% for src in row.active_sources %}
+        <li>
+          <strong>{{ src.label }}</strong>
+          {% if src.max_videos_per_source %}<span class="muted">scan {{ src.max_videos_per_source }}</span>{% endif %}
+          {% if src.url %}<div class="mono muted">{{ src.url }}</div>{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted">No active sources in funnel config.</p>
+  {% endif %}
+
+  <h3>Recent ledger runs</h3>
+  {% if row.ledger_runs %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Time</th><th>Input</th><th>State</th><th>Title</th></tr></thead>
+        <tbody>
+          {% for run in row.ledger_runs %}
+            <tr>
+              <td>{{ run.created_at }}</td>
+              <td class="mono">{{ run.input_id }}</td>
+              <td><span class="pill {{ run.state|status_class }}">{{ run.state }}</span></td>
+              <td>{{ run.title or run.source_url or '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="muted">No input ledger entries for this funnel yet.</p>
+  {% endif %}
+</section>
+{% endfor %}
+
+{% else %}
+<section class="card">
+  <p class="muted">No funnels returned from source-input. Check that the service is running and <code>/funnels</code> is reachable.</p>
+</section>
+{% endif %}
+
+<section class="grid grid-2" id="logs">
+  <article class="card">
+    <div class="card-head">
+      <h2>Trigger history</h2>
+      <span class="muted">UI audit (run-funnel)</span>
+    </div>
+    <ul class="events">
+      {% for action in trigger_history %}
+        <li>
+          <span class="pill {{ 'ok' if action.ok else 'bad' }}">run</span>
+          <strong class="mono">{{ action.target }}</strong>
+          <span>{{ action.message }}</span>
+          <time>{{ action.created_at }}</time>
+        </li>
+      {% else %}
+        <li class="muted">No manual funnel runs logged yet.</li>
+      {% endfor %}
+    </ul>
+  </article>
+
+  <article class="card">
+    <div class="card-head">
+      <h2>Funnel logs</h2>
+      {% if log_funnel_id %}<span class="mono muted">{{ log_funnel_id }}</span>{% endif %}
+    </div>
+    {% if rows %}
+      <form class="filter-bar log-search" method="get" action="{{ url_for('funnels_page') }}#logs">
+        <label>
+          Funnel
+          <select name="log">
+            <option value="">— pick funnel —</option>
+            {% for row in rows %}
+              <option value="{{ row.funnel_id }}" {{ 'selected' if log_funnel_id == row.funnel_id else '' }}>
+                {{ row.funnel_id }}
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit">Show journal</button>
+        <a class="button-link" href="{{ url_for('logs', q=log_funnel_id) if log_funnel_id else url_for('logs') }}">Full logs →</a>
+      </form>
+    {% endif %}
+    {% if log_snippet %}
+      <pre class="logs">{{ log_snippet }}</pre>
+    {% else %}
+      <p class="muted">Select a funnel to filter source-input journal lines, or use <a href="{{ url_for('logs') }}">Logs</a> for all services.</p>
+    {% endif %}
+  </article>
+</section>
+{% endblock %}

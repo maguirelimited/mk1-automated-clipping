@@ -9,13 +9,22 @@
     "default_min_gap_minutes": 180,
     "default_max_uploads_per_day": 3
   },
+  "youtube": {
+    "upload_lead_minutes": 90,
+    "upload_safety_buffer_minutes": 20,
+    "min_publish_at_lead_minutes": 15
+  },
   "publisher": {
     "max_attempts": 3
   },
   "automation": {
     "auto_schedule": true,
     "schedule_limit": 50,
-    "auto_publish": false,
-    "publish_limit": 1
+    "auto_upload": false,
+    "upload_limit": 1,
+    "upload_worker": {
+      "enabled": true,
+      "interval_seconds": 60
+    }
   }
 }

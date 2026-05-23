@@ -78,15 +78,18 @@ def video_automation_inputs_dir() -> Path:
     return (parent / "video-automation" / "input").resolve()
 
 
-def clipping_input_video_path(funnel_id: str) -> Path:
-    """Predictable file the clipping service can load via ``video`` = basename only.
+def clipping_input_video_path(funnel_id: str, *, input_id: str | None = None) -> Path:
+    """Immutable file path the clipping service can load through the input ledger.
 
-    Uses a flat name ``{funnel_id}_source.mp4`` so ``/process`` (which resolves
-    basenames under the configured input folder) stays unambiguous across funnels.
+    New handoffs are keyed by ``input_id`` so a later run for the same funnel
+    cannot overwrite media that an already queued clipping job still references.
     """
     safe_id = str(funnel_id or "").strip()
     if not safe_id:
         raise ValueError("funnel_id required for clipping_input_video_path")
+    safe_input_id = str(input_id or "").strip()
+    if safe_input_id:
+        return video_automation_inputs_dir() / f"{safe_input_id}_{safe_id}_source.mp4"
     return video_automation_inputs_dir() / f"{safe_id}_source.mp4"
 
 
@@ -96,11 +99,14 @@ def ensure_dirs() -> None:
         path.mkdir(parents=True, exist_ok=True)
 
 
-def ready_video_path(funnel_id: str) -> Path:
+def ready_video_path(funnel_id: str, *, input_id: str | None = None) -> Path:
     """Legacy local ready-input location: ``data/inputs/ready/<funnel_id>/source.mp4``.
 
     Used as a fallback when copying to ``video_automation_inputs_dir()`` fails.
     """
+    safe_input_id = str(input_id or "").strip()
+    if safe_input_id:
+        return READY_DIR / funnel_id / f"{safe_input_id}.mp4"
     return READY_DIR / funnel_id / "source.mp4"
 
 

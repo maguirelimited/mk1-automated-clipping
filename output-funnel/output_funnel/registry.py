@@ -114,29 +114,39 @@ def register_job_payload(
     source_job_id = _source_job_id(payload)
     if str(payload.get("status") or "success") != "success" and payload.get("ready") is not True:
         raise ValueError("Only successful/ready job outputs can be registered")
+    source_job_pk, source_job_created = store.register_source_job(payload)
 
     selected_platforms = platforms or enabled_platforms_from_payload(payload)
     registered: list[dict[str, Any]] = []
     for clip in clips_from_job_payload(payload):
         preflight = run_preflight(clip, duration_tolerance_sec=duration_tolerance_sec)
         clip_pk, clip_created = store.register_source_clip(clip, preflight)
+        variant_pk, variant_created = store.ensure_default_variant(clip_pk)
         upload_jobs: list[dict[str, Any]] = []
         if preflight.ok:
             for platform in selected_platforms:
-                upload_job_id, created = store.create_upload_job(clip_pk=clip_pk, platform=platform)
+                upload_job_id, created = store.create_upload_job(
+                    clip_pk=clip_pk,
+                    variant_pk=variant_pk,
+                    platform=platform,
+                )
                 upload_jobs.append({"upload_job_id": upload_job_id, "platform": platform, "created": created})
         registered.append(
             {
                 "clip_pk": clip_pk,
                 "clip_id": clip.clip_id,
                 "clip_created": clip_created,
+                "variant_pk": variant_pk,
+                "variant_created": variant_created,
                 "preflight_ok": preflight.ok,
                 "preflight_issues": preflight.issues,
                 "upload_jobs": upload_jobs,
             }
         )
     return {
+        "source_job_pk": source_job_pk,
         "source_job_id": source_job_id,
+        "source_job_created": source_job_created,
         "clip_count": len(registered),
         "registered": registered,
     }

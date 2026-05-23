@@ -7,21 +7,64 @@ Platform = Literal["youtube_shorts", "tiktok", "instagram_reels", "x"]
 
 
 class UploadStatus:
+    """Lifecycle states for an upload_job row.
+
+    Boundary between ``planned`` and ``pending_upload``:
+      - ``planned``         The plan exists (publish_at + upload_at). No
+                            upload attempt has happened yet. This is the
+                            resting state after :func:`plan_upload_job`.
+      - ``pending_upload``  A previous attempt failed retryably and the
+                            job is queued for another attempt within the
+                            existing upload window. Set by
+                            :func:`retry_upload_job` after a
+                            ``failed_retryable``.
+
+    Both are equally eligible for ``claim_upload_due_jobs``; the
+    distinction is purely informational ("fresh job" vs "in-retry").
+
+    ``registered`` and ``routed`` are upstream stages owned by the
+    registry/router and are part of the wider funnel; they remain.
+    """
+
     REGISTERED = "registered"
     ROUTED = "routed"
-    SCHEDULED = "scheduled"
-    PUBLISHING = "publishing"
-    UPLOADED = "uploaded"
-    SCHEDULED_ON_PLATFORM = "scheduled_on_platform"
+    PLANNED = "planned"
+    PENDING_UPLOAD = "pending_upload"
+    UPLOADING = "uploading"
+    UPLOADED_SCHEDULED = "uploaded_scheduled"
+    PUBLISHED = "published"
+    FAILED_UPLOAD = "failed_upload"
+    MISSED_UPLOAD_WINDOW = "missed_upload_window"
     FAILED_RETRYABLE = "failed_retryable"
     FAILED_TERMINAL = "failed_terminal"
     CANCELLED = "cancelled"
 
+    SCHEDULED = "planned"
+    PUBLISHING = "uploading"
+    UPLOADED = "uploaded_scheduled"
+    SCHEDULED_ON_PLATFORM = "uploaded_scheduled"
+
+
+LEGACY_STATUS_ALIASES: dict[str, str] = {
+    "scheduled": UploadStatus.PLANNED,
+    "publishing": UploadStatus.UPLOADING,
+    "uploaded": UploadStatus.UPLOADED_SCHEDULED,
+    "scheduled_on_platform": UploadStatus.UPLOADED_SCHEDULED,
+}
+
+
+def canonical_status(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return LEGACY_STATUS_ALIASES.get(value, value)
+
 
 TERMINAL_STATUSES = {
-    UploadStatus.UPLOADED,
-    UploadStatus.SCHEDULED_ON_PLATFORM,
+    UploadStatus.UPLOADED_SCHEDULED,
+    UploadStatus.PUBLISHED,
+    UploadStatus.FAILED_UPLOAD,
     UploadStatus.FAILED_TERMINAL,
+    UploadStatus.MISSED_UPLOAD_WINDOW,
     UploadStatus.CANCELLED,
 }
 

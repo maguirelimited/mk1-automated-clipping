@@ -115,10 +115,18 @@ def test_schedule_assigns_staggered_future_slot(monkeypatch, tmp_path: Path):
 
     result = schedule_upload_job(upload_job_id, store=store, profiles=[PROFILE])
 
+    assert result["planned"] is True
     assert result["scheduled"] is True
     job = store.get_upload_job(upload_job_id)
-    assert job["status"] == "scheduled"
-    assert job["platform_publish_at"] == result["scheduled_at"]
+    assert job["status"] == "planned"
+    assert job["publish_at"] == result["publish_at"]
+    assert job["platform_publish_at"] == result["publish_at"]
+    assert job["upload_at"] == result["upload_at"]
+    assert job["upload_deadline"] == result["upload_deadline"]
+    assert job["upload_at"] < job["publish_at"]
+    assert job["upload_deadline"] < job["publish_at"]
+    assert job["upload_at"] <= job["upload_deadline"]
+    assert job["scheduled_at"] == job["publish_at"]
 
 
 def test_registration_auto_schedules_but_does_not_publish_by_default(monkeypatch, tmp_path: Path):
@@ -141,9 +149,13 @@ def test_registration_auto_schedules_but_does_not_publish_by_default(monkeypatch
 
     assert result["processing"]["auto_schedule_enabled"] is True
     assert result["processing"]["auto_publish_enabled"] is False
+    assert result["processing"]["auto_upload_enabled"] is False
     job = store.list_upload_jobs()[0]
-    assert job["status"] == "scheduled"
+    assert job["status"] == "planned"
     assert job["platform_asset_id"] is None
+    assert job["uploaded_at"] is None
+    assert job["publish_at"]
+    assert job["upload_at"]
 
 
 def test_registration_auto_schedule_can_be_disabled(monkeypatch, tmp_path: Path):
@@ -192,7 +204,7 @@ def test_batch_schedule_uses_configured_limit(monkeypatch, tmp_path: Path):
 
     assert result["count"] == 2
     jobs = store.list_upload_jobs(limit=10)
-    assert sum(1 for job in jobs if job["status"] == "scheduled") == 2
+    assert sum(1 for job in jobs if job["status"] == "planned") == 2
     assert sum(1 for job in jobs if job["status"] == "registered") == 1
 
 

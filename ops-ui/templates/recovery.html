@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="grid grid-2">
+  <article class="card">
+    <div class="card-head">
+      <h2>Reliability safeguards</h2>
+      <span class="muted">global enforcement</span>
+    </div>
+    <dl>
+      <div>
+        <dt>Pause input service</dt>
+        <dd>
+          UI: <span class="pill {{ 'bad' if controls.ingestion_paused else 'ok' }}">{{ 'paused' if controls.ingestion_paused else 'live' }}</span>
+          · File: <span class="pill {{ 'bad' if status.ingestion_enforced else 'ok' }}">{{ 'paused' if status.ingestion_enforced else 'live' }}</span>
+        </dd>
+      </div>
+      <div>
+        <dt>Emergency stop uploads</dt>
+        <dd>
+          UI: <span class="pill {{ 'bad' if controls.uploads_paused else 'ok' }}">{{ 'stopped' if controls.uploads_paused else 'live' }}</span>
+          · File: <span class="pill {{ 'bad' if status.uploads_enforced else 'ok' }}">{{ 'stopped' if status.uploads_enforced else 'live' }}</span>
+        </dd>
+      </div>
+      <div><dt>Controls file</dt><dd class="mono">{{ status.controls_file }}</dd></div>
+      <div><dt>Auto terminal failures</dt><dd>{{ status.auto_terminal_note }}</dd></div>
+      <div><dt>Dead letter count</dt><dd>{{ status.dead_letter_count }}</dd></div>
+    </dl>
+    <div class="actions">
+      <form method="post" action="{{ url_for('set_control', control='ingestion_paused', state='pause' if not controls.ingestion_paused else 'resume') }}">
+        <input type="hidden" name="next" value="recovery">
+        <button type="submit">{{ 'Resume input service' if controls.ingestion_paused else 'Pause input service (run-funnel)' }}</button>
+      </form>
+      <form method="post" action="{{ url_for('set_control', control='uploads_paused', state='pause' if not controls.uploads_paused else 'resume') }}">
+        <input type="hidden" name="next" value="recovery">
+        <button type="submit">{{ 'Resume uploads' if controls.uploads_paused else 'Emergency stop uploads (global)' }}</button>
+      </form>
+    </div>
+    <p class="hint muted">
+      Soft operator guardrails for mk1: <code>source-input</code> rejects <code>POST /run-funnel</code>;
+      <code>output-funnel</code> skips upload-due and the background worker.
+      Does <strong>not</strong> block direct <code>POST /video-automation/jobs</code> or other entry paths.
+    </p>
+  </article>
+
+  <article class="card">
+    <div class="card-head">
+      <h2>Queue recovery</h2>
+      <span class="muted">persisted state</span>
+    </div>
+    <dl>
+      <div><dt>Output DB</dt><dd class="mono">{{ status.database_path or 'unavailable' }}</dd></div>
+      <div><dt>Retryable uploads</dt><dd>{{ retryable_upload_count }}</dd></div>
+      <div><dt>Controls sync</dt><dd>{{ 'ok' if status.controls_file_exists else 'missing file' }}</dd></div>
+    </dl>
+    <div class="actions">
+      <a class="button-link" href="{{ url_for('failed_jobs') }}">Open failed jobs</a>
+      <form method="post" action="{{ url_for('retry_all_uploads') }}">
+        <button type="submit">Bulk retry failed uploads</button>
+      </form>
+    </div>
+  </article>
+</section>
+
+<section class="grid grid-2">
+  <article class="card">
+    <div class="card-head">
+      <h2>Jobs after restart</h2>
+      <span class="muted">persisted queue</span>
+    </div>
+    <ul class="events">
+      {% for item in status.persisted_queued %}
+        <li>
+          <span class="pill warn">{{ item.service }}</span>
+          <strong>{{ item.id }}</strong>
+          <span>{{ item.detail }}</span>
+          <time>{{ item.since }}</time>
+        </li>
+      {% else %}
+        <li class="muted">No long-lived queued clip jobs detected.</li>
+      {% endfor %}
+    </ul>
+  </article>
+
+  <article class="card">
+    <div class="card-head">
+      <h2>Possibly stuck jobs</h2>
+      <span class="muted">heuristic — not OS process check</span>
+    </div>
+    <ul class="events">
+      {% for item in status.stuck_jobs %}
+        <li>
+          <span class="pill bad">{{ item.service }}</span>
+          <strong>{{ item.id }}</strong>
+          <span>{{ item.status }} @ {{ item.stage }} — {{ item.detail }}</span>
+          <time>{{ item.since }}</time>
+        </li>
+      {% else %}
+        <li class="muted">No stuck jobs detected with current thresholds.</li>
+      {% endfor %}
+    </ul>
+    <p class="hint muted">
+      Thresholds: running &gt; {{ (status.stuck_running_sec / 3600)|round(1) }}h,
+      queued &gt; {{ (status.stuck_queued_sec / 60)|round(0) }}m,
+      uploading &gt; {{ (status.stuck_uploading_sec / 60)|round(0) }}m.
+      Tune via <code>OPS_UI_STUCK_*_SEC</code>.
+    </p>
+  </article>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Recent recovery actions</h2></div>
+  <ul class="events">
+    {% for action in actions %}
+      <li>
+        <span class="pill {{ 'ok' if action.ok else 'bad' }}">{{ action.action }}</span>
+        <strong>{{ action.target }}</strong>
+        <span>{{ action.message }}</span>
+        <time>{{ action.created_at }}</time>
+      </li>
+    {% else %}
+      <li class="muted">No recovery actions yet.</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

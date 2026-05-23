@@ -86,12 +86,17 @@ def _scheduled_job(monkeypatch, tmp_path: Path) -> tuple[OutputStore, int]:
     )
     upload_job_id = int(result["registered"][0]["upload_jobs"][0]["upload_job_id"])
     schedule_upload_job(upload_job_id, store=store, profiles=[PROFILE])
-    future = to_utc_iso(datetime.now(UTC) + timedelta(hours=4))
+    publish_future = to_utc_iso(datetime.now(UTC) + timedelta(hours=4))
+    upload_future = to_utc_iso(datetime.now(UTC) + timedelta(hours=2))
+    deadline = to_utc_iso(datetime.now(UTC) + timedelta(hours=3, minutes=40))
     store.update_upload_job(
         upload_job_id,
-        status=UploadStatus.PUBLISHING,
-        scheduled_at=future,
-        platform_publish_at=future,
+        status=UploadStatus.UPLOADING,
+        publish_at=publish_future,
+        platform_publish_at=publish_future,
+        upload_at=upload_future,
+        scheduled_at=publish_future,
+        upload_deadline=deadline,
     )
     return store, upload_job_id
 
@@ -107,9 +112,12 @@ def test_publish_success_records_platform_asset_id(monkeypatch, tmp_path: Path):
     )
 
     assert result["published"] is True
+    assert result["uploaded"] is True
     job = store.get_upload_job(upload_job_id)
-    assert job["status"] == "scheduled_on_platform"
+    assert job["status"] == "uploaded_scheduled"
+    assert job["platform_video_id"] == "yt_123"
     assert job["platform_asset_id"] == "yt_123"
+    assert job["uploaded_at"]
     assert len(store.attempts_for_job(upload_job_id)) == 1
 
 
@@ -125,6 +133,7 @@ def test_publish_retryable_failure_records_attempt(monkeypatch, tmp_path: Path):
     )
 
     assert result["published"] is False
+    assert result["uploaded"] is False
     job = store.get_upload_job(upload_job_id)
     assert job["status"] == "failed_retryable"
     attempts = store.attempts_for_job(upload_job_id)
@@ -173,7 +182,13 @@ def test_registration_auto_publish_requires_explicit_enable(monkeypatch, tmp_pat
     )
 
     assert result["processing"]["auto_publish_enabled"] is True
+    assert result["processing"]["auto_upload_enabled"] is True
     assert result["processing"]["publish"]["count"] == 0
+    assert result["processing"]["upload"]["count"] == 0
     job = store.list_upload_jobs()[0]
-    assert job["status"] == "scheduled"
+    assert job["status"] == "planned"
     assert job["platform_asset_id"] is None
+    assert job["uploaded_at"] is None
+    assert job["publish_at"]
+    assert job["upload_at"]
+    assert job["upload_deadline"]

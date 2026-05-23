@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="refresh" content="30">
+    <title>mk04 Mission Control</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='ops.css') }}">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">mk04 internal operations</p>
+        <h1>Mission Control</h1>
+      </div>
+      <nav>
+        <a href="{{ url_for('dashboard') }}">Dashboard</a>
+        <a href="{{ url_for('funnels_page') }}">Funnels</a>
+        <a href="{{ url_for('publishing') }}">Publishing</a>
+        <a href="{{ url_for('clip_review') }}">Clip review</a>
+        <a href="{{ url_for('failed_jobs') }}">Failed jobs</a>
+        <a href="{{ url_for('recovery') }}">Recovery</a>
+        <a href="{{ url_for('health') }}">Health</a>
+        <a href="{{ url_for('logs') }}">Logs</a>
+      </nav>
+    </header>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <section class="flash-stack">
+          {% for category, message in messages %}
+            <div class="flash {{ category }}">{{ message }}</div>
+          {% endfor %}
+        </section>
+      {% endif %}
+    {% endwith %}
+
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

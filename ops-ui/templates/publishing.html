@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="grid grid-5">
+  <article class="card metric"><span>Daily uploads</span><strong>{{ stats.daily_uploads }}</strong></article>
+  <article class="card metric"><span>Failed uploads</span><strong>{{ stats.failed_uploads }}</strong></article>
+  <article class="card metric"><span>Queue backlog</span><strong>{{ stats.backlog }}</strong></article>
+  <article class="card metric"><span>In flight</span><strong>{{ stats.in_flight }}</strong></article>
+  <article class="card metric"><span>24h throughput</span><strong>{{ stats.uploads_last_24h }}</strong><span class="muted">~{{ stats.upload_rate_per_hour }}/hr</span></article>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <div>
+      <p class="eyebrow">publishing management</p>
+      <h2>Upload Queue</h2>
+    </div>
+    <span class="pill {{ 'bad' if controls.uploads_paused else 'ok' }}">{{ 'uploads stopped' if controls.uploads_paused else 'uploads live' }}</span>
+  </div>
+  <p class="hint muted">Showing {{ jobs|length }} of {{ total_loaded }} loaded jobs (limit {{ limit }}).</p>
+  <form class="filter-bar" method="get" action="{{ url_for('publishing') }}">
+    <label>
+      Status
+      <select name="status">
+        <option value="">All</option>
+        {% for value in filters.statuses %}
+          <option value="{{ value }}" {{ 'selected' if active_filters.status == value else '' }}>{{ value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Platform
+      <select name="platform">
+        <option value="">All</option>
+        {% for value in filters.platforms %}
+          <option value="{{ value }}" {{ 'selected' if active_filters.platform == value else '' }}>{{ value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Channel
+      <select name="channel">
+        <option value="">All</option>
+        {% for value in filters.channels %}
+          <option value="{{ value }}" {{ 'selected' if active_filters.channel == value else '' }}>{{ value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="grow">
+      Search
+      <input type="search" name="q" value="{{ active_filters.q }}" placeholder="id, title, error, video id…">
+    </label>
+    <label>
+      Limit
+      <input type="number" name="limit" min="1" max="500" value="{{ limit }}">
+    </label>
+    <button type="submit">Apply filters</button>
+    <a class="button-link" href="{{ url_for('publishing') }}">Reset</a>
+  </form>
+  <div class="actions">
+    <form method="post" action="{{ url_for('plan_due') }}">
+      <input type="hidden" name="next" value="publishing">
+      <button type="submit">Plan due uploads</button>
+    </form>
+    <form method="post" action="{{ url_for('upload_due') }}">
+      <input type="hidden" name="next" value="publishing">
+      <button type="submit" {{ 'disabled' if controls.uploads_paused else '' }}>Upload due jobs</button>
+    </form>
+  </div>
+</section>
+
+<section class="card">
+  <div class="table-wrap">
+    <table class="queue-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Platform</th>
+          <th>Channel</th>
+          <th>Status</th>
+          <th>Retries</th>
+          <th>Publish at</th>
+          <th>Upload at</th>
+          <th>Platform ID</th>
+          <th>Confirmation</th>
+          <th>Latency</th>
+          <th>Title</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for job in jobs %}
+          <tr>
+            <td class="mono"><a href="{{ url_for('upload_job_detail', upload_job_id=job.id) }}">{{ job.id }}</a></td>
+            <td>{{ job.platform or '—' }}</td>
+            <td class="mono">{{ job.channel_id or '—' }}</td>
+            <td><span class="pill {{ job.status|status_class }}">{{ job.status }}</span></td>
+            <td>{{ job.attempt_count or 0 }}</td>
+            <td>{{ job.publish_at or job.platform_publish_at or '—' }}</td>
+            <td>{{ job.upload_at or '—' }}</td>
+            <td class="mono">{{ job.platform_video_id or '—' }}</td>
+            <td><span class="pill {{ job.publish_confirmation|status_class }}">{{ job.publish_confirmation }}</span></td>
+            <td>{{ job.latency.upload_duration_label }}{% if job.latency.queue_wait_sec %} / wait {{ job.latency.queue_wait_label }}{% endif %}</td>
+            <td>{{ job.normalized_title or job.source_title or job.clip_id or '—' }}</td>
+            <td class="queue-actions">
+              {% if job.can_manual_upload %}
+                <form method="post" action="{{ url_for('manual_upload', upload_job_id=job.id) }}">
+                  <button type="submit" {{ 'disabled' if controls.uploads_paused else '' }}>Upload now</button>
+                </form>
+              {% endif %}
+              {% if job.can_cancel %}
+                <form method="post" action="{{ url_for('cancel_upload', upload_job_id=job.id) }}">
+                  <input type="hidden" name="next" value="publishing">
+                  <button type="submit">Cancel</button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% if job.last_error %}
+            <tr class="error-row">
+              <td colspan="12"><span class="muted">Error:</span> {{ job.last_error }}</td>
+            </tr>
+          {% endif %}
+        {% else %}
+          <tr><td colspan="12" class="muted">No upload jobs match the current filters.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Throughput notes</h2></div>
+  <dl>
+    <div><dt>Daily uploads</dt><dd>Jobs with <code>uploaded_at</code> since local midnight (UTC day boundary).</dd></div>
+    <div><dt>Backlog</dt><dd>registered, routed, planned, pending_upload, or uploading.</dd></div>
+    <div><dt>Latency</dt><dd>Upload duration = uploaded_at − upload_started_at; queue wait = upload_started_at − upload_at.</dd></div>
+  </dl>
+</section>
+{% endblock %}

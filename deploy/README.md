@@ -9,7 +9,7 @@ runtime stack, setting real absolute paths, and keeping runtime storage durable.
 
 - **source-input** (`127.0.0.1:5060` by default): fetches one ready long-form
   input for a configured funnel.
-- **video-automation** (`0.0.0.0:5050` by default): transcribes, selects,
+- **video-automation** (`127.0.0.1:5050` by default): transcribes, selects,
   validates, clips, and writes analytics events.
 
 Both services are intentionally independent. n8n or another scheduler should
@@ -118,6 +118,17 @@ is false.
 
 ## Run Manually During Testing
 
+To start the local mk1 stack from one terminal during development:
+
+```bash
+cd /opt/mk04/VAmk0.4
+./deploy/scripts/run-all-local.sh
+```
+
+This starts source-input, video-automation, output-funnel, and ops-ui, then
+stops all child processes when you press `Ctrl+C`. It is a local development
+helper; use systemd units for long-running Ubuntu deployments.
+
 Terminal 1:
 
 ```bash
@@ -135,11 +146,14 @@ cd /opt/mk04/VAmk0.4
 Defaults:
 
 - source-input binds `127.0.0.1:5060`.
-- video-automation binds `0.0.0.0:5050`.
+- video-automation binds `127.0.0.1:5050`.
 
 If callers are remote, open firewall/security-group access only for the ports
 they need. Keep source-input bound to localhost unless a remote orchestrator
 must call it, and use `INPUT_SERVICE_SECRET` if it is exposed beyond localhost.
+Likewise, keep video-automation and output-funnel private unless a trusted
+caller requires remote access, and set `VIDEO_AUTOMATION_SECRET` /
+`OUTPUT_FUNNEL_SECRET` when they are reachable beyond the local host.
 Manual logs go to the terminal. Under a process manager, logs go to that
 manager's stdout/stderr collection, such as `journalctl` for systemd.
 

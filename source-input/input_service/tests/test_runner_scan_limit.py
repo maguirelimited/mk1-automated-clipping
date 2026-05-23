@@ -142,7 +142,7 @@ class RunnerScanLimitTests(unittest.TestCase):
             self.assertEqual(result["status"], "input_ready")
             self.assertEqual(result["source_url"], "https://www.youtube.com/watch?v=good")
             self.assertEqual([call.args[0].video_id for call in download.call_args_list], ["bad", "good"])
-            self.assertTrue(seen_store.is_seen(video_id="good", url="https://www.youtube.com/watch?v=good"))
+            self.assertFalse(seen_store.is_seen(video_id="good", url="https://www.youtube.com/watch?v=good"))
 
     def test_iter_source_candidates_skips_seen_url_before_yielding(self):
         with tempfile.TemporaryDirectory() as td:
