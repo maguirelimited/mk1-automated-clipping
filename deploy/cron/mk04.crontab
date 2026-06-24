@@ -1,0 +1,27 @@
+# mk0.4 autonomous mode cron table
+# Install for the mk04 service user:
+#   sudo -u mk04 crontab /opt/mk04/prod/current/deploy/cron/mk04.crontab
+# Or system-wide drop-in at /etc/cron.d/mk04 (uncomment the user column).
+#
+# Times are UTC unless the host crond is configured otherwise.
+MK04_ENV=prod
+
+# --- Daily ingestion trigger (one line per active funnel_id) -----------------
+# Stagger funnels by a few minutes so concurrent yt-dlp scans do not collide.
+0 8 * * * /opt/mk04/prod/current/deploy/scripts/run-funnel-daily.sh prod mfm_business_ai_001 >/dev/null 2>&1
+
+# --- Handoff retry sweeper ---------------------------------------------------
+# The video-automation -> output-funnel handoff is one-shot. If it fails once,
+# this sweeper re-POSTs from report.json so the clip is not orphaned.
+# Self-contained (stdlib only); does not need the video-automation venv.
+*/10 * * * * MK04_ENV=prod PIPELINE_CONFIG_PATH=/etc/mk04/prod/video-automation/pipeline_config.json OUTPUT_FUNNEL_URL=http://127.0.0.1:5055 VIDEO_AUTOMATION_JOBS_DIR=/var/lib/mk04/prod/video-automation/jobs /usr/bin/python3 /opt/mk04/prod/current/video-automation/scripts/handoff_sweeper.py --quiet >/dev/null 2>&1
+
+# --- Retention sweeper -------------------------------------------------------
+# Delete clipping artefacts older than the configured threshold so disk does
+# not fill on a long unattended run.
+30 3 * * * /opt/mk04/prod/current/deploy/scripts/retention-sweeper.sh prod >/dev/null 2>&1
+
+# --- Health watchdog ---------------------------------------------------------
+# Calls doctor.sh; on non-zero exit, watchdog.sh delivers a notification
+# (configure via WATCHDOG_NOTIFY in the script).
+*/15 * * * * /opt/mk04/prod/current/deploy/scripts/watchdog.sh prod >/dev/null 2>&1

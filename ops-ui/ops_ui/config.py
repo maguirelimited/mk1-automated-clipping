@@ -13,6 +13,10 @@ def _env(name: str, default: str) -> str:
     return default if value is None or value.strip() == "" else value.strip()
 
 
+def _default_port(env: str, *, dev: str, prod: str) -> str:
+    return dev if env == "dev" else prod
+
+
 @dataclass(frozen=True)
 class ServiceConfig:
     key: str
@@ -37,13 +41,32 @@ class Settings:
     stuck_queued_sec: float
     stuck_uploading_sec: float
     services: tuple[ServiceConfig, ...]
+    environment: str = "dev"
+    upload_mode: str = "dry_run"
+    code_root: Path = BASE_DIR
+    config_root: Path = Path("/etc/mk04/dev")
+    runtime_root: Path = Path("/var/lib/mk04/dev")
+    log_root: Path = Path("/var/log/mk04/dev")
+    scheduler_mode: str = "manual"
 
 
 def load_settings() -> Settings:
     data_dir = Path(_env("OPS_UI_DATA_DIR", str(BASE_DIR / "ops-ui" / "data"))).expanduser()
+    env = _env("MK04_ENV", "dev")
+    input_port = _env("INPUT_SERVICE_PORT", _default_port(env, dev="5160", prod="5060"))
+    video_port = _env("VIDEO_AUTOMATION_PORT", _default_port(env, dev="5150", prod="5050"))
+    output_port = _env("OUTPUT_FUNNEL_PORT", _default_port(env, dev="5155", prod="5055"))
+    ops_port = _env("OPS_UI_PORT", _default_port(env, dev="5170", prod="5070"))
     return Settings(
+        environment=env,
+        upload_mode=_env("MK04_UPLOAD_MODE", "dry_run"),
+        code_root=Path(_env("MK04_ROOT", str(BASE_DIR))).expanduser(),
+        config_root=Path(_env("MK04_CONFIG_ROOT", f"/etc/mk04/{env}")).expanduser(),
+        runtime_root=Path(_env("MK04_RUNTIME_ROOT", f"/var/lib/mk04/{env}")).expanduser(),
+        log_root=Path(_env("MK04_LOG_ROOT", f"/var/log/mk04/{env}")).expanduser(),
+        scheduler_mode=_env("MK04_SCHEDULER_MODE", _default_port(env, dev="manual", prod="autonomous")),
         host=_env("OPS_UI_HOST", "127.0.0.1"),
-        port=int(_env("OPS_UI_PORT", "5070")),
+        port=int(ops_port),
         data_dir=data_dir,
         control_db_path=Path(_env("OPS_UI_DB", str(data_dir / "ops_ui.sqlite3"))).expanduser(),
         controls_file=Path(_env("MK04_CONTROLS_FILE", str(data_dir / "controls.json"))).expanduser(),
@@ -57,7 +80,7 @@ def load_settings() -> Settings:
             ServiceConfig(
                 key="source-input",
                 label="source-input",
-                base_url=_env("OPS_SOURCE_INPUT_URL", "http://127.0.0.1:5060"),
+                base_url=_env("OPS_SOURCE_INPUT_URL", f"http://127.0.0.1:{input_port}"),
                 systemd_unit=_env("OPS_SOURCE_INPUT_UNIT", "mk04-source-input.service"),
                 secret_env="INPUT_SERVICE_SECRET",
                 secret_header="X-Input-Service-Secret",
@@ -65,7 +88,7 @@ def load_settings() -> Settings:
             ServiceConfig(
                 key="video-automation",
                 label="video-automation",
-                base_url=_env("OPS_VIDEO_AUTOMATION_URL", "http://127.0.0.1:5050"),
+                base_url=_env("OPS_VIDEO_AUTOMATION_URL", f"http://127.0.0.1:{video_port}"),
                 systemd_unit=_env("OPS_VIDEO_AUTOMATION_UNIT", "mk04-video-automation.service"),
                 secret_env="VIDEO_AUTOMATION_SECRET",
                 secret_header="X-Video-Automation-Secret",
@@ -73,7 +96,7 @@ def load_settings() -> Settings:
             ServiceConfig(
                 key="output-funnel",
                 label="output-funnel",
-                base_url=_env("OPS_OUTPUT_FUNNEL_URL", "http://127.0.0.1:5055"),
+                base_url=_env("OPS_OUTPUT_FUNNEL_URL", f"http://127.0.0.1:{output_port}"),
                 systemd_unit=_env("OPS_OUTPUT_FUNNEL_UNIT", "mk04-output-funnel.service"),
                 secret_env="OUTPUT_FUNNEL_SECRET",
                 secret_header="X-Output-Funnel-Secret",

@@ -18,6 +18,12 @@ class ControlStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
+        # WAL keeps the audit + clip-review writes from blocking dashboard
+        # reads when both happen at once. ``synchronous=NORMAL`` is the
+        # standard WAL pairing; the cost is unaffected by control-state
+        # write volume.
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
         return conn
 
     def init_db(self) -> None:

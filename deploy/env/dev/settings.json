@@ -1,0 +1,37 @@
+{
+  "database_path": "/var/lib/mk04/dev/output-funnel/output_funnel.sqlite3",
+  "preflight": {
+    "duration_tolerance_sec": 1.0
+  },
+  "scheduler": {
+    "default_timezone": "UTC",
+    "default_lead_minutes": 180,
+    "default_min_gap_minutes": 180,
+    "default_max_uploads_per_day": 3
+  },
+  "youtube": {
+    "scheduled_publish_mode": "platform_native",
+    "upload_timing": "immediate_after_validation",
+    "upload_lead_minutes": 90,
+    "upload_safety_buffer_minutes": 20,
+    "min_publish_at_lead_minutes": 15,
+    "max_schedule_horizon_days": 14
+  },
+  "publisher": {
+    "max_attempts": 3
+  },
+  "automation": {
+    "auto_schedule": true,
+    "schedule_limit": 50,
+    "auto_upload": false,
+    "upload_limit": 1,
+    "plan_worker": {
+      "enabled": false,
+      "interval_seconds": 300
+    },
+    "upload_worker": {
+      "enabled": false,
+      "interval_seconds": 60
+    }
+  }
+}

@@ -1,0 +1,38 @@
+[
+  {
+    "funnel_id": "mfm_business_ai_001",
+    "angle": "business productivity ai leverage podcasts",
+    "source_type": "youtube_channels",
+    "pipeline_profile": "mfm_business_ai_001",
+    "sources": [
+      {
+        "source_id": "my_first_million_dev",
+        "label": "My First Million DEV",
+        "source_type": "youtube_channel",
+        "url": "https://www.youtube.com/@MyFirstMillionPod/videos",
+        "active": true,
+        "max_videos_per_source": 5,
+        "hydrate_missing_duration": true,
+        "title_blocklist": ["shorts", "short", "clip", "clips", "highlight", "highlights", "trailer", "teaser", "preview", "compilation"]
+      }
+    ],
+    "min_duration_minutes": 25,
+    "max_duration_minutes": 180,
+    "max_downloads_per_run": 1,
+    "posting_config": {
+      "enabled": false,
+      "mode": "manual_review",
+      "platforms": ["youtube_shorts"],
+      "default_caption_style": "business-insight",
+      "hashtags": ["business", "productivity", "aitools", "startups", "entrepreneurship", "saas"],
+      "requires_human_approval": true
+    },
+    "analytics_config": {
+      "enabled": false,
+      "event_namespace": "mfm_business_ai_001_dev",
+      "webhook_url": "",
+      "track_fields": ["source_url", "source_title", "clip_count", "posting_status"]
+    },
+    "active": true
+  }
+]

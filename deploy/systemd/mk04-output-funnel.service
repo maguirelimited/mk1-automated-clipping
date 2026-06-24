@@ -1,0 +1,32 @@
+[Unit]
+Description=mk0.4 output-funnel upload queue service
+After=network-online.target mk04-video-automation.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mk04
+Group=mk04
+WorkingDirectory=/opt/mk04/prod/current
+Environment=MK04_ENV=prod
+EnvironmentFile=-/etc/mk04/prod/env
+EnvironmentFile=-/etc/mk04/prod/services/output-funnel.env
+ExecStart=/opt/mk04/prod/current/deploy/scripts/run-output-funnel.sh prod
+Restart=always
+RestartSec=10
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mk04-output-funnel
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

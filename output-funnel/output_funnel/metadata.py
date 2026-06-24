@@ -14,6 +14,16 @@ HASHTAG_RE = re.compile(r"^#[A-Za-z0-9_]{1,80}$")
 YOUTUBE_TITLE_LIMIT = 100
 YOUTUBE_DESCRIPTION_LIMIT = 5000
 YOUTUBE_HASHTAG_LIMIT = 15
+PLATFORM_LIMITS: dict[str, dict[str, int]] = {
+    "youtube_shorts": {
+        "title": YOUTUBE_TITLE_LIMIT,
+        "description": YOUTUBE_DESCRIPTION_LIMIT,
+        "hashtags": YOUTUBE_HASHTAG_LIMIT,
+    },
+    "x": {"title": 280, "description": 280, "hashtags": 8},
+    "instagram_reels": {"title": 125, "description": 2200, "hashtags": 30},
+    "facebook_reels": {"title": 255, "description": 63206, "hashtags": 30},
+}
 
 
 def clean_text(value: Any) -> str:
@@ -65,6 +75,8 @@ def normalize_metadata(
     publish_at: str | None = None,
 ) -> MetadataResult:
     style = _metadata_style(profile)
+    platform = str(profile.get("platform") or "youtube_shorts")
+    limits = PLATFORM_LIMITS.get(platform, PLATFORM_LIMITS["youtube_shorts"])
     issues: list[str] = []
 
     base_title = clean_text(source_clip.get("title") or source_clip.get("hook") or "")
@@ -72,21 +84,22 @@ def normalize_metadata(
         base_title = "Untitled clip"
         issues.append("missing_source_title")
     title = clean_text(f"{style.get('title_prefix', '')}{base_title}{style.get('title_suffix', '')}")
-    title = truncate_text(title, YOUTUBE_TITLE_LIMIT)
+    title = truncate_text(title, limits["title"])
 
-    max_hashtags = int(style.get("max_hashtags") or YOUTUBE_HASHTAG_LIMIT)
+    max_hashtags = int(style.get("max_hashtags") or limits["hashtags"])
     configured_hashtags = style.get("default_hashtags") if isinstance(style.get("default_hashtags"), list) else []
-    hashtags = normalize_hashtags(configured_hashtags, max_hashtags=min(max_hashtags, YOUTUBE_HASHTAG_LIMIT))
+    hashtags = normalize_hashtags(configured_hashtags, max_hashtags=min(max_hashtags, limits["hashtags"]))
 
     caption = clean_text(source_clip.get("caption") or source_clip.get("hook") or base_title)
-    template = str(style.get("description_template") or "{caption}\n\n{hashtags}")
+    template_key = "x_text_template" if platform == "x" else "caption_template"
+    template = str(style.get(template_key) or style.get("description_template") or "{caption}\n\n{hashtags}")
     description = template.format(
         caption=caption,
         hook=clean_text(source_clip.get("hook") or ""),
         title=title,
         hashtags=" ".join(hashtags),
     ).strip()
-    description = truncate_text(description, YOUTUBE_DESCRIPTION_LIMIT)
+    description = truncate_text(description, limits["description"])
 
     normalized_publish_at: str | None = None
     if publish_at:

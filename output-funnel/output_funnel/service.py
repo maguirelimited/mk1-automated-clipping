@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,13 @@ from .store import OutputStore
 from .time_utils import now_utc, parse_iso_datetime, to_utc_iso
 
 log = logging.getLogger("output_funnel.service")
+
+
+@dataclass(frozen=True)
+class PlatformCapabilities:
+    supports_platform_scheduling: bool = False
+    requires_future_upload_window: bool = True
+    publishes_immediately: bool = False
 
 
 def make_store(settings: dict[str, Any] | None = None) -> OutputStore:
@@ -112,6 +120,54 @@ def register_and_process_from_payload(
         process_result["upload"] = process_result["publish"]
     result["processing"] = process_result
     return result
+
+
+def find_stalled_jobs(
+    *,
+    store: OutputStore | None = None,
+    settings: dict[str, Any] | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Return upload_jobs stuck in registered/routed/uploading too long.
+
+    Thresholds come from ``settings.stalled_jobs.*_seconds`` (defaults 30
+    minutes each). ``None`` for a given threshold disables that status check.
+    """
+    cfg = settings or load_settings()
+    active_store = store or make_store(cfg)
+    thresholds = cfg.get("stalled_jobs") if isinstance(cfg.get("stalled_jobs"), dict) else {}
+
+    def _cutoff(key: str, default: int) -> str | None:
+        raw = thresholds.get(key, default)
+        try:
+            seconds = int(raw)
+        except (TypeError, ValueError):
+            seconds = default
+        if seconds <= 0:
+            return None
+        return to_utc_iso(now_utc() - timedelta(seconds=seconds))
+
+    now_iso = to_utc_iso(now_utc())
+    registered_cutoff = _cutoff("registered_seconds", 1800)
+    routed_cutoff = _cutoff("routed_seconds", 1800)
+    uploading_cutoff = _cutoff("uploading_seconds", 1800)
+    rows = active_store.list_stalled_jobs(
+        now=now_iso,
+        registered_cutoff=registered_cutoff,
+        routed_cutoff=routed_cutoff,
+        uploading_cutoff=uploading_cutoff,
+        limit=limit,
+    )
+    return {
+        "count": len(rows),
+        "now": now_iso,
+        "thresholds": {
+            "registered_cutoff": registered_cutoff,
+            "routed_cutoff": routed_cutoff,
+            "uploading_cutoff": uploading_cutoff,
+        },
+        "jobs": rows,
+    }
 
 
 def route_and_prepare_upload_job(
@@ -473,11 +529,14 @@ def compute_upload_window(
 ) -> tuple[str, str]:
     """Return ``(upload_at, upload_deadline)`` ISO strings for a publish_at.
 
-    Resolution order for lead/buffer minutes: per-profile `upload` block →
-    settings.<platform>.upload_lead_minutes → settings defaults → hardcoded
-    fallback. The deadline is always at least 16 minutes before publish_at
-    because YouTube requires publish_at to be more than 15 minutes in the
-    future at the moment of upload.
+    For platforms with native scheduled publishing, the preferred behavior is
+    to upload as soon as validation/registration has completed and let the
+    platform own final publication timing. The legacy lead-window behavior
+    remains available by config and for platforms without native scheduling.
+
+    The deadline is always at least 16 minutes before publish_at because
+    YouTube requires publish_at to be more than 15 minutes in the future at
+    the moment of upload.
     """
     pub_dt = parse_iso_datetime(publish_at)
     if pub_dt is None:
@@ -485,13 +544,8 @@ def compute_upload_window(
     profile_upload = (profile or {}).get("upload") if isinstance((profile or {}).get("upload"), dict) else {}
     platform_cfg = settings.get(_platform_settings_key(platform))
     platform_cfg = platform_cfg if isinstance(platform_cfg, dict) else {}
+    capabilities = platform_capabilities(platform, settings=settings, profile=profile)
 
-    lead_minutes = _int_or_default(
-        profile_upload.get("lead_minutes")
-        or platform_cfg.get("upload_lead_minutes")
-        or os.environ.get(f"OUTPUT_FUNNEL_{platform.upper()}_UPLOAD_LEAD_MINUTES"),
-        90,
-    )
     safety_minutes = _int_or_default(
         profile_upload.get("safety_buffer_minutes")
         or platform_cfg.get("upload_safety_buffer_minutes")
@@ -499,17 +553,117 @@ def compute_upload_window(
         20,
     )
     safety_minutes = max(safety_minutes, 20)
+    deadline_dt = pub_dt - timedelta(minutes=safety_minutes)
+
+    if capabilities.publishes_immediately:
+        grace_minutes = _int_or_default(
+            profile_upload.get("publish_grace_minutes")
+            or platform_cfg.get("publish_grace_minutes")
+            or os.environ.get(f"OUTPUT_FUNNEL_{platform.upper()}_PUBLISH_GRACE_MINUTES"),
+            15,
+        )
+        upload_dt = pub_dt
+        deadline_dt = pub_dt + timedelta(minutes=max(1, grace_minutes))
+        return to_utc_iso(upload_dt), to_utc_iso(deadline_dt)
+
+    if capabilities.supports_platform_scheduling and not capabilities.requires_future_upload_window:
+        now = now_utc()
+        horizon_days = _max_schedule_horizon_days(platform_cfg, profile_upload)
+        if horizon_days > 0:
+            earliest_upload_dt = pub_dt - timedelta(days=horizon_days)
+            upload_dt = max(now, earliest_upload_dt)
+        else:
+            upload_dt = now
+        if upload_dt > deadline_dt:
+            upload_dt = deadline_dt
+        return to_utc_iso(upload_dt), to_utc_iso(deadline_dt)
+
+    lead_minutes = _int_or_default(
+        profile_upload.get("lead_minutes")
+        or platform_cfg.get("upload_lead_minutes")
+        or os.environ.get(f"OUTPUT_FUNNEL_{platform.upper()}_UPLOAD_LEAD_MINUTES"),
+        90,
+    )
     if lead_minutes <= safety_minutes:
         lead_minutes = safety_minutes + 30
 
     upload_dt = pub_dt - timedelta(minutes=lead_minutes)
-    deadline_dt = pub_dt - timedelta(minutes=safety_minutes)
     return to_utc_iso(upload_dt), to_utc_iso(deadline_dt)
+
+
+def platform_capabilities(
+    platform: str,
+    *,
+    settings: dict[str, Any],
+    profile: dict[str, Any] | None = None,
+) -> PlatformCapabilities:
+    profile_upload = (profile or {}).get("upload") if isinstance((profile or {}).get("upload"), dict) else {}
+    platform_cfg = settings.get(_platform_settings_key(platform))
+    platform_cfg = platform_cfg if isinstance(platform_cfg, dict) else {}
+    platform_name = str(platform or "").strip()
+    if platform_name in {"x", "instagram_reels"}:
+        return PlatformCapabilities(
+            supports_platform_scheduling=False,
+            requires_future_upload_window=False,
+            publishes_immediately=True,
+        )
+    if platform_name == "facebook_reels":
+        scheduled_mode = str(
+            profile_upload.get("scheduled_publish_mode")
+            or platform_cfg.get("scheduled_publish_mode")
+            or "platform_native"
+        ).strip().lower()
+        upload_timing = str(
+            profile_upload.get("upload_timing")
+            or platform_cfg.get("upload_timing")
+            or "immediate_after_validation"
+        ).strip().lower()
+        supports_platform_scheduling = scheduled_mode in {"platform_native", "native", "facebook"}
+        return PlatformCapabilities(
+            supports_platform_scheduling=supports_platform_scheduling,
+            requires_future_upload_window=not (
+                supports_platform_scheduling and upload_timing == "immediate_after_validation"
+            ),
+        )
+    if not platform_name.startswith("youtube"):
+        return PlatformCapabilities()
+
+    scheduled_mode = str(
+        profile_upload.get("scheduled_publish_mode")
+        or platform_cfg.get("scheduled_publish_mode")
+        or "platform_native"
+    ).strip().lower()
+    upload_timing = str(
+        profile_upload.get("upload_timing")
+        or platform_cfg.get("upload_timing")
+        or "lead_window"
+    ).strip().lower()
+    supports_platform_scheduling = scheduled_mode in {"platform_native", "native", "youtube"}
+    requires_future_upload_window = not (
+        supports_platform_scheduling and upload_timing == "immediate_after_validation"
+    )
+    return PlatformCapabilities(
+        supports_platform_scheduling=supports_platform_scheduling,
+        requires_future_upload_window=requires_future_upload_window,
+    )
+
+
+def _max_schedule_horizon_days(platform_cfg: dict[str, Any], profile_upload: dict[str, Any]) -> int:
+    return max(
+        0,
+        _int_or_default(
+            profile_upload.get("max_schedule_horizon_days")
+            or platform_cfg.get("max_schedule_horizon_days"),
+            14,
+        ),
+    )
 
 
 def _platform_settings_key(platform: str) -> str:
     if platform.startswith("youtube"):
         return "youtube"
+    if platform.startswith("facebook"):
+        return "facebook"
     if platform.startswith("tiktok"):
         return "tiktok"
     if platform.startswith("instagram"):

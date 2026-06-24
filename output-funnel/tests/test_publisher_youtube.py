@@ -85,7 +85,25 @@ def _scheduled_job(monkeypatch, tmp_path: Path) -> tuple[OutputStore, int]:
         },
     )
     upload_job_id = int(result["registered"][0]["upload_jobs"][0]["upload_job_id"])
-    schedule_upload_job(upload_job_id, store=store, profiles=[PROFILE])
+    schedule_upload_job(
+        upload_job_id,
+        store=store,
+        profiles=[PROFILE],
+        settings={
+            "scheduler": {
+                "default_timezone": "UTC",
+                "default_lead_minutes": 180,
+                "default_min_gap_minutes": 60,
+                "default_max_uploads_per_day": 3,
+            },
+            "youtube": {
+                "scheduled_publish_mode": "platform_native",
+                "upload_timing": "lead_window",
+                "upload_lead_minutes": 90,
+                "upload_safety_buffer_minutes": 20,
+            },
+        },
+    )
     publish_future = to_utc_iso(datetime.now(UTC) + timedelta(hours=4))
     upload_future = to_utc_iso(datetime.now(UTC) + timedelta(hours=2))
     deadline = to_utc_iso(datetime.now(UTC) + timedelta(hours=3, minutes=40))
@@ -102,6 +120,8 @@ def _scheduled_job(monkeypatch, tmp_path: Path) -> tuple[OutputStore, int]:
 
 
 def test_publish_success_records_platform_asset_id(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("MK04_ENV", "prod")
+    monkeypatch.setenv("MK04_UPLOAD_MODE", "real")
     store, upload_job_id = _scheduled_job(monkeypatch, tmp_path)
 
     result = publish_one_job(
@@ -122,6 +142,8 @@ def test_publish_success_records_platform_asset_id(monkeypatch, tmp_path: Path):
 
 
 def test_publish_retryable_failure_records_attempt(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("MK04_ENV", "prod")
+    monkeypatch.setenv("MK04_UPLOAD_MODE", "real")
     store, upload_job_id = _scheduled_job(monkeypatch, tmp_path)
 
     result = publish_one_job(
@@ -176,6 +198,12 @@ def test_registration_auto_publish_requires_explicit_enable(monkeypatch, tmp_pat
         settings={
             "database_path": str(tmp_path / "queue.sqlite3"),
             "preflight": {"duration_tolerance_sec": 1.0},
+            "youtube": {
+                "scheduled_publish_mode": "platform_native",
+                "upload_timing": "lead_window",
+                "upload_lead_minutes": 90,
+                "upload_safety_buffer_minutes": 20,
+            },
             "automation": {"auto_schedule": True, "auto_publish": True, "publish_limit": 1},
             "publisher": {"max_attempts": 3},
         },

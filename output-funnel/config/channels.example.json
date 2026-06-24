@@ -35,6 +35,102 @@
         "made_for_kids": false,
         "privacy_status": "private"
       }
+    },
+    {
+      "channel_id": "mfm_business_ai_x",
+      "brand_name": "MFM Business AI",
+      "platform": "x",
+      "enabled": false,
+      "priority": 20,
+      "credentials": {
+        "access_token_env": "MFM_BUSINESS_AI_X_ACCESS_TOKEN",
+        "token_expires_at_env": "MFM_BUSINESS_AI_X_TOKEN_EXPIRES_AT"
+      },
+      "routing": {
+        "accepted_funnel_ids": ["mfm_business_ai_001", "business_clips_test"],
+        "min_composite_score": 0,
+        "required_platform": "x"
+      },
+      "cadence": {
+        "timezone": "UTC",
+        "min_gap_minutes": 120,
+        "max_uploads_per_day": 6,
+        "default_lead_minutes": 120,
+        "allowed_windows": [
+          {"start": "09:00", "end": "21:00"}
+        ]
+      },
+      "metadata_style": {
+        "default_hashtags": ["#Business", "#AI"],
+        "max_hashtags": 4,
+        "x_text_template": "{caption}\n\n{hashtags}"
+      }
+    },
+    {
+      "channel_id": "mfm_business_ai_facebook_reels",
+      "brand_name": "MFM Business AI",
+      "platform": "facebook_reels",
+      "enabled": false,
+      "priority": 30,
+      "credentials": {
+        "access_token_env": "MFM_BUSINESS_AI_FB_PAGE_ACCESS_TOKEN",
+        "token_expires_at_env": "MFM_BUSINESS_AI_FB_TOKEN_EXPIRES_AT",
+        "page_id_env": "MFM_BUSINESS_AI_FB_PAGE_ID"
+      },
+      "routing": {
+        "accepted_funnel_ids": ["mfm_business_ai_001", "business_clips_test"],
+        "min_composite_score": 0,
+        "required_platform": "facebook_reels"
+      },
+      "cadence": {
+        "timezone": "UTC",
+        "min_gap_minutes": 120,
+        "max_uploads_per_day": 6,
+        "default_lead_minutes": 120,
+        "allowed_windows": [
+          {"start": "09:00", "end": "21:00"}
+        ]
+      },
+      "upload": {
+        "scheduled_publish_mode": "platform_native",
+        "upload_timing": "immediate_after_validation"
+      },
+      "metadata_style": {
+        "default_hashtags": ["#Business", "#AI"],
+        "max_hashtags": 10,
+        "caption_template": "{caption}\n\n{hashtags}"
+      }
+    },
+    {
+      "channel_id": "mfm_business_ai_instagram_reels",
+      "brand_name": "MFM Business AI",
+      "platform": "instagram_reels",
+      "enabled": false,
+      "priority": 40,
+      "credentials": {
+        "access_token_env": "MFM_BUSINESS_AI_IG_ACCESS_TOKEN",
+        "token_expires_at_env": "MFM_BUSINESS_AI_IG_TOKEN_EXPIRES_AT",
+        "ig_user_id_env": "MFM_BUSINESS_AI_IG_USER_ID"
+      },
+      "routing": {
+        "accepted_funnel_ids": ["mfm_business_ai_001", "business_clips_test"],
+        "min_composite_score": 0,
+        "required_platform": "instagram_reels"
+      },
+      "cadence": {
+        "timezone": "UTC",
+        "min_gap_minutes": 120,
+        "max_uploads_per_day": 6,
+        "default_lead_minutes": 120,
+        "allowed_windows": [
+          {"start": "09:00", "end": "21:00"}
+        ]
+      },
+      "metadata_style": {
+        "default_hashtags": ["#Business", "#AI"],
+        "max_hashtags": 10,
+        "caption_template": "{caption}\n\n{hashtags}"
+      }
     }
   ]
 }

@@ -22,6 +22,25 @@ body {
   font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
+.env-banner {
+  background: var(--warn);
+  color: #050505;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  padding: 10px 28px;
+  text-transform: uppercase;
+}
+
+.env-banner.env-prod {
+  background: var(--bad);
+  color: #fff;
+}
+
+.env-banner.env-dev {
+  background: var(--blue);
+  color: #050505;
+}
+
 .topbar {
   align-items: center;
   border-bottom: 1px solid var(--border);
@@ -143,6 +162,14 @@ dl div {
   display: grid;
   gap: 10px;
   grid-template-columns: 90px minmax(0, 1fr);
+}
+
+.runtime-details {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.runtime-details div {
+  grid-template-columns: 80px minmax(0, 1fr);
 }
 
 dt {

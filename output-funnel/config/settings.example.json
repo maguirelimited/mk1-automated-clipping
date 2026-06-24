@@ -14,8 +14,27 @@
     "upload_safety_buffer_minutes": 20,
     "min_publish_at_lead_minutes": 15
   },
+  "x": {
+    "publish_grace_minutes": 15,
+    "circuit_threshold": 3,
+    "circuit_pause_seconds": 900
+  },
+  "facebook": {
+    "scheduled_publish_mode": "platform_native",
+    "upload_timing": "immediate_after_validation",
+    "upload_safety_buffer_minutes": 20,
+    "max_schedule_horizon_days": 180,
+    "circuit_threshold": 3,
+    "circuit_pause_seconds": 900
+  },
+  "instagram": {
+    "publish_grace_minutes": 15,
+    "circuit_threshold": 3,
+    "circuit_pause_seconds": 900
+  },
   "publisher": {
-    "max_attempts": 3
+    "max_attempts": 3,
+    "lease_seconds": 1800
   },
   "automation": {
     "auto_schedule": true,

@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
-source "$SCRIPT_DIR/env.sh"
+source "$SCRIPT_DIR/env.sh" "${1:-dev}"
 
 pids=()
 labels=()
@@ -32,28 +32,19 @@ cleanup() {
 
 trap cleanup INT TERM EXIT
 
-start_service "source-input" "$SCRIPT_DIR/run-input-service.sh"
-start_service "video-automation" "$SCRIPT_DIR/run-video-automation.sh"
-
-start_service "output-funnel" bash -c '
-  set -euo pipefail
-  cd "$1/output-funnel"
-  exec "${OUTPUT_FUNNEL_PYTHON_BIN:-${PYTHON_BIN:-.venv/bin/python}}" -m output_funnel.app
-' bash "$MK04_ROOT"
-
-start_service "ops-ui" bash -c '
-  set -euo pipefail
-  cd "$1/ops-ui"
-  exec "${OPS_UI_PYTHON_BIN:-${PYTHON_BIN:-.venv/bin/python}}" -m ops_ui
-' bash "$MK04_ROOT"
+start_service "source-input" "$SCRIPT_DIR/run-input-service.sh" "$MK04_ENV"
+start_service "video-automation" "$SCRIPT_DIR/run-video-automation.sh" "$MK04_ENV"
+start_service "output-funnel" "$SCRIPT_DIR/run-output-funnel.sh" "$MK04_ENV"
+start_service "ops-ui" "$SCRIPT_DIR/run-ops-ui.sh" "$MK04_ENV"
 
 cat <<EOF
 
-mk04 local services are starting:
-  source-input      http://127.0.0.1:5060
-  video-automation  http://127.0.0.1:5050
-  output-funnel     http://127.0.0.1:5055
-  ops-ui            http://127.0.0.1:5070
+mk04 $MK04_ENV services are starting from $MK04_ROOT:
+  source-input      $OPS_SOURCE_INPUT_URL
+  video-automation  $OPS_VIDEO_AUTOMATION_URL
+  output-funnel     $OPS_OUTPUT_FUNNEL_URL
+  ops-ui            http://127.0.0.1:$OPS_UI_PORT
+  upload-mode       $MK04_UPLOAD_MODE
 
 Press Ctrl+C to stop all services.
 EOF

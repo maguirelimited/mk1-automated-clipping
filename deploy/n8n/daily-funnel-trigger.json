@@ -1,0 +1,65 @@
+{
+  "name": "mk04 daily funnel trigger",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 8 * * *" }]
+        }
+      },
+      "id": "schedule",
+      "name": "Daily 08:00 UTC",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.INPUT_SERVICE_URL || 'http://127.0.0.1:5060' }}/run-funnel",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-Input-Service-Secret", "value": "={{ $env.INPUT_SERVICE_SECRET }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"funnel_id\": \"mfm_business_ai_001\"\n}",
+        "options": { "timeout": 600000 }
+      },
+      "id": "run-funnel",
+      "name": "POST /run-funnel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "status-ok",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "input_ready",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "or"
+        }
+      },
+      "id": "branch",
+      "name": "input_ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [800, 300]
+    }
+  ],
+  "connections": {
+    "Daily 08:00 UTC": { "main": [[{ "node": "POST /run-funnel", "type": "main", "index": 0 }]] },
+    "POST /run-funnel": { "main": [[{ "node": "input_ready?", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

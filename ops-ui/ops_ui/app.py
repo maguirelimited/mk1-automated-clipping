@@ -77,6 +77,10 @@ def create_app(settings: Settings | None = None) -> Flask:
     store.init_db()
     store._sync_controls_file()
 
+    @app.context_processor
+    def _runtime_context() -> dict[str, Any]:
+        return {"runtime": _runtime_summary(settings)}
+
     @app.template_filter("bytes")
     def _bytes(value: Any) -> str:
         try:
@@ -873,6 +877,20 @@ def _control_state(store: ControlStore) -> dict[str, bool]:
         CONTROL_UPLOADS_PAUSED: store.get_control_bool(CONTROL_UPLOADS_PAUSED),
         HUMAN_APPROVAL_REQUIRED: store.get_control_bool(HUMAN_APPROVAL_REQUIRED),
         PUBLISH_APPROVED_ONLY: store.get_control_bool(PUBLISH_APPROVED_ONLY),
+    }
+
+
+def _runtime_summary(settings: Settings) -> dict[str, str]:
+    return {
+        "environment": settings.environment,
+        "upload_mode": settings.upload_mode,
+        "scheduler_mode": settings.scheduler_mode,
+        "code_root": str(settings.code_root),
+        "config_root": str(settings.config_root),
+        "runtime_root": str(settings.runtime_root),
+        "log_root": str(settings.log_root),
+        "controls_file": str(settings.controls_file),
+        "control_db_path": str(settings.control_db_path),
     }
 
 

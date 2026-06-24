@@ -4,7 +4,7 @@ import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from output_funnel.models import PublishResult, UploadStatus
+from output_funnel.models import FailureClass, PublishResult, PublishState, UploadStatus
 from output_funnel.preflight import preferred_media_path
 from output_funnel.time_utils import parse_iso_datetime
 
@@ -15,6 +15,8 @@ YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 
 class YouTubeAdapter(PlatformAdapter):
     platform = "youtube_shorts"
+    adapter_version = "1"
+    api_version = "youtube.v3"
 
     def __init__(self, youtube_service: Any | None = None):
         self._youtube_service = youtube_service
@@ -25,8 +27,13 @@ class YouTubeAdapter(PlatformAdapter):
             return PublishResult(
                 ok=False,
                 status=UploadStatus.FAILED_TERMINAL,
+                failure_class=FailureClass.PERMANENT_FAILURE,
                 error_category="youtube_validation_error",
                 error_message=validation_error,
+                publish_state=PublishState.FAILED,
+                platform_state="failed",
+                adapter_version=self.adapter_version,
+                api_version=self.api_version,
                 retryable=False,
             )
 
@@ -49,8 +56,13 @@ class YouTubeAdapter(PlatformAdapter):
             return PublishResult(
                 ok=False,
                 status=UploadStatus.FAILED_RETRYABLE,
+                failure_class=FailureClass.RETRYABLE,
                 error_category="youtube_upload_error",
                 error_message=str(exc),
+                publish_state=PublishState.FAILED,
+                platform_state="failed",
+                adapter_version=self.adapter_version,
+                api_version=self.api_version,
                 retryable=True,
             )
 
@@ -62,9 +74,33 @@ class YouTubeAdapter(PlatformAdapter):
                 ok=False,
                 status=UploadStatus.FAILED_RETRYABLE,
                 response=_safe_response(response),
+                raw_response=response,
+                failure_class=FailureClass.RETRYABLE,
                 error_category="youtube_response_missing_id",
                 error_message="YouTube response did not include a video id",
+                publish_state=PublishState.FAILED,
+                platform_state="failed",
+                adapter_version=self.adapter_version,
+                api_version=self.api_version,
                 retryable=True,
+            )
+        state_error = _verify_scheduled_state(response, body)
+        if state_error:
+            return PublishResult(
+                ok=False,
+                status=UploadStatus.FAILED_TERMINAL,
+                platform_asset_id=video_id,
+                response=_safe_response(response),
+                raw_response=response,
+                remote_ids={"youtube_video_id": video_id},
+                failure_class=FailureClass.PERMANENT_FAILURE,
+                error_category="youtube_state_verification_failed",
+                error_message=state_error,
+                publish_state=PublishState.FAILED,
+                platform_state="failed",
+                adapter_version=self.adapter_version,
+                api_version=self.api_version,
+                retryable=False,
             )
         return PublishResult(
             ok=True,
@@ -72,6 +108,12 @@ class YouTubeAdapter(PlatformAdapter):
             platform_asset_id=video_id,
             scheduled_at=str(upload_job.get("platform_publish_at") or upload_job.get("scheduled_at") or ""),
             response=_safe_response(response),
+            raw_response=response,
+            remote_ids={"youtube_video_id": video_id},
+            publish_state=PublishState.SCHEDULED,
+            platform_state="private_scheduled",
+            adapter_version=self.adapter_version,
+            api_version=self.api_version,
             retryable=False,
         )
 
@@ -170,3 +212,28 @@ def _safe_response(response: dict[str, Any]) -> dict[str, Any]:
             "publishAt": status.get("publishAt"),
         },
     }
+
+
+def _verify_scheduled_state(response: dict[str, Any], expected_body: dict[str, Any]) -> str | None:
+    status = response.get("status")
+    if not isinstance(status, dict):
+        return "youtube_response_missing_status"
+    expected_status = expected_body.get("status") if isinstance(expected_body.get("status"), dict) else {}
+    expected_privacy = str(expected_status.get("privacyStatus") or "").strip()
+    actual_privacy = str(status.get("privacyStatus") or "").strip()
+    if expected_privacy and actual_privacy != expected_privacy:
+        return f"privacy_status_mismatch: expected {expected_privacy!r}, got {actual_privacy!r}"
+
+    expected_publish_at = str(expected_status.get("publishAt") or "").strip()
+    actual_publish_at = str(status.get("publishAt") or "").strip()
+    if expected_publish_at and not _same_instant(expected_publish_at, actual_publish_at):
+        return f"publish_at_mismatch: expected {expected_publish_at!r}, got {actual_publish_at!r}"
+    return None
+
+
+def _same_instant(expected: str, actual: str) -> bool:
+    expected_dt = parse_iso_datetime(expected)
+    actual_dt = parse_iso_datetime(actual)
+    if expected_dt is None or actual_dt is None:
+        return expected == actual
+    return expected_dt == actual_dt

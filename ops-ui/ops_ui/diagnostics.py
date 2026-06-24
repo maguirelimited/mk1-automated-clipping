@@ -38,6 +38,9 @@ def default_input_ledger_dir() -> Path:
     raw = os.environ.get("OPS_INPUT_LEDGER_DIR", "").strip()
     if raw:
         return Path(raw).expanduser()
+    runtime_root = os.environ.get("MK04_RUNTIME_ROOT", "").strip()
+    if runtime_root:
+        return Path(runtime_root).expanduser() / "source-input" / "state" / "input_jobs"
     return BASE_DIR / "source-input" / "input_service" / "data" / "state" / "input_jobs"
 
 
@@ -45,6 +48,12 @@ def default_output_funnel_db() -> Path:
     raw = os.environ.get("OPS_OUTPUT_FUNNEL_DB", "").strip()
     if raw:
         return Path(raw).expanduser()
+    output_db = os.environ.get("OUTPUT_FUNNEL_DB", "").strip()
+    if output_db:
+        return Path(output_db).expanduser()
+    runtime_root = os.environ.get("MK04_RUNTIME_ROOT", "").strip()
+    if runtime_root:
+        return Path(runtime_root).expanduser() / "output-funnel" / "output_funnel.sqlite3"
     return BASE_DIR / "output-funnel" / "data" / "output_funnel.sqlite3"
 
 

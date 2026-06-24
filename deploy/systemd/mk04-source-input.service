@@ -1,0 +1,35 @@
+[Unit]
+Description=mk0.4 source-input ingestion service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mk04
+Group=mk04
+WorkingDirectory=/opt/mk04/prod/current
+Environment=MK04_ENV=prod
+EnvironmentFile=-/etc/mk04/prod/env
+EnvironmentFile=-/etc/mk04/prod/services/source-input.env
+ExecStart=/opt/mk04/prod/current/deploy/scripts/run-input-service.sh prod
+Restart=always
+RestartSec=10
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+# Logging. journald handles structured fields; logrotate is unnecessary for it.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mk04-source-input
+
+# Hardening. Conservative profile; loosen only if /doctor or yt-dlp need it.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+# Resource ceilings sized for a single-host mk1 deployment.
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

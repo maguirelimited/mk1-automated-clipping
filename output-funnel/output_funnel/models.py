@@ -3,7 +3,25 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-Platform = Literal["youtube_shorts", "tiktok", "instagram_reels", "x"]
+Platform = Literal["youtube_shorts", "tiktok", "instagram_reels", "facebook_reels", "x"]
+
+
+class FailureClass:
+    RETRYABLE = "retryable"
+    PERMANENT_FAILURE = "permanent_failure"
+    RATE_LIMITED = "rate_limited"
+    AUTHENTICATION_FAILURE = "authentication_failure"
+    PLATFORM_STATE_UNKNOWN = "platform_state_unknown"
+
+
+class PublishState:
+    PENDING = "pending"
+    UPLOADING = "uploading"
+    UPLOADED = "uploaded"
+    PROCESSING = "processing"
+    SCHEDULED = "scheduled"
+    PUBLISHED = "published"
+    FAILED = "failed"
 
 
 class UploadStatus:
@@ -124,6 +142,14 @@ class PublishResult:
     platform_asset_id: str | None = None
     scheduled_at: str | None = None
     response: dict[str, Any] = field(default_factory=dict)
+    raw_response: dict[str, Any] = field(default_factory=dict)
+    remote_ids: dict[str, Any] = field(default_factory=dict)
+    platform_state: str | None = None
+    publish_state: str | None = None
+    adapter_version: str | None = None
+    api_version: str | None = None
+    failure_class: str | None = None
     error_category: str | None = None
     error_message: str | None = None
     retryable: bool = False
+    duration_ms: int | None = None

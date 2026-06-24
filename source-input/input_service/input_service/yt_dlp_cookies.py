@@ -88,6 +88,19 @@ def resolve_yt_dlp_js_runtimes() -> dict[str, dict[str, str]] | None:
     return None
 
 
+def resolve_yt_dlp_remote_components() -> list[str]:
+    """Allow yt-dlp's recommended remote EJS challenge solver script by default.
+
+    Recent YouTube extraction can expose only storyboard image formats unless
+    yt-dlp can fetch the EJS solver script. This mirrors
+    ``--remote-components ejs:github`` while keeping the setting overrideable.
+    """
+    raw = _env("YT_DLP_REMOTE_COMPONENTS")
+    if raw:
+        return [item.strip() for item in raw.replace(",", " ").split() if item.strip()]
+    return ["ejs:github"]
+
+
 def apply_yt_dlp_auth_runtime_options(opts: dict[str, Any]) -> dict[str, Any]:
     """Apply cookie/browser-cookie and JS-runtime options to a yt-dlp options dict."""
     browser = resolve_yt_dlp_browser_cookies()
@@ -107,4 +120,8 @@ def apply_yt_dlp_auth_runtime_options(opts: dict[str, Any]) -> dict[str, Any]:
         log.info("yt-dlp JavaScript runtime mode: %s", ",".join(js_runtimes))
     else:
         log.info("yt-dlp JavaScript runtime mode: yt-dlp default")
+    remote_components = resolve_yt_dlp_remote_components()
+    if remote_components:
+        opts["remote_components"] = remote_components
+        log.info("yt-dlp remote components enabled: %s", ",".join(remote_components))
     return opts

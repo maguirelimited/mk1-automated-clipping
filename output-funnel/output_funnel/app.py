@@ -10,11 +10,12 @@ from typing import Any
 from flask import Flask, jsonify, request
 
 from . import PIPELINE_NAME
-from .config import load_settings
+from .config import load_settings, runtime_environment, upload_mode
 from .publisher import upload_one_job
 from .service import (
     backfill_legacy_rows,
     cancel_upload_job,
+    find_stalled_jobs,
     load_job_payload_from_path,
     make_store,
     plan_due_upload_jobs,
@@ -37,6 +38,11 @@ log = logging.getLogger("output_funnel.app")
 _UPLOAD_WORKER_STARTED = False
 _UPLOAD_WORKER_LOCK = threading.Lock()
 _UPLOAD_WORKER_MIN_INTERVAL_SEC = 15
+
+_PLAN_WORKER_STARTED = False
+_PLAN_WORKER_LOCK = threading.Lock()
+# Planning is cheap; allow a faster tick than uploads but never busy-loop.
+_PLAN_WORKER_MIN_INTERVAL_SEC = 30
 
 
 def _store():
@@ -104,7 +110,7 @@ def _log_upload_result(result: dict[str, Any]) -> None:
             continue
         if item.get("uploaded") is True:
             print(
-                "[output-funnel] uploaded "
+                f"[output-funnel env={runtime_environment()} upload_mode={item.get('upload_mode') or upload_mode()}] uploaded "
                 f"upload_job_id={item.get('upload_job_id')} "
                 f"platform_video_id={item.get('platform_video_id') or item.get('platform_asset_id')} "
                 f"publish_at={item.get('publish_at')}",
@@ -112,7 +118,7 @@ def _log_upload_result(result: dict[str, Any]) -> None:
             )
         else:
             print(
-                "[output-funnel] upload skipped "
+                f"[output-funnel env={runtime_environment()} upload_mode={item.get('upload_mode') or upload_mode()}] upload skipped "
                 f"upload_job_id={item.get('upload_job_id')} "
                 f"reason={item.get('reason') or item.get('status')}",
                 flush=True,
@@ -122,7 +128,15 @@ def _log_upload_result(result: dict[str, Any]) -> None:
 @app.get("/healthz")
 def healthz():
     store = _store()
-    return jsonify({"success": True, "pipeline": PIPELINE_NAME, "database_path": store.db_path})
+    return jsonify(
+        {
+            "success": True,
+            "pipeline": PIPELINE_NAME,
+            "environment": runtime_environment(),
+            "upload_mode": upload_mode(),
+            "database_path": store.db_path,
+        }
+    )
 
 
 @app.post("/registrations/from-job")
@@ -302,6 +316,57 @@ def backfill_route():
     return jsonify({"success": True, "pipeline": PIPELINE_NAME, **result})
 
 
+@app.get("/admin/stalled-jobs")
+def stalled_jobs_route():
+    """Report upload_jobs stuck in registered/routed/uploading.
+
+    Drives the watchdog: a non-zero ``count`` is an autonomy alarm. Thresholds
+    live in ``settings.json`` under ``stalled_jobs``; ops-ui already exposes a
+    related set of stuck heuristics on its `/recovery` page.
+    """
+    try:
+        limit = int(request.args.get("limit") or "100")
+    except ValueError:
+        return _fail("limit must be an integer")
+    result = find_stalled_jobs(store=_store(), limit=limit)
+    return jsonify({"success": True, "pipeline": PIPELINE_NAME, **result})
+
+
+@app.get("/admin/last-upload")
+def last_upload_route():
+    """Return the most recent successful upload timestamp + pending queue size.
+
+    Drives the watchdog's "pipeline produced something recently" assertion.
+    Without this, a healthy-looking system can silently stop uploading for
+    days (cookies expired, OAuth dead, OpenAI quota, etc.) and nothing
+    notices. Returns ``last_upload_at: null`` if nothing has ever uploaded.
+    """
+    store = _store()
+    with store.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT MAX(COALESCE(uploaded_at, updated_at)) AS last_upload_at
+            FROM upload_jobs
+            WHERE status IN ('uploaded_scheduled', 'published')
+            """
+        ).fetchone()
+        pending_row = conn.execute(
+            """
+            SELECT COUNT(*) AS pending
+            FROM upload_jobs
+            WHERE status IN ('registered', 'routed', 'planned', 'pending_upload')
+            """
+        ).fetchone()
+    return jsonify(
+        {
+            "success": True,
+            "pipeline": PIPELINE_NAME,
+            "last_upload_at": row["last_upload_at"] if row else None,
+            "pending_count": int(pending_row["pending"]) if pending_row else 0,
+        }
+    )
+
+
 def _resolve_upload_worker_config(settings: dict[str, Any] | None = None) -> dict[str, Any]:
     """Resolve effective upload-worker config from settings + env.
 
@@ -353,6 +418,118 @@ def _resolve_upload_worker_config(settings: dict[str, Any] | None = None) -> dic
     return {"enabled": enabled, "interval_seconds": interval, "limit": limit}
 
 
+def _resolve_plan_worker_config(settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Resolve effective plan-worker config from settings + env.
+
+    Same lookup shape as :func:`_resolve_upload_worker_config`. Env vars:
+    ``OUTPUT_FUNNEL_PLAN_WORKER_ENABLED``,
+    ``OUTPUT_FUNNEL_PLAN_WORKER_INTERVAL``,
+    ``OUTPUT_FUNNEL_AUTO_SCHEDULE_LIMIT`` (already used by plan_due).
+    """
+    cfg = settings or load_settings()
+    automation_cfg = cfg.get("automation") if isinstance(cfg.get("automation"), dict) else {}
+    worker_cfg: dict[str, Any] = {}
+    top_level = cfg.get("plan_worker")
+    if isinstance(top_level, dict):
+        worker_cfg = {**worker_cfg, **top_level}
+    nested = automation_cfg.get("plan_worker") if isinstance(automation_cfg, dict) else None
+    if isinstance(nested, dict):
+        worker_cfg = {**worker_cfg, **nested}
+
+    env_enabled = os.environ.get("OUTPUT_FUNNEL_PLAN_WORKER_ENABLED", "").strip().lower()
+    if env_enabled:
+        enabled = env_enabled in ("1", "true", "yes", "on")
+    else:
+        enabled = bool(worker_cfg.get("enabled", False))
+
+    raw_interval = (
+        os.environ.get("OUTPUT_FUNNEL_PLAN_WORKER_INTERVAL")
+        or worker_cfg.get("interval_seconds")
+        or 300
+    )
+    try:
+        interval = int(raw_interval)
+    except (TypeError, ValueError):
+        interval = 300
+    interval = max(_PLAN_WORKER_MIN_INTERVAL_SEC, interval)
+
+    raw_limit = (
+        os.environ.get("OUTPUT_FUNNEL_AUTO_SCHEDULE_LIMIT")
+        or automation_cfg.get("schedule_limit")
+        or 50
+    )
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, limit)
+
+    return {"enabled": enabled, "interval_seconds": interval, "limit": limit}
+
+
+def start_plan_worker(
+    *,
+    settings: dict[str, Any] | None = None,
+    plan_fn: Any = None,
+    sleep_fn: Any = None,
+) -> threading.Thread | None:
+    """Spawn the background plan worker thread, if enabled.
+
+    The plan worker exists so a one-off failed handoff (e.g. transient network
+    blip between video-automation and output-funnel) does not strand clips in
+    ``registered`` / ``routed``. It periodically calls
+    :func:`plan_due_upload_jobs`, which is idempotent on already-planned rows.
+
+    Idempotent across calls; returns the thread (or None if disabled / already
+    running). ``plan_fn`` and ``sleep_fn`` are injected for testing.
+    """
+    global _PLAN_WORKER_STARTED
+    cfg = _resolve_plan_worker_config(settings)
+    if not cfg["enabled"]:
+        log.info("plan worker disabled")
+        return None
+
+    with _PLAN_WORKER_LOCK:
+        if _PLAN_WORKER_STARTED:
+            log.info("plan worker already running; ignoring start request")
+            return None
+        _PLAN_WORKER_STARTED = True
+
+    interval = cfg["interval_seconds"]
+    limit = cfg["limit"]
+    do_plan = plan_fn or (lambda: plan_due_upload_jobs(store=_store(), limit=limit))
+    do_sleep = sleep_fn or time.sleep
+
+    def _loop() -> None:
+        log.info(
+            "plan_worker started env=%s upload_mode=%s interval=%ds limit=%d",
+            runtime_environment(),
+            upload_mode(),
+            interval,
+            limit,
+        )
+        print(
+            f"[output-funnel env={runtime_environment()} upload_mode={upload_mode()}] plan_worker started interval={interval}s limit={limit}",
+            flush=True,
+        )
+        while True:
+            try:
+                result = do_plan()
+                if isinstance(result, dict) and result.get("count"):
+                    _log_schedule_result({"processing": {"schedule": result}})
+            except Exception:
+                log.exception("plan worker tick failed")
+            try:
+                do_sleep(interval)
+            except Exception:
+                log.exception("plan worker sleep interrupted; exiting loop")
+                return
+
+    thread = threading.Thread(target=_loop, name="output_funnel_plan_worker", daemon=True)
+    thread.start()
+    return thread
+
+
 def start_upload_worker(
     *,
     settings: dict[str, Any] | None = None,
@@ -386,12 +563,14 @@ def start_upload_worker(
 
     def _loop() -> None:
         log.info(
-            "upload_worker started interval=%ds limit=%d",
+            "upload_worker started env=%s upload_mode=%s interval=%ds limit=%d",
+            runtime_environment(),
+            upload_mode(),
             interval,
             limit,
         )
         print(
-            f"[output-funnel] upload_worker started interval={interval}s limit={limit}",
+            f"[output-funnel env={runtime_environment()} upload_mode={upload_mode()}] upload_worker started interval={interval}s limit={limit}",
             flush=True,
         )
         while True:
@@ -399,7 +578,7 @@ def start_upload_worker(
                 from .control_gate import uploads_paused
 
                 if uploads_paused():
-                    log.info("upload worker tick skipped: uploads_paused")
+                    log.info("upload worker tick skipped env=%s upload_mode=%s reason=uploads_paused", runtime_environment(), upload_mode())
                 else:
                     result = do_upload()
                     if isinstance(result, dict) and result.get("count"):
@@ -418,8 +597,20 @@ def start_upload_worker(
 
 
 def main() -> None:
-    start_upload_worker(settings=load_settings())
-    app.run(host="127.0.0.1", port=5055)
+    cfg = load_settings()
+    mode = upload_mode()
+    start_plan_worker(settings=cfg)
+    start_upload_worker(settings=cfg)
+    host = os.environ.get("OUTPUT_FUNNEL_HOST", "127.0.0.1")
+    try:
+        port = int(os.environ.get("OUTPUT_FUNNEL_PORT", "5055"))
+    except ValueError:
+        port = 5055
+    print(
+        f"[output-funnel] ENV={runtime_environment().upper()} upload_mode={mode} settings={os.environ.get('OUTPUT_FUNNEL_SETTINGS', '')} db={os.environ.get('OUTPUT_FUNNEL_DB', '')} port={port}",
+        flush=True,
+    )
+    app.run(host=host, port=port)
 
 
 if __name__ == "__main__":

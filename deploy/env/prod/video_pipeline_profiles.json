@@ -1,0 +1,24 @@
+{
+  "profiles": {
+    "business_podcasts_001": {
+      "selection": {
+        "max_clips": 8,
+        "min_duration_sec": 30,
+        "max_duration_sec": 120,
+        "max_overlap_sec": 2,
+        "include_reasons": false,
+        "include_clip_metadata": true
+      }
+    },
+    "mfm_business_ai_001": {
+      "selection": {
+        "max_clips": 6,
+        "min_duration_sec": 30,
+        "max_duration_sec": 60,
+        "max_overlap_sec": 2,
+        "include_reasons": false,
+        "include_clip_metadata": true
+      }
+    }
+  }
+}

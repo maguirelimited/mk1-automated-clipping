@@ -9,8 +9,8 @@
     "x": false
   },
   "selection": {
-    "max_clips": 3,
-    "min_duration_sec": 30,
+    "max_clips": 6,
+    "min_duration_sec": 15,
     "max_duration_sec": 60,
     "max_overlap_sec": 2
   },

@@ -81,6 +81,9 @@ def load_clip_funnel_config(pipeline_profile: str) -> dict[str, Any] | None:
     fid = str(pipeline_profile or "").strip()
     if not fid:
         return None
+    raw_dir = os.environ.get("FUNNEL_CONFIG_DIR") or os.environ.get("VIDEO_FUNNELS_CONFIG_DIR", "")
+    if raw_dir.strip():
+        return _read_json_object(Path(raw_dir).expanduser() / f"{fid}.json")
     path = BASE_DIR / "video-automation" / "config" / "funnels" / f"{fid}.json"
     return _read_json_object(path)
 

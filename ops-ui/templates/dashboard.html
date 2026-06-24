@@ -1,6 +1,25 @@
 {% extends "base.html" %}
 
 {% block content %}
+<section class="card runtime-card">
+  <div class="card-head">
+    <div>
+      <p class="eyebrow">runtime environment</p>
+      <h2>{{ runtime.environment|upper }} Mission Control</h2>
+    </div>
+    <div class="actions">
+      <span class="pill {{ 'bad' if runtime.upload_mode == 'real' else 'warn' }}">uploads: {{ runtime.upload_mode }}</span>
+      <span class="pill {{ 'ok' if runtime.scheduler_mode == 'autonomous' else 'muted' }}">scheduler: {{ runtime.scheduler_mode }}</span>
+    </div>
+  </div>
+  <dl class="runtime-details">
+    <div><dt>Code</dt><dd class="mono">{{ runtime.code_root }}</dd></div>
+    <div><dt>Config</dt><dd class="mono">{{ runtime.config_root }}</dd></div>
+    <div><dt>Runtime</dt><dd class="mono">{{ runtime.runtime_root }}</dd></div>
+    <div><dt>Controls</dt><dd class="mono">{{ runtime.controls_file }}</dd></div>
+  </dl>
+</section>
+
 <section class="grid grid-3">
   {% for service in services %}
     <article class="card service-card">

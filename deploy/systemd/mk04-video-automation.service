@@ -1,0 +1,33 @@
+[Unit]
+Description=mk0.4 video-automation clipping service
+After=network-online.target mk04-source-input.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mk04
+Group=mk04
+WorkingDirectory=/opt/mk04/prod/current
+Environment=MK04_ENV=prod
+EnvironmentFile=-/etc/mk04/prod/env
+EnvironmentFile=-/etc/mk04/prod/services/video-automation.env
+ExecStart=/opt/mk04/prod/current/deploy/scripts/run-video-automation.sh prod
+Restart=always
+RestartSec=10
+TimeoutStartSec=120
+TimeoutStopSec=60
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mk04-video-automation
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+# Whisper/ffmpeg can open many file handles during chunked-long runs.
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

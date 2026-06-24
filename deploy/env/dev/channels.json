@@ -1,0 +1,40 @@
+{
+  "channels": [
+    {
+      "channel_id": "mfm_business_ai_dev",
+      "brand_name": "MFM Business AI DEV",
+      "platform": "youtube_shorts",
+      "enabled": true,
+      "priority": 10,
+      "credentials": {
+        "token_file_env": "MFM_BUSINESS_AI_YT_TOKEN_FILE",
+        "client_secret_file_env": "MFM_BUSINESS_AI_YT_CLIENT_SECRET_FILE"
+      },
+      "routing": {
+        "accepted_funnel_ids": ["mfm_business_ai_001", "business_clips_test"],
+        "min_composite_score": 0,
+        "required_platform": "youtube_shorts"
+      },
+      "cadence": {
+        "timezone": "UTC",
+        "min_gap_minutes": 120,
+        "max_uploads_per_day": 2,
+        "default_lead_minutes": 120,
+        "allowed_windows": [
+          {"start": "09:00", "end": "21:00"}
+        ]
+      },
+      "metadata_style": {
+        "title_prefix": "[DEV] ",
+        "title_suffix": "",
+        "default_hashtags": ["#Shorts", "#Business", "#AI"],
+        "max_hashtags": 5,
+        "description_template": "{caption}\n\n{hashtags}",
+        "category_id": "22",
+        "language": "en",
+        "made_for_kids": false,
+        "privacy_status": "private"
+      }
+    }
+  ]
+}

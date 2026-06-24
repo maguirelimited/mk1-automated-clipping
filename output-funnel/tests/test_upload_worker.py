@@ -48,6 +48,7 @@ def test_worker_disabled_does_not_spawn_thread():
 
 def test_secret_protects_non_health_endpoints(monkeypatch):
     monkeypatch.setenv("OUTPUT_FUNNEL_SECRET", "secret-1")
+    monkeypatch.setenv("MK04_UPLOAD_MODE", "dry_run")
     monkeypatch.setattr(
         app_module,
         "_store",

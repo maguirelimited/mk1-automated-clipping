@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
 from uuid import uuid4
@@ -11,7 +12,7 @@ from uuid import uuid4
 from .models import MetadataResult, PreflightResult, SourceClip, UploadStatus, canonical_status
 from .time_utils import now_iso
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def _json_dumps(value: Any) -> str:
@@ -35,6 +36,10 @@ def _stable_id(prefix: str, *parts: Any) -> str:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:16]}"
+
+
+def _future_iso(seconds: int) -> str:
+    return (datetime.now(UTC) + timedelta(seconds=max(1, int(seconds)))).isoformat().replace("+00:00", "Z")
 
 
 def _first_text(payload: dict[str, Any], *keys: str) -> str | None:
@@ -78,6 +83,15 @@ class OutputStore:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        # WAL lets readers and a single writer proceed concurrently. The plan
+        # worker, upload worker, and HTTP handlers all touch this database; in
+        # the default rollback-journal mode they serialise and surface
+        # ``database is locked`` errors on slow disk. WAL eliminates almost
+        # all of that contention. ``synchronous=NORMAL`` is the standard WAL
+        # companion: fsync only on checkpoint, safe against crashes (just not
+        # against bare-metal power loss mid-write, which is acceptable here).
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
         return conn
 
     def init_db(self) -> None:
@@ -214,6 +228,14 @@ class OutputStore:
                   platform_asset_id TEXT,
                   platform_video_id TEXT,
                   platform_state TEXT,
+                  publish_state TEXT,
+                  remote_ids_json TEXT NOT NULL DEFAULT '{}',
+                  adapter_version TEXT,
+                  api_version TEXT,
+                  lease_owner TEXT,
+                  lease_token TEXT,
+                  lease_heartbeat_at TEXT,
+                  lease_expires_at TEXT,
                   created_at TEXT NOT NULL,
                   updated_at TEXT NOT NULL
                 );
@@ -270,9 +292,54 @@ class OutputStore:
                   status TEXT NOT NULL,
                   request_json TEXT NOT NULL DEFAULT '{}',
                   response_json TEXT NOT NULL DEFAULT '{}',
+                  raw_response_json TEXT NOT NULL DEFAULT '{}',
+                  remote_ids_json TEXT NOT NULL DEFAULT '{}',
+                  failure_class TEXT,
+                  adapter_version TEXT,
+                  api_version TEXT,
+                  lease_token TEXT,
+                  duration_ms INTEGER,
                   error_category TEXT,
                   error_message TEXT,
                   retryable INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS upload_audit_events (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  upload_job_id INTEGER NOT NULL REFERENCES upload_jobs(id),
+                  publication_id TEXT,
+                  platform TEXT NOT NULL,
+                  channel_id TEXT NOT NULL DEFAULT '',
+                  attempt_number INTEGER,
+                  lease_token TEXT,
+                  event_type TEXT NOT NULL,
+                  result TEXT,
+                  remote_ids_json TEXT NOT NULL DEFAULT '{}',
+                  failure_class TEXT,
+                  adapter_version TEXT,
+                  api_version TEXT,
+                  payload_json TEXT NOT NULL DEFAULT '{}',
+                  occurred_at TEXT NOT NULL,
+                  created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS account_states (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  platform TEXT NOT NULL,
+                  channel_id TEXT NOT NULL,
+                  rate_limited_until TEXT,
+                  circuit_open_until TEXT,
+                  circuit_failure_count INTEGER NOT NULL DEFAULT 0,
+                  paused_reason TEXT,
+                  token_source TEXT,
+                  token_expires_at TEXT,
+                  token_last_checked_at TEXT,
+                  token_last_refresh_at TEXT,
+                  token_last_refresh_error TEXT,
+                  last_failure_class TEXT,
+                  last_failure_at TEXT,
+                  updated_at TEXT NOT NULL,
+                  UNIQUE(platform, channel_id)
                 );
 
                 CREATE TABLE IF NOT EXISTS publication_status_events (
@@ -306,6 +373,7 @@ class OutputStore:
             self._migrate_core_v4(conn)
             self._migrate_core_v5(conn)
             self._migrate_core_v6(conn)
+            self._migrate_core_v7(conn)
             self._ensure_indexes(conn)
             self._refresh_publications_view(conn)
             conn.execute(
@@ -351,6 +419,14 @@ class OutputStore:
               ON publication_status_events(upload_job_id, occurred_at);
             CREATE INDEX IF NOT EXISTS idx_variant_status_events_variant
               ON variant_status_events(variant_pk, occurred_at);
+            CREATE INDEX IF NOT EXISTS idx_upload_jobs_lease
+              ON upload_jobs(status, lease_expires_at);
+            CREATE INDEX IF NOT EXISTS idx_upload_audit_job
+              ON upload_audit_events(upload_job_id, occurred_at);
+            CREATE INDEX IF NOT EXISTS idx_upload_audit_account
+              ON upload_audit_events(platform, channel_id, occurred_at);
+            CREATE INDEX IF NOT EXISTS idx_account_states_platform_channel
+              ON account_states(platform, channel_id);
             """
         )
 
@@ -698,6 +774,79 @@ class OutputStore:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_assets_path ON assets(path)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_publication_targets_platform_channel ON publication_targets(platform, channel_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_upload_jobs_target ON upload_jobs(target_pk)")
+
+    def _migrate_core_v7(self, conn: sqlite3.Connection) -> None:
+        self._ensure_columns(
+            conn,
+            "upload_jobs",
+            [
+                ("publish_state", "TEXT"),
+                ("remote_ids_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("adapter_version", "TEXT"),
+                ("api_version", "TEXT"),
+                ("lease_owner", "TEXT"),
+                ("lease_token", "TEXT"),
+                ("lease_heartbeat_at", "TEXT"),
+                ("lease_expires_at", "TEXT"),
+            ],
+        )
+        self._ensure_columns(
+            conn,
+            "publish_attempts",
+            [
+                ("raw_response_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("remote_ids_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("failure_class", "TEXT"),
+                ("adapter_version", "TEXT"),
+                ("api_version", "TEXT"),
+                ("lease_token", "TEXT"),
+                ("duration_ms", "INTEGER"),
+            ],
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS upload_audit_events (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              upload_job_id INTEGER NOT NULL REFERENCES upload_jobs(id),
+              publication_id TEXT,
+              platform TEXT NOT NULL,
+              channel_id TEXT NOT NULL DEFAULT '',
+              attempt_number INTEGER,
+              lease_token TEXT,
+              event_type TEXT NOT NULL,
+              result TEXT,
+              remote_ids_json TEXT NOT NULL DEFAULT '{}',
+              failure_class TEXT,
+              adapter_version TEXT,
+              api_version TEXT,
+              payload_json TEXT NOT NULL DEFAULT '{}',
+              occurred_at TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS account_states (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              platform TEXT NOT NULL,
+              channel_id TEXT NOT NULL,
+              rate_limited_until TEXT,
+              circuit_open_until TEXT,
+              circuit_failure_count INTEGER NOT NULL DEFAULT 0,
+              paused_reason TEXT,
+              token_source TEXT,
+              token_expires_at TEXT,
+              token_last_checked_at TEXT,
+              token_last_refresh_at TEXT,
+              token_last_refresh_error TEXT,
+              last_failure_class TEXT,
+              last_failure_at TEXT,
+              updated_at TEXT NOT NULL,
+              UNIQUE(platform, channel_id)
+            )
+            """
+        )
 
     def _ensure_columns(
         self,
@@ -1512,6 +1661,14 @@ class OutputStore:
             "platform_asset_id",
             "platform_video_id",
             "platform_state",
+            "publish_state",
+            "remote_ids_json",
+            "adapter_version",
+            "api_version",
+            "lease_owner",
+            "lease_token",
+            "lease_heartbeat_at",
+            "lease_expires_at",
         }
         if "status" in updates:
             canonical = canonical_status(updates["status"])
@@ -1647,7 +1804,16 @@ class OutputStore:
         platform_video_id: str | None,
         uploaded_at: str | None = None,
         platform_state: str | None = "private_scheduled",
-    ) -> None:
+        publish_state: str | None = None,
+        remote_ids: dict[str, Any] | None = None,
+        adapter_version: str | None = None,
+        api_version: str | None = None,
+        lease_token: str | None = None,
+    ) -> bool:
+        if lease_token:
+            job = self.get_upload_job(upload_job_id)
+            if job is None or str(job.get("lease_token") or "") != str(lease_token):
+                return False
         self.update_upload_job(
             upload_job_id,
             status=UploadStatus.UPLOADED_SCHEDULED,
@@ -1655,8 +1821,17 @@ class OutputStore:
             platform_video_id=platform_video_id,
             platform_asset_id=platform_video_id,
             platform_state=platform_state,
+            publish_state=publish_state,
+            remote_ids_json=_json_dumps(remote_ids or {}),
+            adapter_version=adapter_version,
+            api_version=api_version,
+            lease_owner=None,
+            lease_token=None,
+            lease_heartbeat_at=None,
+            lease_expires_at=None,
             last_error=None,
         )
+        return True
 
     def mark_uploading(self, upload_job_id: int) -> None:
         self.update_upload_job(
@@ -1665,6 +1840,45 @@ class OutputStore:
             upload_started_at=now_iso(),
         )
 
+    def heartbeat_upload_lease(self, upload_job_id: int, lease_token: str, *, lease_seconds: int = 1800) -> bool:
+        now = now_iso()
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE upload_jobs
+                SET lease_heartbeat_at = ?, lease_expires_at = ?, updated_at = ?
+                WHERE id = ? AND status = ? AND lease_token = ?
+                """,
+                (
+                    now,
+                    _future_iso(lease_seconds),
+                    now,
+                    upload_job_id,
+                    UploadStatus.UPLOADING,
+                    lease_token,
+                ),
+            )
+            return bool(cur.rowcount)
+
+    def release_upload_lease(self, upload_job_id: int, lease_token: str | None = None) -> bool:
+        params: list[Any] = [now_iso(), upload_job_id]
+        lease_clause = ""
+        if lease_token:
+            lease_clause = " AND lease_token = ?"
+            params.append(lease_token)
+        with self.connect() as conn:
+            cur = conn.execute(
+                f"""
+                UPDATE upload_jobs
+                SET lease_owner = NULL, lease_token = NULL,
+                    lease_heartbeat_at = NULL, lease_expires_at = NULL,
+                    updated_at = ?
+                WHERE id = ?{lease_clause}
+                """,
+                params,
+            )
+            return bool(cur.rowcount)
+
     def mark_missed_upload_window(self, upload_job_id: int, *, reason: str = "upload_deadline_passed") -> None:
         self.update_upload_job(
             upload_job_id,
@@ -1672,7 +1886,14 @@ class OutputStore:
             last_error=reason,
         )
 
-    def claim_upload_due_jobs(self, *, now: str, limit: int = 10) -> list[dict[str, Any]]:
+    def claim_upload_due_jobs(
+        self,
+        *,
+        now: str,
+        limit: int = 10,
+        lease_owner: str = "upload_worker",
+        lease_seconds: int = 1800,
+    ) -> list[dict[str, Any]]:
         """Claim jobs whose upload window has opened.
 
         A job is eligible if its status is ``planned`` (no upload attempt yet)
@@ -1707,16 +1928,25 @@ class OutputStore:
                 ),
             ).fetchall()
             for row in rows:
+                lease_token = _new_id("lease")
+                heartbeat_at = now_iso()
+                lease_expires_at = _future_iso(lease_seconds)
                 cur = conn.execute(
                     """
                     UPDATE upload_jobs
-                    SET status = ?, upload_started_at = ?, updated_at = ?
+                    SET status = ?, upload_started_at = ?, lease_owner = ?,
+                        lease_token = ?, lease_heartbeat_at = ?, lease_expires_at = ?,
+                        updated_at = ?
                     WHERE id = ? AND status IN (?, ?)
                     """,
                     (
                         UploadStatus.UPLOADING,
-                        now_iso(),
-                        now_iso(),
+                        heartbeat_at,
+                        lease_owner,
+                        lease_token,
+                        heartbeat_at,
+                        lease_expires_at,
+                        heartbeat_at,
                         int(row["id"]),
                         UploadStatus.PLANNED,
                         UploadStatus.PENDING_UPLOAD,
@@ -1732,6 +1962,118 @@ class OutputStore:
                     )
                     claimed_ids.append(int(row["id"]))
         return [job for job_id in claimed_ids if (job := self.get_upload_job(job_id)) is not None]
+
+    def list_stalled_jobs(
+        self,
+        *,
+        now: str,
+        registered_cutoff: str | None = None,
+        routed_cutoff: str | None = None,
+        uploading_cutoff: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return upload_jobs that have been in an intermediate status for too long.
+
+        Stalled is defined per-status:
+
+        - ``registered`` / ``routed``: ``updated_at`` is older than the cutoff
+          (no progression to ``planned``; usually a missed handoff or
+          routing dead-end).
+        - ``uploading``: ``upload_started_at`` is older than the cutoff (a
+          worker claimed the row but did not finish; e.g. crash mid-upload).
+
+        Callers (the watchdog, ops-ui) compute the ISO cutoff strings from
+        configured thresholds and pass them in. ``now`` is included only as a
+        debug echo on the returned rows.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if registered_cutoff is not None:
+            clauses.append("(uj.status = ? AND uj.updated_at <= ?)")
+            params.extend([UploadStatus.REGISTERED, registered_cutoff])
+        if routed_cutoff is not None:
+            clauses.append("(uj.status = ? AND uj.updated_at <= ?)")
+            params.extend([UploadStatus.ROUTED, routed_cutoff])
+        if uploading_cutoff is not None:
+            clauses.append(
+                "(uj.status = ? AND COALESCE(uj.upload_started_at, uj.updated_at) <= ?)"
+            )
+            params.extend([UploadStatus.UPLOADING, uploading_cutoff])
+        if not clauses:
+            return []
+        params.append(max(1, int(limit)))
+        sql = (
+            """
+            SELECT uj.*, c.source_job_id, c.clip_id, c.title AS source_title,
+                   c.duration_sec, c.composite_score
+            FROM upload_jobs uj
+            JOIN clips c ON c.id = uj.clip_pk
+            WHERE """
+            + " OR ".join(clauses)
+            + " ORDER BY uj.updated_at ASC, uj.id ASC LIMIT ?"
+        )
+        with self.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._upload_job_from_row(row) for row in rows]
+
+    def list_expired_upload_leases(self, *, now: str, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT uj.*, c.source_job_id, c.clip_id, c.title AS source_title,
+                       c.duration_sec, c.composite_score
+                FROM upload_jobs uj
+                JOIN clips c ON c.id = uj.clip_pk
+                WHERE uj.status = ?
+                  AND uj.lease_expires_at IS NOT NULL
+                  AND uj.lease_expires_at <= ?
+                ORDER BY uj.lease_expires_at ASC, uj.id ASC
+                LIMIT ?
+                """,
+                (UploadStatus.UPLOADING, now, max(1, int(limit))),
+            ).fetchall()
+        return [self._upload_job_from_row(row) for row in rows]
+
+    def return_expired_upload_lease(
+        self,
+        upload_job_id: int,
+        lease_token: str,
+        *,
+        status: str = UploadStatus.PENDING_UPLOAD,
+        reason: str = "lease_expired_after_reconciliation",
+    ) -> bool:
+        now = now_iso()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM upload_jobs WHERE id = ? AND lease_token = ?",
+                (upload_job_id, lease_token),
+            ).fetchone()
+            cur = conn.execute(
+                """
+                UPDATE upload_jobs
+                SET status = ?, lease_owner = NULL, lease_token = NULL,
+                    lease_heartbeat_at = NULL, lease_expires_at = NULL,
+                    last_error = ?, updated_at = ?
+                WHERE id = ? AND status = ? AND lease_token = ?
+                """,
+                (
+                    status,
+                    reason,
+                    now,
+                    upload_job_id,
+                    UploadStatus.UPLOADING,
+                    lease_token,
+                ),
+            )
+            if cur.rowcount:
+                self._record_publication_status_event(
+                    conn,
+                    upload_job_id,
+                    from_status=None if row is None else row["status"],
+                    to_status=status,
+                    reason=reason,
+                )
+            return bool(cur.rowcount)
 
     def list_overdue_uploads(self, *, now: str, limit: int = 100) -> list[dict[str, Any]]:
         """Return planned/pending jobs whose upload_deadline is already past."""
@@ -1764,21 +2106,29 @@ class OutputStore:
         status: str,
         request_summary: dict[str, Any] | None = None,
         response_summary: dict[str, Any] | None = None,
+        raw_response: dict[str, Any] | None = None,
+        remote_ids: dict[str, Any] | None = None,
+        failure_class: str | None = None,
+        adapter_version: str | None = None,
+        api_version: str | None = None,
+        lease_token: str | None = None,
+        duration_ms: int | None = None,
         error_category: str | None = None,
         error_message: str | None = None,
         retryable: bool = False,
     ) -> None:
         with self.connect() as conn:
             job = conn.execute(
-                "SELECT publication_id FROM upload_jobs WHERE id = ?",
+                "SELECT publication_id, platform, channel_id, attempt_count FROM upload_jobs WHERE id = ?",
                 (upload_job_id,),
             ).fetchone()
             conn.execute(
                 """
                 INSERT INTO publish_attempts (
                   upload_job_id, publication_id, attempted_at, status, request_json, response_json,
-                  error_category, error_message, retryable
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  raw_response_json, remote_ids_json, failure_class, adapter_version, api_version,
+                  lease_token, duration_ms, error_category, error_message, retryable
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     upload_job_id,
@@ -1787,10 +2137,41 @@ class OutputStore:
                     status,
                     _json_dumps(request_summary or {}),
                     _json_dumps(response_summary or {}),
+                    _json_dumps(raw_response or {}),
+                    _json_dumps(remote_ids or {}),
+                    failure_class,
+                    adapter_version,
+                    api_version,
+                    lease_token,
+                    duration_ms,
                     error_category,
                     error_message,
                     1 if retryable else 0,
                 ),
+            )
+            attempt_number = 1 if job is None else int(job["attempt_count"] or 0) + 1
+            self._record_upload_audit_event(
+                conn,
+                upload_job_id,
+                publication_id=None if job is None else job["publication_id"],
+                platform="" if job is None else str(job["platform"] or ""),
+                channel_id="" if job is None else str(job["channel_id"] or ""),
+                attempt_number=attempt_number,
+                lease_token=lease_token,
+                event_type="upload_attempt",
+                result=status,
+                remote_ids=remote_ids,
+                failure_class=failure_class,
+                adapter_version=adapter_version,
+                api_version=api_version,
+                payload={
+                    "request": request_summary or {},
+                    "response": response_summary or {},
+                    "error_category": error_category,
+                    "error_message": error_message,
+                    "retryable": retryable,
+                    "duration_ms": duration_ms,
+                },
             )
             conn.execute(
                 """
@@ -1802,6 +2183,203 @@ class OutputStore:
                 """,
                 (error_message, now_iso(), upload_job_id),
             )
+
+    def _record_upload_audit_event(
+        self,
+        conn: sqlite3.Connection,
+        upload_job_id: int,
+        *,
+        publication_id: str | None,
+        platform: str,
+        channel_id: str,
+        attempt_number: int | None,
+        lease_token: str | None,
+        event_type: str,
+        result: str | None = None,
+        remote_ids: dict[str, Any] | None = None,
+        failure_class: str | None = None,
+        adapter_version: str | None = None,
+        api_version: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        ts = now_iso()
+        conn.execute(
+            """
+            INSERT INTO upload_audit_events (
+              upload_job_id, publication_id, platform, channel_id, attempt_number,
+              lease_token, event_type, result, remote_ids_json, failure_class,
+              adapter_version, api_version, payload_json, occurred_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                upload_job_id,
+                publication_id,
+                platform,
+                channel_id,
+                attempt_number,
+                lease_token,
+                event_type,
+                result,
+                _json_dumps(remote_ids or {}),
+                failure_class,
+                adapter_version,
+                api_version,
+                _json_dumps(payload or {}),
+                ts,
+                ts,
+            ),
+        )
+
+    def upload_audit_events(self, upload_job_id: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM upload_audit_events
+                WHERE upload_job_id = ?
+                ORDER BY occurred_at ASC, id ASC
+                """,
+                (upload_job_id,),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            data["remote_ids"] = _json_loads(data.pop("remote_ids_json", None), {})
+            data["payload"] = _json_loads(data.pop("payload_json", None), {})
+            out.append(data)
+        return out
+
+    def account_state(self, *, platform: str, channel_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM account_states WHERE platform = ? AND channel_id = ?",
+                (platform, channel_id),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def upsert_account_state(
+        self,
+        *,
+        platform: str,
+        channel_id: str,
+        rate_limited_until: str | None = None,
+        circuit_open_until: str | None = None,
+        circuit_failure_count: int | None = None,
+        paused_reason: str | None = None,
+        token_source: str | None = None,
+        token_expires_at: str | None = None,
+        token_last_checked_at: str | None = None,
+        token_last_refresh_at: str | None = None,
+        token_last_refresh_error: str | None = None,
+        last_failure_class: str | None = None,
+        last_failure_at: str | None = None,
+    ) -> None:
+        current = self.account_state(platform=platform, channel_id=channel_id) or {}
+        now = now_iso()
+        values = {
+            "rate_limited_until": rate_limited_until if rate_limited_until is not None else current.get("rate_limited_until"),
+            "circuit_open_until": circuit_open_until if circuit_open_until is not None else current.get("circuit_open_until"),
+            "circuit_failure_count": (
+                circuit_failure_count if circuit_failure_count is not None else int(current.get("circuit_failure_count") or 0)
+            ),
+            "paused_reason": paused_reason if paused_reason is not None else current.get("paused_reason"),
+            "token_source": token_source if token_source is not None else current.get("token_source"),
+            "token_expires_at": token_expires_at if token_expires_at is not None else current.get("token_expires_at"),
+            "token_last_checked_at": (
+                token_last_checked_at if token_last_checked_at is not None else current.get("token_last_checked_at")
+            ),
+            "token_last_refresh_at": (
+                token_last_refresh_at if token_last_refresh_at is not None else current.get("token_last_refresh_at")
+            ),
+            "token_last_refresh_error": (
+                token_last_refresh_error if token_last_refresh_error is not None else current.get("token_last_refresh_error")
+            ),
+            "last_failure_class": last_failure_class if last_failure_class is not None else current.get("last_failure_class"),
+            "last_failure_at": last_failure_at if last_failure_at is not None else current.get("last_failure_at"),
+        }
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO account_states (
+                  platform, channel_id, rate_limited_until, circuit_open_until,
+                  circuit_failure_count, paused_reason, token_source, token_expires_at,
+                  token_last_checked_at, token_last_refresh_at, token_last_refresh_error,
+                  last_failure_class, last_failure_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(platform, channel_id) DO UPDATE SET
+                  rate_limited_until = excluded.rate_limited_until,
+                  circuit_open_until = excluded.circuit_open_until,
+                  circuit_failure_count = excluded.circuit_failure_count,
+                  paused_reason = excluded.paused_reason,
+                  token_source = excluded.token_source,
+                  token_expires_at = excluded.token_expires_at,
+                  token_last_checked_at = excluded.token_last_checked_at,
+                  token_last_refresh_at = excluded.token_last_refresh_at,
+                  token_last_refresh_error = excluded.token_last_refresh_error,
+                  last_failure_class = excluded.last_failure_class,
+                  last_failure_at = excluded.last_failure_at,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    platform,
+                    channel_id,
+                    values["rate_limited_until"],
+                    values["circuit_open_until"],
+                    values["circuit_failure_count"],
+                    values["paused_reason"],
+                    values["token_source"],
+                    values["token_expires_at"],
+                    values["token_last_checked_at"],
+                    values["token_last_refresh_at"],
+                    values["token_last_refresh_error"],
+                    values["last_failure_class"],
+                    values["last_failure_at"],
+                    now,
+                ),
+            )
+
+    def record_account_success(self, *, platform: str, channel_id: str) -> None:
+        self.upsert_account_state(
+            platform=platform,
+            channel_id=channel_id,
+            rate_limited_until="",
+            circuit_open_until="",
+            circuit_failure_count=0,
+            paused_reason="",
+            last_failure_class="",
+            last_failure_at="",
+        )
+
+    def record_account_failure(
+        self,
+        *,
+        platform: str,
+        channel_id: str,
+        failure_class: str | None,
+        retry_after_seconds: int | None = None,
+        circuit_threshold: int = 3,
+        circuit_pause_seconds: int = 900,
+    ) -> None:
+        current = self.account_state(platform=platform, channel_id=channel_id) or {}
+        failure_count = int(current.get("circuit_failure_count") or 0) + 1
+        rate_limited_until = None
+        circuit_open_until = None
+        paused_reason = current.get("paused_reason")
+        if retry_after_seconds is not None and retry_after_seconds > 0:
+            rate_limited_until = _future_iso(retry_after_seconds)
+            paused_reason = "rate_limited"
+        if failure_count >= max(1, circuit_threshold):
+            circuit_open_until = _future_iso(circuit_pause_seconds)
+            paused_reason = f"circuit_open:{failure_class or 'unknown'}"
+        self.upsert_account_state(
+            platform=platform,
+            channel_id=channel_id,
+            rate_limited_until=rate_limited_until,
+            circuit_open_until=circuit_open_until,
+            circuit_failure_count=failure_count,
+            paused_reason=paused_reason,
+            last_failure_class=failure_class,
+            last_failure_at=now_iso(),
+        )
 
     def record_clip_metric(
         self,
@@ -1997,6 +2575,7 @@ class OutputStore:
         data = dict(row)
         data["normalized_hashtags"] = _json_loads(data.pop("normalized_hashtags_json", None), [])
         data["metadata"] = _json_loads(data.pop("metadata_json", None), {})
+        data["remote_ids"] = _json_loads(data.pop("remote_ids_json", None), {})
         for key in ("scores_json", "clip_validation_json", "editorial_metadata_json", "preflight_json"):
             if key in data:
                 data[key[:-5] if key.endswith("_json") else key] = _json_loads(data.pop(key), {})

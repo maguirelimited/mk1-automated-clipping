@@ -29,6 +29,8 @@ def load_config() -> dict[str, Any]:
 
 
 def abs_from_project(path_like: str) -> str:
+    if os.path.isabs(path_like):
+        return os.path.abspath(path_like)
     return os.path.abspath(os.path.join(PROJECT_ROOT, path_like))
 
 

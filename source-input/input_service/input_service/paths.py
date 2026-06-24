@@ -20,10 +20,10 @@ def _project_root() -> Path:
 
 ROOT: Path = _project_root()
 
-CONFIG_DIR: Path = ROOT / "config"
+CONFIG_DIR: Path = Path(os.environ.get("INPUT_SERVICE_CONFIG_DIR", ROOT / "config")).expanduser().resolve()
 FUNNELS_FILE: Path = CONFIG_DIR / "funnels.json"
 
-DATA_DIR: Path = ROOT / "data"
+DATA_DIR: Path = Path(os.environ.get("INPUT_SERVICE_DATA_DIR", ROOT / "data")).expanduser().resolve()
 INPUTS_DIR: Path = DATA_DIR / "inputs"
 READY_DIR: Path = INPUTS_DIR / "ready"
 REJECTED_DIR: Path = INPUTS_DIR / "rejected"

@@ -51,7 +51,7 @@ def _ydl_options(tmp_dir: Path, video_id: str) -> dict:
         "no_warnings": True,
         "noprogress": True,
         "outtmpl": _build_outtmpl(tmp_dir, video_id),
-        "format": "bv*+ba/b",  # best video + best audio, fallback to best
+        "format": "bv*+ba/bestvideo*+bestaudio/best",
         "merge_output_format": "mp4",
         "restrictfilenames": True,
         "noplaylist": True,

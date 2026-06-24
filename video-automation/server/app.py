@@ -22,6 +22,8 @@ _PROJECT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 
 def _load_project_env_file() -> None:
     """Load ``video-automation/.env`` when present (does not override existing env)."""
+    if os.environ.get("MK04_ENV", "dev").strip().lower() == "prod":
+        return
     env_path = os.path.join(_PROJECT_DIR, ".env")
     if not os.path.isfile(env_path):
         return
@@ -102,6 +104,37 @@ _JOB_QUEUE: "queue.Queue[dict[str, Any]]" = queue.Queue()
 _JOB_WORKERS_STARTED = False
 _JOB_WORKERS_LOCK = threading.Lock()
 _JOB_RECOVERY_DONE = False
+
+
+def _assert_supported_prod_launch() -> None:
+    if os.environ.get("MK04_ENV", "dev").strip().lower() != "prod":
+        return
+    required = {
+        "MK04_ROOT": "/opt/mk04/prod/current",
+        "MK04_CONFIG_ROOT": "/etc/mk04/prod",
+        "MK04_RUNTIME_ROOT": "/var/lib/mk04/prod",
+        "MK04_LOG_ROOT": "/var/log/mk04/prod",
+        "PIPELINE_CONFIG_PATH": "/etc/mk04/prod",
+        "VIDEO_PIPELINE_PROFILES_PATH": "/etc/mk04/prod",
+        "FUNNEL_CONFIG_DIR": "/etc/mk04/prod",
+        "VIDEO_AUTOMATION_INPUT_DIR": "/var/lib/mk04/prod",
+        "OUTPUT_FUNNEL_URL": "http://127.0.0.1:5055",
+    }
+    for name, root in required.items():
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            raise RuntimeError(f"{name} is required when MK04_ENV=prod; use deploy/scripts/run-video-automation.sh prod")
+        if root.startswith("http"):
+            if raw != root:
+                raise RuntimeError(f"{name} must be {root} when MK04_ENV=prod (got {raw})")
+            continue
+        resolved = os.path.abspath(os.path.expanduser(raw))
+        root_path = os.path.abspath(root)
+        if resolved != root_path and not resolved.startswith(root_path + os.sep):
+            raise RuntimeError(f"{name}={resolved} must be under {root_path} when MK04_ENV=prod")
+
+
+_assert_supported_prod_launch()
 
 
 def _secret_configured(env_name: str) -> str:
@@ -3160,4 +3193,15 @@ if __name__ == "__main__":
     host = os.environ.get("VIDEO_AUTOMATION_HOST", "0.0.0.0")
     port = int(os.environ.get("VIDEO_AUTOMATION_PORT", "5050"))
     debug = os.environ.get("VIDEO_AUTOMATION_DEBUG", "0") == "1"
+    env = os.environ.get("MK04_ENV", "dev")
+    upload_mode = os.environ.get("MK04_UPLOAD_MODE", "dry_run")
+    print(
+        "[video-automation] "
+        f"ENV={env.upper()} upload_mode={upload_mode} "
+        f"config={os.environ.get('PIPELINE_CONFIG_PATH', '')} "
+        f"funnels={os.environ.get('FUNNEL_CONFIG_DIR', '')} "
+        f"output_funnel={os.environ.get('OUTPUT_FUNNEL_URL', '')} "
+        f"port={port}",
+        flush=True,
+    )
     app.run(host=host, port=port, debug=debug)

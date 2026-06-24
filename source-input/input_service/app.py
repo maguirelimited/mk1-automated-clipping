@@ -45,6 +45,29 @@ _RUN_LOCK = threading.Lock()
 _DEBUG_LOG_PATH = "/Users/anthonymaguire/VAmk0.4/.cursor/debug-8aae3e.log"
 
 
+def _assert_supported_prod_launch() -> None:
+    if os.environ.get("MK04_ENV", "dev").strip().lower() != "prod":
+        return
+    required = {
+        "MK04_ROOT": "/opt/mk04/prod/current",
+        "MK04_CONFIG_ROOT": "/etc/mk04/prod",
+        "MK04_RUNTIME_ROOT": "/var/lib/mk04/prod",
+        "MK04_LOG_ROOT": "/var/log/mk04/prod",
+        "INPUT_SERVICE_CONFIG_DIR": "/etc/mk04/prod",
+        "INPUT_SERVICE_DATA_DIR": "/var/lib/mk04/prod",
+        "INPUT_JOB_LEDGER_DIR": "/var/lib/mk04/prod",
+        "VIDEO_AUTOMATION_INPUT_DIR": "/var/lib/mk04/prod",
+    }
+    for name, root in required.items():
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            raise RuntimeError(f"{name} is required when MK04_ENV=prod; use deploy/scripts/run-input-service.sh prod")
+        resolved = Path(raw).expanduser().resolve()
+        root_path = Path(root).resolve()
+        if resolved != root_path and root_path not in resolved.parents:
+            raise RuntimeError(f"{name}={resolved} must be under {root_path} when MK04_ENV=prod")
+
+
 def _agent_debug_log(
     *,
     hypothesis_id: str,
@@ -89,6 +112,7 @@ def _check_secret() -> tuple[dict, int] | None:
 
 
 def create_app() -> Flask:
+    _assert_supported_prod_launch()
     paths.ensure_dirs()
     app = Flask(__name__)
 
@@ -301,7 +325,7 @@ def create_app() -> Flask:
         if not isinstance(data, dict):
             return jsonify(_failed(None, "invalid_body: expected JSON object")), 400
 
-        from .control_gate import ingestion_paused
+        from input_service.control_gate import ingestion_paused
 
         if ingestion_paused():
             return (
@@ -369,7 +393,23 @@ if __name__ == "__main__":
     host = os.environ.get("INPUT_SERVICE_HOST", "0.0.0.0")
     port = int(os.environ.get("INPUT_SERVICE_PORT", "5060"))
     debug = os.environ.get("INPUT_SERVICE_DEBUG", "0") == "1"
-    log.info("Starting input_service on %s:%s (debug=%s)", host, port, debug)
+    env = os.environ.get("MK04_ENV", "dev")
+    upload_mode = os.environ.get("MK04_UPLOAD_MODE", "dry_run")
+    log.info(
+        "Starting input_service env=%s upload_mode=%s code_root=%s config_dir=%s data_dir=%s on %s:%s (debug=%s)",
+        env,
+        upload_mode,
+        os.environ.get("MK04_ROOT", ""),
+        paths.CONFIG_DIR,
+        paths.DATA_DIR,
+        host,
+        port,
+        debug,
+    )
+    print(
+        f"[source-input] ENV={env.upper()} upload_mode={upload_mode} config={paths.CONFIG_DIR} data={paths.DATA_DIR} port={port}",
+        flush=True,
+    )
     if host in ("127.0.0.1", "localhost"):
         log.warning(
             "Bound to %s only — n8n running inside Docker will NOT be able to reach "

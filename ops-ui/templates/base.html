@@ -8,10 +8,15 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='ops.css') }}">
   </head>
   <body>
+    {% if runtime is defined %}
+    <div class="env-banner env-{{ runtime.environment }}">
+      {{ runtime.environment|upper }} ENVIRONMENT · uploads {{ runtime.upload_mode|upper }} · config {{ runtime.config_root }}
+    </div>
+    {% endif %}
     <header class="topbar">
       <div>
         <p class="eyebrow">mk04 internal operations</p>
-        <h1>Mission Control</h1>
+        <h1>Mission Control{% if runtime is defined %} · {{ runtime.environment|upper }}{% endif %}</h1>
       </div>
       <nav>
         <a href="{{ url_for('dashboard') }}">Dashboard</a>

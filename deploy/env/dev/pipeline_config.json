@@ -1,0 +1,39 @@
+{
+  "defaults": {
+    "pipeline_profile": "business_podcasts_001",
+    "default_funnel_id": "business_clips_test"
+  },
+  "paths": {
+    "input_folder": "/var/lib/mk04/dev/video-automation/input",
+    "output_folder": "/var/lib/mk04/dev/video-automation/output",
+    "temp_folder": "/var/lib/mk04/dev/video-automation/temp",
+    "jobs_folder": "/var/lib/mk04/dev/video-automation/jobs",
+    "analytics_folder": "/var/lib/mk04/dev/video-automation/analytics"
+  },
+  "selection": {
+    "max_clips": 8,
+    "min_clip_duration_sec": 30,
+    "max_clip_duration_sec": 120,
+    "target_clip_duration_sec": 60,
+    "max_overlap_sec": 2
+  },
+  "models": {
+    "whisper_model": "tiny",
+    "selection_model": "gpt-4o-mini"
+  },
+  "caption_enabled": true,
+  "chunking": {
+    "enabled": true,
+    "threshold_sec": 3600,
+    "chunk_target_sec": 1200,
+    "max_clips_per_chunk": 5
+  },
+  "artifact_retention": {
+    "temp_policy": "retain_on_failure"
+  },
+  "async_worker": {
+    "enabled": true,
+    "max_concurrent_jobs": 1,
+    "job_store_type": "json"
+  }
+}

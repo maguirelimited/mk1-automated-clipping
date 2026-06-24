@@ -9,8 +9,8 @@
   },
   "selection": {
     "max_clips": 5,
-    "min_duration_sec": 20,
-    "max_duration_sec": 45,
+    "min_duration_sec": 15,
+    "max_duration_sec": 60,
     "max_overlap_sec": 2
   },
   "output": {
