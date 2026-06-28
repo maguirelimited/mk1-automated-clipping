@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import Counter
 from typing import Any
 
@@ -58,7 +59,16 @@ from .funnels import (
     set_funnel_paused,
 )
 from .store import ControlStore
-from .system import journal_logs, machine_stats, service_action, service_status
+from .system import (
+    cleanup_preview,
+    journal_logs,
+    machine_stats,
+    run_retention_cleanup,
+    service_action,
+    service_status,
+    storage_usage,
+    _summarize_sweeper_output,
+)
 
 
 CONTROL_INGESTION_PAUSED = "ingestion_paused"
@@ -360,7 +370,10 @@ def create_app(settings: Settings | None = None) -> Flask:
             return Response(str(exc), status=502)
         data = upstream.read()
         content_type = upstream.headers.get("Content-Type") or "video/mp4"
-        return Response(data, mimetype=content_type)
+        response = Response(data, mimetype=content_type)
+        if str(request.args.get("download") or "").strip() in {"1", "true", "yes"}:
+            response.headers["Content-Disposition"] = f'attachment; filename="{safe_name}"'
+        return response
 
     @app.post("/clip-review/<job_id>/<clip_id>/approve")
     def clip_review_approve(job_id: str, clip_id: str):
@@ -525,8 +538,7 @@ def create_app(settings: Settings | None = None) -> Flask:
             dead_letter_count=len(dead_letter),
         )
 
-    @app.get("/recovery")
-    def recovery():
+    def _recovery_context(*, cleanup_preview_result: dict[str, Any] | None = None) -> dict[str, Any]:
         controls = _control_state(store)
         controls_file = read_controls_file(settings.controls_file)
         video_jobs = _video_jobs(settings, limit=100)
@@ -542,22 +554,135 @@ def create_app(settings: Settings | None = None) -> Flask:
         retryable_uploads = [
             job for job in upload_jobs if str(job.get("status") or "").lower() in RETRYABLE_UPLOAD_STATUSES
         ]
+        return {
+            "controls": controls,
+            "status": status,
+            "retryable_upload_count": len(retryable_uploads),
+            "actions": store.recent_actions(limit=10),
+            "cleanup_media_days": _env_int("MEDIA_RETENTION_DAYS", 5),
+            "cleanup_metadata_days": _env_int("RETENTION_DAYS", 14),
+            "cleanup_running_block": _video_jobs_running(video_jobs),
+            "cleanup_preview": cleanup_preview_result,
+        }
+
+    @app.get("/recovery")
+    def recovery():
+        return render_template("recovery.html", **_recovery_context())
+
+    @app.get("/settings")
+    def settings_page():
+        svc = service_by_key("video-automation")
+        transcription: dict[str, Any] = {}
+        service_error = ""
+        if svc is None:
+            service_error = "video-automation is not configured."
+        else:
+            ok, payload, status = call_json(
+                svc, "/config/transcription", timeout=settings.service_timeout_sec
+            )
+            if ok:
+                transcription = payload
+            else:
+                service_error = str(payload.get("error") or f"HTTP {status}")
         return render_template(
-            "recovery.html",
-            controls=controls,
-            status=status,
-            retryable_upload_count=len(retryable_uploads),
-            actions=store.recent_actions(limit=10),
+            "settings.html",
+            transcription=transcription,
+            service_error=service_error,
         )
+
+    @app.post("/settings/transcription")
+    def update_transcription_settings():
+        svc = service_by_key("video-automation")
+        if svc is None:
+            flash("video-automation is not configured.", "bad")
+            return redirect(url_for("settings_page"))
+        model = str(request.form.get("whisperx_model") or "").strip()
+        if not model:
+            flash("Choose a WhisperX model first.", "bad")
+            return redirect(url_for("settings_page"))
+        ok, payload, status = call_json(
+            svc,
+            "/config/transcription",
+            method="POST",
+            payload={"whisperx_model": model},
+            timeout=settings.service_timeout_sec,
+        )
+        if ok:
+            active = str(payload.get("whisperx_model") or model)
+            store.log_action("transcription-model", model, ok=True, message=active)
+            flash(
+                f"WhisperX model saved: {active}. New transcription jobs will use it.",
+                "ok",
+            )
+        else:
+            message = str(payload.get("error") or f"HTTP {status}")
+            store.log_action("transcription-model", model, ok=False, message=message)
+            flash(f"Could not save WhisperX model: {message}", "bad")
+        return redirect(url_for("settings_page"))
+
+    @app.post("/cleanup/preview")
+    def cleanup_preview_route():
+        media_days, media_err = _parse_ttl(request.form.get("media_days"), "media")
+        metadata_days, meta_err = _parse_ttl(request.form.get("metadata_days"), "metadata")
+        error = media_err or meta_err
+        if error:
+            flash(error, "bad")
+            return render_template("recovery.html", **_recovery_context())
+        preview = cleanup_preview(settings, media_days=media_days, metadata_days=metadata_days)
+        return render_template("recovery.html", **_recovery_context(cleanup_preview_result=preview))
+
+    @app.post("/cleanup/run")
+    def cleanup_run():
+        media_days, media_err = _parse_ttl(request.form.get("media_days"), "media")
+        metadata_days, meta_err = _parse_ttl(request.form.get("metadata_days"), "metadata")
+        error = media_err or meta_err
+        if error:
+            store.log_action("cleanup", "blocked", ok=False, message=error)
+            flash(error, "bad")
+            return redirect(url_for("recovery"))
+
+        # Echo-back confirmation: without confirm=1, re-show the preview rather
+        # than delete, so execution only ever runs what was previewed.
+        if str(request.form.get("confirm") or "").strip() != "1":
+            preview = cleanup_preview(settings, media_days=media_days, metadata_days=metadata_days)
+            flash("Review the preview below, then click the delete button to confirm.", "warn")
+            return render_template("recovery.html", **_recovery_context(cleanup_preview_result=preview))
+
+        # Hard guard: never delete while a clip job is running.
+        if _video_jobs_running(_video_jobs(settings, limit=100)):
+            message = "Refusing cleanup: a video job is currently running."
+            store.log_action("cleanup", settings.environment, ok=False, message=message)
+            flash(message, "bad")
+            return redirect(url_for("recovery"))
+
+        result = run_retention_cleanup(settings, media_days=media_days, metadata_days=metadata_days)
+        summary = _summarize_sweeper_output(result.message)
+        log_message = summary or (result.message[:500] if result.message else f"rc={result.returncode}")
+        store.log_action(
+            "cleanup",
+            f"{settings.environment} media={media_days}d meta={metadata_days}d",
+            ok=result.ok,
+            message=log_message,
+        )
+        if result.ok:
+            flash(
+                f"Cleanup finished ({summary or 'no summary line'}). Preview totals are estimates.",
+                "ok",
+            )
+        else:
+            flash(f"Cleanup failed: {result.message or ('rc=' + str(result.returncode))}", "bad")
+        return redirect(url_for("recovery"))
 
     @app.get("/health")
     def health():
         report = collect_health_reports(settings)
         machine = machine_stats()
+        storage = storage_usage(settings)
         return render_template(
             "health.html",
             report=report,
             machine=machine,
+            storage=storage,
             input_ledger_dir=default_input_ledger_dir(),
         )
 
@@ -869,6 +994,31 @@ def create_app(settings: Settings | None = None) -> Flask:
         return redirect(url_for("failed_jobs"))
 
     return app
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = str(os.environ.get(name) or "").strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 1 else default
+
+
+def _parse_ttl(raw: Any, label: str) -> tuple[int, str | None]:
+    """Validate a TTL form field: must be an integer of at least 1 day."""
+    text = str(raw if raw is not None else "").strip()
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        return 0, f"Invalid {label} retention days: {text or 'empty'} (whole number >= 1 required)."
+    if value < 1:
+        return 0, f"Refusing non-positive {label} retention: {value} (must be >= 1)."
+    return value, None
+
+
+def _video_jobs_running(video_jobs: list[dict[str, Any]]) -> bool:
+    return any(str(job.get("status") or "").lower() == "running" for job in video_jobs)
 
 
 def _control_state(store: ControlStore) -> dict[str, bool]:

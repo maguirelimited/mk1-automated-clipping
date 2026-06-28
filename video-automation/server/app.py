@@ -82,11 +82,18 @@ from mk04_utils import (
     maybe_copy,
     normalize_transcript_payload,
     require_timed_transcript_payload,
+    resolve_transcribe_engine,
     resolve_paths,
+    save_config_atomic,
     validate_and_repair_selection,
     write_json,
     write_review,
     now_iso,
+)
+from transcribe_whisperx import (
+    ALLOWED_WHISPERX_MODELS,
+    WhisperXConfigError,
+    resolve_whisperx_settings,
 )
 from pipeline_debug_ndjson import (
     write_debug_agent,
@@ -241,6 +248,28 @@ class SelectorCallError(RuntimeError):
         super().__init__(message)
         self.details = details
         self.status_code = status_code
+
+
+def _transcription_engine_label(env: dict[str, str] | None = None) -> str:
+    raw = ((env or os.environ).get("TRANSCRIBE_ENGINE") or "whisper").strip().lower()
+    return "WhisperX" if raw == "whisperx" else "Whisper"
+
+
+def _transcription_failure_details(
+    engine: str,
+    *,
+    stderr: str | None = None,
+    stdout: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    details: dict[str, Any] = {"engine": engine}
+    if stderr:
+        details["stderr"] = stderr
+    if stdout:
+        details["stdout"] = stdout
+    if extra:
+        details.update(extra)
+    return details
 
 
 def _progress_enabled() -> bool:
@@ -1800,7 +1829,11 @@ def _run_pipeline(
         use_chunks = should_use_chunked_transcription(chunk_cfg, vd)
 
         if not use_chunks:
-            _progress("Transcribing (Whisper)…", job_id=jid)
+            engine = resolve_transcribe_engine()
+            _progress(
+                f"Transcribing ({_transcription_engine_label(transcription_env)})…",
+                job_id=jid,
+            )
             report["current_stage"] = "transcription"
             t0 = time.perf_counter()
             transcribe = subprocess.run(
@@ -1814,12 +1847,24 @@ def _run_pipeline(
                 err = categorize_error(
                     "transcription",
                     "transcription_error",
-                    "Transcription failed",
-                    transcribe.stderr or transcribe.stdout,
+                    "WhisperX transcription failed"
+                    if engine == "whisperx"
+                    else "Transcription failed",
+                    _transcription_failure_details(
+                        engine,
+                        stderr=transcribe.stderr,
+                        stdout=transcribe.stdout,
+                    ),
                 )
                 report["errors"] = [err]
                 _mark_report_failed(report)
-                return _fail("Transcription failed", log_detail=err["details"], status_code=500)
+                return _fail(
+                    "WhisperX transcription failed"
+                    if engine == "whisperx"
+                    else "Transcription failed",
+                    log_detail=err["details"],
+                    status_code=500,
+                )
 
             if not os.path.exists(transcript_path):
                 env = _parse_script_envelope(transcribe.stdout)
@@ -1965,6 +2010,7 @@ def _run_pipeline(
                 job_id=jid,
             )
             report["current_stage"] = "transcription"
+            chunk_engine = resolve_transcribe_engine()
 
             zip_paths_offsets: list[tuple[str, float]] = []
             t0 = time.perf_counter()
@@ -1999,8 +2045,15 @@ def _run_pipeline(
                     err = categorize_error(
                         "transcription",
                         "transcription_error",
-                        f"Transcription failed for chunk {idx}",
-                        transcribe.stderr or transcribe.stdout,
+                        f"WhisperX transcription failed for chunk {idx}"
+                        if chunk_engine == "whisperx"
+                        else f"Transcription failed for chunk {idx}",
+                        _transcription_failure_details(
+                            chunk_engine,
+                            stderr=transcribe.stderr,
+                            stdout=transcribe.stdout,
+                            extra={"chunk_index": idx},
+                        ),
                     )
                     report["errors"] = [err]
                     _mark_report_failed(report)
@@ -3095,6 +3148,75 @@ def upload():
 @app.route("/healthz", methods=["GET"])
 def healthz():
     return jsonify({"ok": True, "pipeline": PIPELINE_NAME})
+
+
+def _transcription_settings_payload() -> dict[str, Any]:
+    """Build the transcription settings response from the live config.
+
+    Reuses the WhisperX resolver as the single source of truth for the active
+    model and the canonical list of allowed models. Falls back defensively if
+    the persisted config somehow holds an invalid value, so the read path never
+    crashes the settings page.
+    """
+    config = load_config()
+    try:
+        resolved = resolve_whisperx_settings(config)
+        active_model = resolved["model"]
+    except WhisperXConfigError:
+        active_model = ""
+    env_override = bool(
+        (os.environ.get("WHISPERX_MODEL") or "").strip()
+        or (os.environ.get("MK04_WHISPER_MODEL") or "").strip()
+    )
+    return {
+        "transcription_engine": resolve_transcribe_engine(),
+        "whisperx_model": active_model,
+        "available_models": list(ALLOWED_WHISPERX_MODELS),
+        "env_override": env_override,
+    }
+
+
+@app.route("/config/transcription", methods=["GET"])
+def get_transcription_config():
+    try:
+        return jsonify(_transcription_settings_payload())
+    except Exception as exc:
+        print("[config] transcription read error:", repr(exc), flush=True)
+        return _fail("Transcription config read failed", log_detail=repr(exc), status_code=500)
+
+
+@app.route("/config/transcription", methods=["POST"])
+def set_transcription_config():
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return _fail("Invalid transcription config payload", status_code=400)
+    model = str(payload.get("whisperx_model") or "").strip()
+    if model not in ALLOWED_WHISPERX_MODELS:
+        return jsonify(
+            {
+                "success": False,
+                "pipeline": PIPELINE_NAME,
+                "error": (
+                    f"Invalid WhisperX model {model!r}. Allowed models: "
+                    f"{', '.join(ALLOWED_WHISPERX_MODELS)}."
+                ),
+                "available_models": list(ALLOWED_WHISPERX_MODELS),
+            }
+        ), 400
+    try:
+        config = load_config()
+        models = config.get("models")
+        if not isinstance(models, dict):
+            models = {}
+            config["models"] = models
+        models["whisperx_model"] = model
+        save_config_atomic(config)
+    except Exception as exc:
+        print("[config] transcription write error:", repr(exc), flush=True)
+        return _fail(
+            "Transcription config update failed", log_detail=repr(exc), status_code=500
+        )
+    return jsonify(_transcription_settings_payload())
 
 
 @app.route("/analytics/feedback", methods=["POST"])

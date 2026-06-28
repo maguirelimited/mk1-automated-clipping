@@ -21,11 +21,41 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def pipeline_config_path() -> str:
+    """Single source of truth for the active pipeline config file location."""
+    return os.environ.get("PIPELINE_CONFIG_PATH", DEFAULT_CONFIG_PATH)
+
+
 def load_config() -> dict[str, Any]:
-    config_path = os.environ.get("PIPELINE_CONFIG_PATH", DEFAULT_CONFIG_PATH)
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(pipeline_config_path(), "r", encoding="utf-8") as f:
         cfg = json.load(f)
     return cfg
+
+
+def save_config_atomic(config: dict[str, Any]) -> str:
+    """Persist the full pipeline config atomically (write temp + os.replace).
+
+    Writes to a temp file in the same directory and atomically renames it over
+    the target, so the config is never left partially written. Returns the path.
+    """
+    path = pipeline_config_path()
+    parent = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=parent, prefix=".pipeline_config.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    return path
 
 
 def abs_from_project(path_like: str) -> str:
@@ -122,6 +152,14 @@ def ffprobe_demux_json(path: str, *, timeout_sec: int = DEFAULT_FFPROBE_TIMEOUT_
     return data
 
 
+def resolve_transcribe_engine() -> str:
+    """Return transcription backend: ``whisperx`` or legacy ``whisper`` CLI."""
+    raw = (os.environ.get("TRANSCRIBE_ENGINE") or "whisper").strip().lower()
+    if raw == "whisperx":
+        return "whisperx"
+    return "whisper"
+
+
 def resolve_whisper_model_for_transcription(config: dict[str, Any] | None = None) -> str:
     """Resolve Whisper CLI ``--model`` name.
 
@@ -167,12 +205,36 @@ def categorize_error(stage: str, category: str, message: str, details: Any = Non
     }
 
 
+def _normalize_transcript_word(raw: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    word = str(raw.get("word") or "").strip()
+    if not word:
+        return None
+    try:
+        start = float(raw["start"])
+        end = float(raw["end"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if end <= start:
+        return None
+    out: dict[str, Any] = {"start": start, "end": end, "word": word}
+    score = raw.get("score")
+    if score is not None:
+        try:
+            out["score"] = float(score)
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
 def normalize_transcript_payload(transcript_path: str) -> dict[str, Any]:
     with open(transcript_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     segments_raw = data.get("segments")
     segments: list[dict[str, Any]] = []
+    flat_words: list[dict[str, Any]] = []
     if isinstance(segments_raw, list):
         for row in segments_raw:
             if not isinstance(row, dict):
@@ -185,7 +247,25 @@ def normalize_transcript_payload(transcript_path: str) -> dict[str, Any]:
             if end <= start:
                 continue
             text = str(row.get("text") or "").strip()
-            segments.append({"start": start, "end": end, "text": text})
+            segment: dict[str, Any] = {"start": start, "end": end, "text": text}
+            words_raw = row.get("words")
+            if isinstance(words_raw, list):
+                segment_words: list[dict[str, Any]] = []
+                for word_row in words_raw:
+                    word = _normalize_transcript_word(word_row) if isinstance(word_row, dict) else None
+                    if word:
+                        segment_words.append(word)
+                        flat_words.append(dict(word))
+                if segment_words:
+                    segment["words"] = segment_words
+            segments.append(segment)
+
+    top_words_raw = data.get("words")
+    if isinstance(top_words_raw, list) and not flat_words:
+        for row in top_words_raw:
+            word = _normalize_transcript_word(row) if isinstance(row, dict) else None
+            if word:
+                flat_words.append(word)
 
     transcript_text = str(data.get("text") or "").strip()
     if not transcript_text and segments:
@@ -201,12 +281,21 @@ def normalize_transcript_payload(transcript_path: str) -> dict[str, Any]:
     if duration_sec is None and segments:
         duration_sec = max(float(seg["end"]) for seg in segments)
 
-    return {
+    payload: dict[str, Any] = {
         "full_text": transcript_text,
         "segments": segments,
         "source_transcript_path": os.path.abspath(transcript_path),
         "duration_sec": duration_sec,
     }
+    engine = str(data.get("engine") or "").strip()
+    if engine:
+        payload["engine"] = engine
+    language = str(data.get("language") or "").strip()
+    if language:
+        payload["language"] = language
+    if flat_words:
+        payload["words"] = flat_words
+    return payload
 
 
 def merged_transcript_cover_regions(

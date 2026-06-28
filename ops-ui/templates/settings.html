@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <h2>Transcription</h2>
+    <span class="muted">video-automation config</span>
+  </div>
+
+  {% if service_error %}
+    <div class="flash bad">Transcription settings unavailable: {{ service_error }}</div>
+  {% else %}
+    <dl>
+      <div>
+        <dt>Transcription Engine</dt>
+        <dd>
+          Current Engine:
+          <span class="pill {{ 'ok' if transcription.transcription_engine == 'whisperx' else 'warn' }}">
+            {{ 'WhisperX' if transcription.transcription_engine == 'whisperx' else transcription.transcription_engine }}
+          </span>
+        </dd>
+      </div>
+    </dl>
+
+    <form method="post" action="{{ url_for('update_transcription_settings') }}">
+      <label class="muted">WhisperX Model
+        <select name="whisperx_model">
+          {% for model in transcription.available_models %}
+            <option value="{{ model }}" {{ 'selected' if model == transcription.whisperx_model else '' }}>{{ model }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div class="actions">
+        <button type="submit">Save</button>
+      </div>
+    </form>
+
+    <p>
+      Current active model:
+      <span class="pill ok mono">{{ transcription.whisperx_model or 'unknown' }}</span>
+    </p>
+
+    <p class="hint muted">
+      Models are downloaded automatically the first time they are used. The first
+      transcription after changing to a new model may take longer.
+    </p>
+
+    {% if transcription.env_override %}
+      <p class="hint warn">
+        An environment variable (<code>WHISPERX_MODEL</code> or
+        <code>MK04_WHISPER_MODEL</code>) is currently overriding the configured
+        model. Saving updates the config file, but the override will keep taking
+        precedence until it is cleared.
+      </p>
+    {% endif %}
+
+    <p class="hint muted">
+      Saving updates the persistent pipeline config. Running jobs are not affected;
+      only jobs created after the change use the new model.
+    </p>
+  {% endif %}
+</section>
+{% endblock %}
