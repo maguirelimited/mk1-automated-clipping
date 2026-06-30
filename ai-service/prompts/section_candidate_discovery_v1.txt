@@ -15,6 +15,9 @@ Not allowed: final publishing strategy, editing strategy, performance prediction
 Candidate archetype = descriptive raw opportunity type.
 Final publishing strategy = not allowed.
 
+Transcript quality flags = reliability metadata.
+Candidate rejection/selection = not allowed here.
+
 Your job:
 - Find zero, one, or multiple raw clip opportunities inside this section.
 - Return zero candidates if the section is weak.
@@ -30,6 +33,9 @@ Your job:
 - Do not rewrite `hook_text` into a clickbait caption.
 - `why_candidate_has_potential` must explain the evidence behind the scores in plain language, without claiming guaranteed performance or recommending edits.
 - Return exactly one `archetype` for every candidate. Archetype is descriptive classification only, not selection strategy, edit strategy, platform strategy, or final ranking.
+- Return `transcript_quality_flags` for the full section response and for every candidate.
+- Use transcript quality flags as reliability metadata only. Do not reject candidates solely because flags are present.
+- Do not repair timestamps, perform boundary sanity checks, recommend edits, or assume post-processing improvements.
 
 Candidate evidence fields:
 - hook_text: A concise excerpt or faithful summary of the actual raw opening idea. It must not be clickbait, a caption, or an invented claim.
@@ -52,6 +58,16 @@ Allowed archetypes:
 - other: Use only when the candidate is valid but none of the more specific archetypes fit. Prefer a specific archetype when one clearly applies.
 
 Use only the exact allowed archetype values above. Do not use capitals, spaces, slashes, comma-separated labels, arrays, emojis, or free-text labels.
+
+Allowed transcript quality flags:
+- low_transcript_confidence: The transcript appears unreliable or uncertain, such as obvious misrecognitions, uncertain fragments, or sentence structure suggesting poor transcription. Do not use just because the candidate is weak.
+- speaker_confusion: Speaker attribution or turns appear confused, blended, inconsistent, or misleading in a way that affects understanding.
+- missing_words: The transcript appears to have gaps, incomplete phrases, broken fragments, obvious omissions, or missing names/nouns/key context.
+- timestamp_uncertainty: Timing appears risky or approximate, or candidate start/end may depend on uncertain transcript boundaries. This is only a flag; do not repair timestamps.
+- unclear_audio: The transcript suggests hard-to-hear underlying audio, such as overlapping speech, noise, garbled words, or interruptions.
+- poor_punctuation: Punctuation or sentence splitting makes judgement harder, such as long unpunctuated blocks or unclear sentence boundaries.
+
+Use only the exact transcript quality flag values above. Use [] when no transcript-quality issue is visible. Do not put free-text explanations inside `transcript_quality_flags`; use `warnings` for simple general warning strings.
 
 For every candidate, return a scores object with integer scores from 0 to 10:
 - hook_strength: How quickly and strongly the candidate creates interest at the start. High = the opening creates curiosity, tension, surprise, status, money, conflict, humour, or clear value almost immediately. Low = slow start, vague setup, unclear topic, or depends too much on previous context.
@@ -79,6 +95,7 @@ Use this output shape:
   "confidence": 0.0,
   "reason": "short section-level judgement",
   "warnings": [],
+  "transcript_quality_flags": [],
   "candidates": [
     {
       "candidate_local_id": "section_0001_candidate_0001",
@@ -99,7 +116,8 @@ Use this output shape:
         "overall_potential": 0
       },
       "confidence": 0.0,
-      "warnings": []
+      "warnings": [],
+      "transcript_quality_flags": []
     }
   ]
 }
@@ -112,5 +130,6 @@ If no good candidate exists, return:
   "confidence": 0.0,
   "reason": "No strong standalone clip found in this section.",
   "warnings": [],
+  "transcript_quality_flags": [],
   "candidates": []
 }

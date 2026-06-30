@@ -84,6 +84,7 @@ def _candidate(index: int = 1, *, section_id: str = "section_0001") -> dict:
         "scores": _scores(),
         "confidence": 0.72,
         "warnings": [],
+        "transcript_quality_flags": [],
     }
 
 
@@ -99,6 +100,7 @@ def _result(*, usable: bool = True, candidates: list[dict] | None = None) -> dic
             else "No strong standalone clip found in this section."
         ),
         "warnings": [],
+        "transcript_quality_flags": [],
         "candidates": list(candidates if candidates is not None else [_candidate()]),
     }
 
@@ -561,6 +563,140 @@ def test_warning_entries_must_be_strings():
     assert "warnings must contain only strings" in str(exc.value)
 
 
+def test_valid_candidate_with_empty_transcript_quality_flags_validates():
+    candidate = _candidate()
+    candidate["transcript_quality_flags"] = []
+
+    discovery.validate_section_discovery_result(
+        _result(candidates=[candidate]),
+        section=_section(),
+        config=_config(),
+    )
+
+
+def test_valid_candidate_with_every_allowed_transcript_quality_flag_validates():
+    candidate = _candidate()
+    candidate["transcript_quality_flags"] = list(contracts.ALLOWED_TRANSCRIPT_QUALITY_FLAG_VALUES)
+
+    discovery.validate_section_discovery_result(
+        _result(candidates=[candidate]),
+        section=_section(),
+        config=_config(),
+    )
+
+
+def test_missing_candidate_transcript_quality_flags_fails_validation():
+    candidate = _candidate()
+    del candidate["transcript_quality_flags"]
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "transcript_quality_flags is required" in str(exc.value)
+
+
+def test_null_candidate_transcript_quality_flags_fails_validation():
+    candidate = _candidate()
+    candidate["transcript_quality_flags"] = None
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "transcript_quality_flags must be a list" in str(exc.value)
+
+
+def test_non_list_candidate_transcript_quality_flags_fails_validation():
+    candidate = _candidate()
+    candidate["transcript_quality_flags"] = "poor_punctuation"
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "transcript_quality_flags must be a list" in str(exc.value)
+
+
+def test_non_string_transcript_quality_flag_value_fails_validation():
+    candidate = _candidate()
+    candidate["transcript_quality_flags"] = ["poor_punctuation", 7]
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "transcript_quality_flags[1] must be one of" in str(exc.value)
+
+
+def test_unknown_transcript_quality_flag_value_fails_validation():
+    candidate = _candidate()
+    candidate["transcript_quality_flags"] = ["bad_transcript"]
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "transcript_quality_flags[0] must be one of" in str(exc.value)
+
+
+def test_capitalised_transcript_quality_flag_value_fails_validation():
+    candidate = _candidate()
+    candidate["transcript_quality_flags"] = ["Poor Punctuation"]
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "transcript_quality_flags[0] must be one of" in str(exc.value)
+
+
+def test_space_separated_transcript_quality_flag_value_fails_validation():
+    candidate = _candidate()
+    candidate["transcript_quality_flags"] = ["poor punctuation"]
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "transcript_quality_flags[0] must be one of" in str(exc.value)
+
+
+def test_free_text_transcript_quality_flag_value_fails_validation():
+    candidate = _candidate()
+    candidate["transcript_quality_flags"] = ["the audio is hard to hear"]
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "transcript_quality_flags[0] must be one of" in str(exc.value)
+
+
 def test_malformed_model_json_fails_cleanly():
     client = FakeModelClient([FakeModelResponse("not json")])
 
@@ -623,6 +759,17 @@ def test_candidate_discovery_does_not_force_candidates_for_weak_sections():
 
     assert result["usable"] is False
     assert result["candidates"] == []
+
+
+def test_zero_candidate_section_with_section_level_transcript_quality_flags_validates():
+    result = _result(usable=False, candidates=[])
+    result["transcript_quality_flags"] = ["poor_punctuation"]
+
+    discovery.validate_section_discovery_result(
+        result,
+        section=_section(),
+        config=_config(),
+    )
 
 
 def test_max_candidates_per_section_is_respected():
@@ -726,6 +873,57 @@ def test_batch_discovery_preserves_archetype_values():
     )
 
     assert batch["section_results"][0]["candidates"][0]["archetype"] == "business_lesson"
+
+
+def test_candidate_with_allowed_transcript_quality_flags_is_preserved_and_not_rejected():
+    candidate = _candidate()
+    candidate["transcript_quality_flags"] = ["speaker_confusion", "poor_punctuation"]
+    client = FakeModelClient([_response(_result(candidates=[candidate]))])
+
+    result = discovery.discover_candidates_for_section(
+        _section(),
+        ai_client=client,
+        config=_config(),
+        prompt_template="PROMPT",
+    )
+
+    assert result["usable"] is True
+    assert result["candidates"][0]["transcript_quality_flags"] == [
+        "speaker_confusion",
+        "poor_punctuation",
+    ]
+
+
+def test_batch_discovery_preserves_candidate_transcript_quality_flags():
+    candidate = _candidate()
+    candidate["transcript_quality_flags"] = ["missing_words"]
+    client = FakeModelClient([_response(_result(candidates=[candidate]))])
+
+    batch = discovery.discover_candidates_for_sections(
+        [_section()],
+        ai_client=client,
+        config=_config(),
+        prompt_template="PROMPT",
+    )
+
+    assert batch["section_results"][0]["candidates"][0]["transcript_quality_flags"] == [
+        "missing_words"
+    ]
+
+
+def test_batch_discovery_preserves_section_level_transcript_quality_flags():
+    result = _result()
+    result["transcript_quality_flags"] = ["unclear_audio"]
+    client = FakeModelClient([_response(result)])
+
+    batch = discovery.discover_candidates_for_sections(
+        [_section()],
+        ai_client=client,
+        config=_config(),
+        prompt_template="PROMPT",
+    )
+
+    assert batch["section_results"][0]["transcript_quality_flags"] == ["unclear_audio"]
 
 
 def test_aggregate_counts_are_correct():
@@ -863,6 +1061,44 @@ def test_malformed_archetype_output_stops_batch_when_fail_fast_true():
     assert len(client.prompts) == 1
 
 
+def test_malformed_transcript_quality_output_records_failed_section_when_fail_fast_false():
+    bad = _candidate()
+    bad["transcript_quality_flags"] = ["Poor Punctuation"]
+    good = _result(usable=False, candidates=[])
+    good["section_id"] = "section_0002"
+    client = FakeModelClient([_response(_result(candidates=[bad])), _response(good)])
+
+    batch = discovery.discover_candidates_for_sections(
+        [_section("section_0001"), _section("section_0002")],
+        ai_client=client,
+        config=_config(fail_fast=False),
+        prompt_template="PROMPT",
+    )
+
+    assert batch["sections_processed"] == 1
+    assert len(batch["failed_sections"]) == 1
+    assert batch["failed_sections"][0]["section_id"] == "section_0001"
+    assert batch["rejected_sections"] == 1
+
+
+def test_malformed_transcript_quality_output_stops_batch_when_fail_fast_true():
+    bad = _candidate()
+    bad["transcript_quality_flags"] = ["audio sounds rough"]
+    client = FakeModelClient([_response(_result(candidates=[bad])), _response(_result())])
+
+    batch = discovery.discover_candidates_for_sections(
+        [_section("section_0001"), _section("section_0002")],
+        ai_client=client,
+        config=_config(fail_fast=True),
+        prompt_template="PROMPT",
+    )
+
+    assert batch["sections_processed"] == 0
+    assert len(batch["failed_sections"]) == 1
+    assert batch["warnings"] == ["fail_fast_stopped_after_section_failure"]
+    assert len(client.prompts) == 1
+
+
 def test_artifact_write_read_works(tmp_path: Path):
     client = FakeModelClient([_response(_result())])
     batch = discovery.discover_candidates_for_sections(
@@ -924,6 +1160,37 @@ def test_ai_service_json_schema_requires_archetype():
     assert tuple(archetype_schema["enum"]) == contracts.ALLOWED_CANDIDATE_ARCHETYPES
 
 
+def test_ai_service_json_schema_requires_candidate_transcript_quality_flags():
+    schema_path = (
+        Path(__file__).resolve().parents[2]
+        / "ai-service"
+        / "schemas"
+        / "section_candidate_discovery_v1.json"
+    )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    candidate_schema = schema["properties"]["candidates"]["items"]
+    flag_schema = candidate_schema["properties"]["transcript_quality_flags"]
+
+    assert "transcript_quality_flags" in candidate_schema["required"]
+    assert flag_schema["type"] == "array"
+    assert tuple(flag_schema["items"]["enum"]) == contracts.ALLOWED_TRANSCRIPT_QUALITY_FLAG_VALUES
+
+
+def test_ai_service_json_schema_validates_section_level_transcript_quality_flags():
+    schema_path = (
+        Path(__file__).resolve().parents[2]
+        / "ai-service"
+        / "schemas"
+        / "section_candidate_discovery_v1.json"
+    )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    flag_schema = schema["properties"]["transcript_quality_flags"]
+
+    assert "transcript_quality_flags" in schema["required"]
+    assert flag_schema["type"] == "array"
+    assert tuple(flag_schema["items"]["enum"]) == contracts.ALLOWED_TRANSCRIPT_QUALITY_FLAG_VALUES
+
+
 def test_ai_service_json_schema_requires_scores():
     schema_path = (
         Path(__file__).resolve().parents[2]
@@ -957,6 +1224,13 @@ def test_prompt_1_raw_candidate_evidence_names_match_discovery_evidence_names():
 
 def test_prompt_1_raw_candidate_allowed_archetypes_match_discovery_allowed_archetypes():
     assert discovery.ALLOWED_CANDIDATE_ARCHETYPES == contracts.ALLOWED_CANDIDATE_ARCHETYPES
+
+
+def test_prompt_1_raw_candidate_transcript_quality_flags_match_discovery_flags():
+    assert (
+        discovery.ALLOWED_TRANSCRIPT_QUALITY_FLAG_VALUES
+        == contracts.ALLOWED_TRANSCRIPT_QUALITY_FLAG_VALUES
+    )
 
 
 def test_tests_use_fake_ai_client():

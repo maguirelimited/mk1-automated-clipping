@@ -151,6 +151,16 @@ def test_invalid_transcript_quality_flag_fails():
     _assert_invalid(_valid_pool(candidates=[candidate]), "transcript_quality_flags[0]")
 
 
+def test_allowed_transcript_quality_flag_constant_matches_contract_validator():
+    assert contracts.ALLOWED_TRANSCRIPT_QUALITY_FLAGS == frozenset(
+        contracts.ALLOWED_TRANSCRIPT_QUALITY_FLAG_VALUES
+    )
+    for flag in contracts.ALLOWED_TRANSCRIPT_QUALITY_FLAG_VALUES:
+        candidate = _valid_candidate()
+        candidate["transcript_quality_flags"] = [flag]
+        contracts.validate_raw_candidate_pool(_valid_pool(candidates=[candidate]))
+
+
 def test_warnings_list_is_preserved():
     candidate = _valid_candidate()
     candidate["warnings"] = ["soft_boundary_needs_review", "possible_duplicate"]

@@ -25,6 +25,7 @@ from ai_service_client import (
 from mk04_utils import now_iso, write_json
 from processing_contracts import (
     ALLOWED_CANDIDATE_ARCHETYPES,
+    ALLOWED_TRANSCRIPT_QUALITY_FLAG_VALUES,
     CANDIDATE_EVIDENCE_TEXT_FIELDS,
     REQUIRED_SCORE_FIELDS,
 )
@@ -48,6 +49,7 @@ SECTION_RESULT_REQUIRED_FIELDS = (
     "confidence",
     "reason",
     "warnings",
+    "transcript_quality_flags",
     "candidates",
 )
 
@@ -62,6 +64,7 @@ CANDIDATE_REQUIRED_FIELDS = (
     "scores",
     "confidence",
     "warnings",
+    "transcript_quality_flags",
 )
 
 BATCH_COUNT_FIELDS = (
@@ -440,6 +443,12 @@ def validate_section_discovery_result(
     if "reason" in result and not isinstance(result.get("reason"), str):
         errors.append("result.reason must be a string")
     _validate_string_list(result.get("warnings"), "result.warnings", errors)
+    if "transcript_quality_flags" in result:
+        _validate_transcript_quality_flags(
+            result.get("transcript_quality_flags"),
+            "result.transcript_quality_flags",
+            errors,
+        )
     candidates = result.get("candidates")
     if not isinstance(candidates, list):
         errors.append("result.candidates must be a list")
@@ -669,6 +678,12 @@ def _validate_discovered_candidate(
     if not _is_number(candidate.get("confidence")) or not 0.0 <= float(candidate["confidence"]) <= 1.0:
         errors.append(f"{path}.confidence must be numeric and within 0-1")
     _validate_string_list(candidate.get("warnings"), f"{path}.warnings", errors)
+    if "transcript_quality_flags" in candidate:
+        _validate_transcript_quality_flags(
+            candidate.get("transcript_quality_flags"),
+            f"{path}.transcript_quality_flags",
+            errors,
+        )
 
 
 def _validate_candidate_archetype(value: Any, path: str, errors: list[str]) -> None:
@@ -677,6 +692,19 @@ def _validate_candidate_archetype(value: Any, path: str, errors: list[str]) -> N
         return
     if value not in ALLOWED_CANDIDATE_ARCHETYPES:
         errors.append(f"{path} must be one of {list(ALLOWED_CANDIDATE_ARCHETYPES)}")
+
+
+def _validate_transcript_quality_flags(value: Any, path: str, errors: list[str]) -> None:
+    if not isinstance(value, list):
+        errors.append(f"{path} must be a list")
+        return
+    for index, flag in enumerate(value):
+        flag_path = f"{path}[{index}]"
+        if not isinstance(flag, str):
+            errors.append(f"{flag_path} must be one of {list(ALLOWED_TRANSCRIPT_QUALITY_FLAG_VALUES)}")
+            continue
+        if flag not in ALLOWED_TRANSCRIPT_QUALITY_FLAG_VALUES:
+            errors.append(f"{flag_path} must be one of {list(ALLOWED_TRANSCRIPT_QUALITY_FLAG_VALUES)}")
 
 
 def _attach_source_section_ids(

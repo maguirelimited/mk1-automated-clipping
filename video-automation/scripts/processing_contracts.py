@@ -62,16 +62,16 @@ ALLOWED_CANDIDATE_ARCHETYPES = (
 
 ALLOWED_ARCHETYPES = frozenset(ALLOWED_CANDIDATE_ARCHETYPES)
 
-ALLOWED_TRANSCRIPT_QUALITY_FLAGS = frozenset(
-    {
-        "low_transcript_confidence",
-        "speaker_confusion",
-        "missing_words",
-        "timestamp_uncertainty",
-        "unclear_audio",
-        "poor_punctuation",
-    }
+ALLOWED_TRANSCRIPT_QUALITY_FLAG_VALUES = (
+    "low_transcript_confidence",
+    "speaker_confusion",
+    "missing_words",
+    "timestamp_uncertainty",
+    "unclear_audio",
+    "poor_punctuation",
 )
+
+ALLOWED_TRANSCRIPT_QUALITY_FLAGS = frozenset(ALLOWED_TRANSCRIPT_QUALITY_FLAG_VALUES)
 
 RAW_CANDIDATE_POOL_REQUIRED_FIELDS = (
     "schema_version",

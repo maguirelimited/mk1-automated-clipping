@@ -26,6 +26,20 @@
       },
       "type": "array"
     },
+    "transcript_quality_flags": {
+      "items": {
+        "enum": [
+          "low_transcript_confidence",
+          "speaker_confusion",
+          "missing_words",
+          "timestamp_uncertainty",
+          "unclear_audio",
+          "poor_punctuation"
+        ],
+        "type": "string"
+      },
+      "type": "array"
+    },
     "candidates": {
       "items": {
         "additionalProperties": false,
@@ -129,6 +143,20 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "transcript_quality_flags": {
+            "items": {
+              "enum": [
+                "low_transcript_confidence",
+                "speaker_confusion",
+                "missing_words",
+                "timestamp_uncertainty",
+                "unclear_audio",
+                "poor_punctuation"
+              ],
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -142,7 +170,8 @@
           "archetype",
           "scores",
           "confidence",
-          "warnings"
+          "warnings",
+          "transcript_quality_flags"
         ],
         "type": "object"
       },
@@ -156,6 +185,7 @@
     "confidence",
     "reason",
     "warnings",
+    "transcript_quality_flags",
     "candidates"
   ],
   "type": "object"
