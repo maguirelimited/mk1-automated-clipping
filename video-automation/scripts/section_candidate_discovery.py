@@ -23,7 +23,11 @@ from ai_service_client import (
     ai_service_url,
 )
 from mk04_utils import now_iso, write_json
-from processing_contracts import CANDIDATE_EVIDENCE_TEXT_FIELDS, REQUIRED_SCORE_FIELDS
+from processing_contracts import (
+    ALLOWED_CANDIDATE_ARCHETYPES,
+    CANDIDATE_EVIDENCE_TEXT_FIELDS,
+    REQUIRED_SCORE_FIELDS,
+)
 
 SECTION_DISCOVERY_SCHEMA_VERSION = "section_candidate_discovery_v1"
 SECTION_DISCOVERY_BATCH_SCHEMA_VERSION = "section_candidate_discovery_batch_v1"
@@ -54,6 +58,7 @@ CANDIDATE_REQUIRED_FIELDS = (
     "end_sec",
     "duration_sec",
     *CANDIDATE_EVIDENCE_TEXT_FIELDS,
+    "archetype",
     "scores",
     "confidence",
     "warnings",
@@ -620,6 +625,8 @@ def _validate_discovered_candidate(
     section_id = section.get("section_id")
     if candidate.get("source_section_id") != section_id:
         errors.append(f"{path}.source_section_id must match input section_id")
+    if "archetype" in candidate:
+        _validate_candidate_archetype(candidate.get("archetype"), f"{path}.archetype", errors)
 
     start = candidate.get("start_sec")
     end = candidate.get("end_sec")
@@ -662,6 +669,14 @@ def _validate_discovered_candidate(
     if not _is_number(candidate.get("confidence")) or not 0.0 <= float(candidate["confidence"]) <= 1.0:
         errors.append(f"{path}.confidence must be numeric and within 0-1")
     _validate_string_list(candidate.get("warnings"), f"{path}.warnings", errors)
+
+
+def _validate_candidate_archetype(value: Any, path: str, errors: list[str]) -> None:
+    if not isinstance(value, str):
+        errors.append(f"{path} must be one of {list(ALLOWED_CANDIDATE_ARCHETYPES)}")
+        return
+    if value not in ALLOWED_CANDIDATE_ARCHETYPES:
+        errors.append(f"{path} must be one of {list(ALLOWED_CANDIDATE_ARCHETYPES)}")
 
 
 def _attach_source_section_ids(

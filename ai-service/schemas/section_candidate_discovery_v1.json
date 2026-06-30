@@ -59,6 +59,22 @@
             "minLength": 1,
             "type": "string"
           },
+          "archetype": {
+            "enum": [
+              "valuable_insight",
+              "funny_moment",
+              "controversial_opinion",
+              "story",
+              "explanation",
+              "emotional_moment",
+              "surprising_fact",
+              "tactical_advice",
+              "business_lesson",
+              "strong_quote",
+              "other"
+            ],
+            "type": "string"
+          },
           "scores": {
             "additionalProperties": false,
             "properties": {
@@ -123,6 +139,7 @@
           "hook_text",
           "core_idea_summary",
           "why_candidate_has_potential",
+          "archetype",
           "scores",
           "confidence",
           "warnings"

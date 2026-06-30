@@ -136,6 +136,15 @@ def test_invalid_archetype_fails():
     _assert_invalid(_valid_pool(candidates=[candidate]), "archetype must be one of")
 
 
+def test_allowed_candidate_archetype_constant_matches_contract_validator():
+    assert contracts.ALLOWED_ARCHETYPES == frozenset(contracts.ALLOWED_CANDIDATE_ARCHETYPES)
+    assert "unknown" not in contracts.ALLOWED_CANDIDATE_ARCHETYPES
+    for archetype in contracts.ALLOWED_CANDIDATE_ARCHETYPES:
+        candidate = _valid_candidate()
+        candidate["archetype"] = archetype
+        contracts.validate_raw_candidate_pool(_valid_pool(candidates=[candidate]))
+
+
 def test_invalid_transcript_quality_flag_fails():
     candidate = _valid_candidate()
     candidate["transcript_quality_flags"] = ["bad_flag"]

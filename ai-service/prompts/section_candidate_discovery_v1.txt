@@ -12,6 +12,9 @@ This is a raw candidate discovery pass, not final clip selection.
 Allowed: raw candidate evidence.
 Not allowed: final publishing strategy, editing strategy, performance prediction, captions, B-roll, 9:16 formatting, upload guidance, or final ranking.
 
+Candidate archetype = descriptive raw opportunity type.
+Final publishing strategy = not allowed.
+
 Your job:
 - Find zero, one, or multiple raw clip opportunities inside this section.
 - Return zero candidates if the section is weak.
@@ -26,6 +29,7 @@ Your job:
 - Keep evidence grounded in the transcript section. Do not invent stronger hooks, claims, stakes, or context than the transcript supports.
 - Do not rewrite `hook_text` into a clickbait caption.
 - `why_candidate_has_potential` must explain the evidence behind the scores in plain language, without claiming guaranteed performance or recommending edits.
+- Return exactly one `archetype` for every candidate. Archetype is descriptive classification only, not selection strategy, edit strategy, platform strategy, or final ranking.
 
 Candidate evidence fields:
 - hook_text: A concise excerpt or faithful summary of the actual raw opening idea. It must not be clickbait, a caption, or an invented claim.
@@ -33,6 +37,21 @@ Candidate evidence fields:
 - why_candidate_has_potential: A clear raw-potential explanation based on the substance of the moment. It may mention strong hook, useful insight, standalone context, retention, or clean ending, but must not say it will go viral or assume editing/post-processing improvements.
 - confidence: Your confidence from 0.0 to 1.0 that this is a real raw candidate worth passing forward.
 - warnings: Candidate-specific warning strings such as "needs_context", "weak_opening", "abrupt_ending", "possible_timestamp_uncertainty", or "unclear_reference". Use [] if none.
+
+Allowed archetypes:
+- valuable_insight: The main value is a useful or meaningful observation. Use when the clip contains a sharp idea or the viewer learns something important beyond one tactical instruction.
+- funny_moment: The main value is humour, such as a joke, amusing exchange, absurd moment, or funny reaction that works without too much missing context.
+- controversial_opinion: The main value is a strong, debatable, or provocative opinion grounded in the transcript. Do not use just because the topic is popular.
+- story: The main value is a narrative sequence with setup, progression, and payoff.
+- explanation: The main value is explaining how a concept, mechanism, system, market, process, or situation works.
+- emotional_moment: The main value is emotion such as fear, regret, pride, anger, sadness, excitement, vulnerability, admiration, or relief.
+- surprising_fact: The main value is an unexpected fact, statistic, hidden detail, unusual claim, counterintuitive result, or unexpected comparison.
+- tactical_advice: The main value is practical instruction: steps, rules, tactics, frameworks, or specific guidance the viewer could apply.
+- business_lesson: The main value is a business-specific lesson about startups, sales, marketing, hiring, investing, operations, distribution, leverage, pricing, acquisitions, or entrepreneurship.
+- strong_quote: The main value is one concise memorable line or phrase, supported by enough surrounding context.
+- other: Use only when the candidate is valid but none of the more specific archetypes fit. Prefer a specific archetype when one clearly applies.
+
+Use only the exact allowed archetype values above. Do not use capitals, spaces, slashes, comma-separated labels, arrays, emojis, or free-text labels.
 
 For every candidate, return a scores object with integer scores from 0 to 10:
 - hook_strength: How quickly and strongly the candidate creates interest at the start. High = the opening creates curiosity, tension, surprise, status, money, conflict, humour, or clear value almost immediately. Low = slow start, vague setup, unclear topic, or depends too much on previous context.
@@ -70,6 +89,7 @@ Use this output shape:
       "hook_text": "the opening spoken idea",
       "core_idea_summary": "short summary of the raw opportunity",
       "why_candidate_has_potential": "why this is worth passing forward",
+      "archetype": "valuable_insight",
       "scores": {
         "hook_strength": 0,
         "standalone_context": 0,

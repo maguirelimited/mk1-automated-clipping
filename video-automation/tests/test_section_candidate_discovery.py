@@ -80,6 +80,7 @@ def _candidate(index: int = 1, *, section_id: str = "section_0001") -> dict:
         "hook_text": "The surprising thing about this business is simple.",
         "core_idea_summary": "The speaker explains a standalone business lesson.",
         "why_candidate_has_potential": "It is understandable without broader podcast context.",
+        "archetype": "business_lesson",
         "scores": _scores(),
         "confidence": 0.72,
         "warnings": [],
@@ -141,6 +142,28 @@ def test_valid_candidate_with_full_evidence_package_validates():
     assert isinstance(candidate["warnings"], list)
 
 
+def test_valid_candidate_with_allowed_archetype_validates():
+    candidate = _candidate()
+    candidate["archetype"] = "valuable_insight"
+
+    discovery.validate_section_discovery_result(
+        _result(candidates=[candidate]),
+        section=_section(),
+        config=_config(),
+    )
+
+
+def test_every_allowed_archetype_value_is_accepted():
+    for archetype in contracts.ALLOWED_CANDIDATE_ARCHETYPES:
+        candidate = _candidate()
+        candidate["archetype"] = archetype
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+
 def test_valid_candidate_with_all_six_scores_validates():
     candidate = _candidate()
 
@@ -186,6 +209,104 @@ def test_invalid_candidate_duration_fails_validation():
         )
 
     assert "duration_sec must match" in str(exc.value)
+
+
+def test_missing_archetype_fails_validation():
+    candidate = _candidate()
+    del candidate["archetype"]
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "archetype is required" in str(exc.value)
+
+
+def test_null_archetype_fails_validation():
+    candidate = _candidate()
+    candidate["archetype"] = None
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "archetype must be one of" in str(exc.value)
+
+
+def test_non_string_archetype_fails_validation():
+    candidate = _candidate()
+    candidate["archetype"] = 123
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "archetype must be one of" in str(exc.value)
+
+
+def test_unknown_archetype_fails_validation():
+    candidate = _candidate()
+    candidate["archetype"] = "viral_moment"
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "archetype must be one of" in str(exc.value)
+
+
+def test_capitalised_archetype_fails_validation():
+    candidate = _candidate()
+    candidate["archetype"] = "Story"
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "archetype must be one of" in str(exc.value)
+
+
+def test_space_separated_archetype_fails_validation():
+    candidate = _candidate()
+    candidate["archetype"] = "business lesson"
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "archetype must be one of" in str(exc.value)
+
+
+def test_archetype_array_fails_validation():
+    candidate = _candidate()
+    candidate["archetype"] = ["story"]
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "archetype must be one of" in str(exc.value)
 
 
 def test_missing_hook_text_fails_validation():
@@ -594,6 +715,19 @@ def test_batch_discovery_preserves_evidence_fields():
     assert candidate["source_section_id"] == "section_0001"
 
 
+def test_batch_discovery_preserves_archetype_values():
+    client = FakeModelClient([_response(_result())])
+
+    batch = discovery.discover_candidates_for_sections(
+        [_section()],
+        ai_client=client,
+        config=_config(),
+        prompt_template="PROMPT",
+    )
+
+    assert batch["section_results"][0]["candidates"][0]["archetype"] == "business_lesson"
+
+
 def test_aggregate_counts_are_correct():
     first = _result(candidates=[_candidate(1), _candidate(2)])
     second = _result(usable=False, candidates=[])
@@ -691,6 +825,44 @@ def test_malformed_evidence_output_stops_batch_when_fail_fast_true():
     assert len(client.prompts) == 1
 
 
+def test_malformed_archetype_output_records_failed_section_when_fail_fast_false():
+    bad = _candidate()
+    bad["archetype"] = "Business Lesson"
+    good = _result(usable=False, candidates=[])
+    good["section_id"] = "section_0002"
+    client = FakeModelClient([_response(_result(candidates=[bad])), _response(good)])
+
+    batch = discovery.discover_candidates_for_sections(
+        [_section("section_0001"), _section("section_0002")],
+        ai_client=client,
+        config=_config(fail_fast=False),
+        prompt_template="PROMPT",
+    )
+
+    assert batch["sections_processed"] == 1
+    assert len(batch["failed_sections"]) == 1
+    assert batch["failed_sections"][0]["section_id"] == "section_0001"
+    assert batch["rejected_sections"] == 1
+
+
+def test_malformed_archetype_output_stops_batch_when_fail_fast_true():
+    bad = _candidate()
+    bad["archetype"] = "story,explanation"
+    client = FakeModelClient([_response(_result(candidates=[bad])), _response(_result())])
+
+    batch = discovery.discover_candidates_for_sections(
+        [_section("section_0001"), _section("section_0002")],
+        ai_client=client,
+        config=_config(fail_fast=True),
+        prompt_template="PROMPT",
+    )
+
+    assert batch["sections_processed"] == 0
+    assert len(batch["failed_sections"]) == 1
+    assert batch["warnings"] == ["fail_fast_stopped_after_section_failure"]
+    assert len(client.prompts) == 1
+
+
 def test_artifact_write_read_works(tmp_path: Path):
     client = FakeModelClient([_response(_result())])
     batch = discovery.discover_candidates_for_sections(
@@ -736,6 +908,22 @@ def test_ai_service_json_schema_requires_evidence_fields():
     assert candidate_schema["properties"]["warnings"]["items"]["type"] == "string"
 
 
+def test_ai_service_json_schema_requires_archetype():
+    schema_path = (
+        Path(__file__).resolve().parents[2]
+        / "ai-service"
+        / "schemas"
+        / "section_candidate_discovery_v1.json"
+    )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    candidate_schema = schema["properties"]["candidates"]["items"]
+    archetype_schema = candidate_schema["properties"]["archetype"]
+
+    assert "archetype" in candidate_schema["required"]
+    assert archetype_schema["type"] == "string"
+    assert tuple(archetype_schema["enum"]) == contracts.ALLOWED_CANDIDATE_ARCHETYPES
+
+
 def test_ai_service_json_schema_requires_scores():
     schema_path = (
         Path(__file__).resolve().parents[2]
@@ -765,6 +953,10 @@ def test_prompt_1_raw_candidate_score_names_match_discovery_score_names():
 def test_prompt_1_raw_candidate_evidence_names_match_discovery_evidence_names():
     for field in contracts.CANDIDATE_EVIDENCE_FIELDS:
         assert field in discovery.CANDIDATE_REQUIRED_FIELDS
+
+
+def test_prompt_1_raw_candidate_allowed_archetypes_match_discovery_allowed_archetypes():
+    assert discovery.ALLOWED_CANDIDATE_ARCHETYPES == contracts.ALLOWED_CANDIDATE_ARCHETYPES
 
 
 def test_tests_use_fake_ai_client():

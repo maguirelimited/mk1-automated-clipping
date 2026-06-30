@@ -46,22 +46,21 @@ CANDIDATE_EVIDENCE_FIELDS = (
     "warnings",
 )
 
-ALLOWED_ARCHETYPES = frozenset(
-    {
-        "valuable_insight",
-        "funny_moment",
-        "controversial_opinion",
-        "story",
-        "explanation",
-        "emotional_moment",
-        "surprising_fact",
-        "tactical_advice",
-        "business_lesson",
-        "strong_quote",
-        "other",
-        "unknown",
-    }
+ALLOWED_CANDIDATE_ARCHETYPES = (
+    "valuable_insight",
+    "funny_moment",
+    "controversial_opinion",
+    "story",
+    "explanation",
+    "emotional_moment",
+    "surprising_fact",
+    "tactical_advice",
+    "business_lesson",
+    "strong_quote",
+    "other",
 )
+
+ALLOWED_ARCHETYPES = frozenset(ALLOWED_CANDIDATE_ARCHETYPES)
 
 ALLOWED_TRANSCRIPT_QUALITY_FLAGS = frozenset(
     {
