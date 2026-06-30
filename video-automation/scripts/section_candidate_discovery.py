@@ -23,6 +23,7 @@ from ai_service_client import (
     ai_service_url,
 )
 from mk04_utils import now_iso, write_json
+from processing_contracts import REQUIRED_SCORE_FIELDS
 
 SECTION_DISCOVERY_SCHEMA_VERSION = "section_candidate_discovery_v1"
 SECTION_DISCOVERY_BATCH_SCHEMA_VERSION = "section_candidate_discovery_batch_v1"
@@ -55,6 +56,7 @@ CANDIDATE_REQUIRED_FIELDS = (
     "hook_text",
     "core_idea_summary",
     "why_candidate_has_potential",
+    "scores",
     "confidence",
     "warnings",
 )
@@ -656,9 +658,27 @@ def _validate_discovered_candidate(
     for field in ("hook_text", "core_idea_summary", "why_candidate_has_potential"):
         if field in candidate and not isinstance(candidate.get(field), str):
             errors.append(f"{path}.{field} must be a string")
+    if "scores" in candidate:
+        _validate_candidate_scores(candidate.get("scores"), f"{path}.scores", errors)
     if not _is_number(candidate.get("confidence")) or not 0.0 <= float(candidate["confidence"]) <= 1.0:
         errors.append(f"{path}.confidence must be numeric and within 0-1")
     _validate_string_list(candidate.get("warnings"), f"{path}.warnings", errors)
+
+
+def _validate_candidate_scores(scores: Any, path: str, errors: list[str]) -> None:
+    if not isinstance(scores, dict):
+        errors.append(f"{path} must be an object")
+        return
+    for field in REQUIRED_SCORE_FIELDS:
+        if field not in scores:
+            errors.append(f"{path}.{field} is required")
+            continue
+        value = scores.get(field)
+        if not isinstance(value, int) or isinstance(value, bool):
+            errors.append(f"{path}.{field} must be an integer within 0-10")
+            continue
+        if value < 0 or value > 10:
+            errors.append(f"{path}.{field} must be an integer within 0-10")
 
 
 def _failed_section_record(

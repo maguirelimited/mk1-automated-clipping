@@ -56,6 +56,50 @@
           "why_candidate_has_potential": {
             "type": "string"
           },
+          "scores": {
+            "additionalProperties": false,
+            "properties": {
+              "hook_strength": {
+                "maximum": 10,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "standalone_context": {
+                "maximum": 10,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "insight_value": {
+                "maximum": 10,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "retention_potential": {
+                "maximum": 10,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "natural_ending": {
+                "maximum": 10,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "overall_potential": {
+                "maximum": 10,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "hook_strength",
+              "standalone_context",
+              "insight_value",
+              "retention_potential",
+              "natural_ending",
+              "overall_potential"
+            ],
+            "type": "object"
+          },
           "confidence": {
             "maximum": 1,
             "minimum": 0,
@@ -77,6 +121,7 @@
           "hook_text",
           "core_idea_summary",
           "why_candidate_has_potential",
+          "scores",
           "confidence",
           "warnings"
         ],

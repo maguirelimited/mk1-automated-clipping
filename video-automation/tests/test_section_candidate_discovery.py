@@ -11,6 +11,7 @@ SCRIPTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scr
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
+import processing_contracts as contracts  # noqa: E402
 import section_candidate_discovery as discovery  # noqa: E402
 
 
@@ -56,6 +57,19 @@ def _section(section_id: str = "section_0001") -> dict:
     }
 
 
+def _scores(**overrides) -> dict:
+    scores = {
+        "hook_strength": 8,
+        "standalone_context": 7,
+        "insight_value": 8,
+        "retention_potential": 7,
+        "natural_ending": 7,
+        "overall_potential": 8,
+    }
+    scores.update(overrides)
+    return scores
+
+
 def _candidate(index: int = 1, *, section_id: str = "section_0001") -> dict:
     return {
         "candidate_local_id": f"{section_id}_candidate_{index:04d}",
@@ -66,6 +80,7 @@ def _candidate(index: int = 1, *, section_id: str = "section_0001") -> dict:
         "hook_text": "The surprising thing about this business is simple.",
         "core_idea_summary": "The speaker explains a standalone business lesson.",
         "why_candidate_has_potential": "It is understandable without broader podcast context.",
+        "scores": _scores(),
         "confidence": 0.72,
         "warnings": [],
     }
@@ -110,6 +125,18 @@ def test_valid_usable_true_section_result_with_one_candidate_validates():
     )
 
 
+def test_valid_candidate_with_all_six_scores_validates():
+    candidate = _candidate()
+
+    discovery.validate_section_discovery_result(
+        _result(candidates=[candidate]),
+        section=_section(),
+        config=_config(),
+    )
+
+    assert tuple(candidate["scores"].keys()) == contracts.REQUIRED_SCORE_FIELDS
+
+
 def test_valid_usable_false_result_with_zero_candidates_validates():
     discovery.validate_section_discovery_result(
         _result(usable=False, candidates=[]),
@@ -143,6 +170,76 @@ def test_invalid_candidate_duration_fails_validation():
         )
 
     assert "duration_sec must match" in str(exc.value)
+
+
+def test_missing_scores_fails_validation():
+    candidate = _candidate()
+    del candidate["scores"]
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "scores is required" in str(exc.value)
+
+
+def test_missing_one_score_field_fails_validation():
+    candidate = _candidate()
+    del candidate["scores"]["overall_potential"]
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "scores.overall_potential is required" in str(exc.value)
+
+
+def test_score_below_zero_fails_validation():
+    candidate = _candidate()
+    candidate["scores"]["hook_strength"] = -1
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "scores.hook_strength must be an integer within 0-10" in str(exc.value)
+
+
+def test_score_above_ten_fails_validation():
+    candidate = _candidate()
+    candidate["scores"]["standalone_context"] = 11
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "scores.standalone_context must be an integer within 0-10" in str(exc.value)
+
+
+def test_non_numeric_score_fails_validation():
+    candidate = _candidate()
+    candidate["scores"]["insight_value"] = "high"
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "scores.insight_value must be an integer within 0-10" in str(exc.value)
 
 
 def test_malformed_model_json_fails_cleanly():
@@ -237,6 +334,21 @@ def test_discovered_candidates_preserve_source_section_id():
     assert result["candidates"][0]["source_section_id"] == "section_0001"
 
 
+def test_batch_discovery_preserves_scores_on_candidates():
+    client = FakeModelClient([_response(_result())])
+
+    batch = discovery.discover_candidates_for_sections(
+        [_section()],
+        ai_client=client,
+        config=_config(),
+        prompt_template="PROMPT",
+    )
+
+    scores = batch["section_results"][0]["candidates"][0]["scores"]
+    assert tuple(scores.keys()) == contracts.REQUIRED_SCORE_FIELDS
+    assert scores["overall_potential"] == 8
+
+
 def test_aggregate_counts_are_correct():
     first = _result(candidates=[_candidate(1), _candidate(2)])
     second = _result(usable=False, candidates=[])
@@ -256,6 +368,44 @@ def test_aggregate_counts_are_correct():
     assert batch["rejected_sections"] == 1
     assert batch["candidates_discovered"] == 2
     assert batch["failed_sections"] == []
+
+
+def test_malformed_score_output_records_failed_section_when_fail_fast_false():
+    bad = _candidate()
+    del bad["scores"]["natural_ending"]
+    good = _result(usable=False, candidates=[])
+    good["section_id"] = "section_0002"
+    client = FakeModelClient([_response(_result(candidates=[bad])), _response(good)])
+
+    batch = discovery.discover_candidates_for_sections(
+        [_section("section_0001"), _section("section_0002")],
+        ai_client=client,
+        config=_config(fail_fast=False),
+        prompt_template="PROMPT",
+    )
+
+    assert batch["sections_processed"] == 1
+    assert len(batch["failed_sections"]) == 1
+    assert batch["failed_sections"][0]["section_id"] == "section_0001"
+    assert batch["rejected_sections"] == 1
+
+
+def test_malformed_score_output_stops_batch_when_fail_fast_true():
+    bad = _candidate()
+    bad["scores"]["retention_potential"] = 12
+    client = FakeModelClient([_response(_result(candidates=[bad])), _response(_result())])
+
+    batch = discovery.discover_candidates_for_sections(
+        [_section("section_0001"), _section("section_0002")],
+        ai_client=client,
+        config=_config(fail_fast=True),
+        prompt_template="PROMPT",
+    )
+
+    assert batch["sections_processed"] == 0
+    assert len(batch["failed_sections"]) == 1
+    assert batch["warnings"] == ["fail_fast_stopped_after_section_failure"]
+    assert len(client.prompts) == 1
 
 
 def test_artifact_write_read_works(tmp_path: Path):
@@ -280,6 +430,32 @@ def test_artifact_write_read_works(tmp_path: Path):
     assert Path(path).name == discovery.SECTION_DISCOVERY_ARTIFACT_FILENAME
     assert reloaded["job_id"] == "job_123"
     assert reloaded["section_results"][0]["section_id"] == "section_0001"
+
+
+def test_ai_service_json_schema_requires_scores():
+    schema_path = (
+        Path(__file__).resolve().parents[2]
+        / "ai-service"
+        / "schemas"
+        / "section_candidate_discovery_v1.json"
+    )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    candidate_schema = schema["properties"]["candidates"]["items"]
+    score_schema = candidate_schema["properties"]["scores"]
+
+    assert "scores" in candidate_schema["required"]
+    assert set(score_schema["required"]) == set(contracts.REQUIRED_SCORE_FIELDS)
+    assert set(score_schema["properties"]) == set(contracts.REQUIRED_SCORE_FIELDS)
+    assert all(
+        score_schema["properties"][field]["type"] == "integer"
+        and score_schema["properties"][field]["minimum"] == 0
+        and score_schema["properties"][field]["maximum"] == 10
+        for field in contracts.REQUIRED_SCORE_FIELDS
+    )
+
+
+def test_prompt_1_raw_candidate_score_names_match_discovery_score_names():
+    assert discovery.REQUIRED_SCORE_FIELDS == contracts.REQUIRED_SCORE_FIELDS
 
 
 def test_tests_use_fake_ai_client():
