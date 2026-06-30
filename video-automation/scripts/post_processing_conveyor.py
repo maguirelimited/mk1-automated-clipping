@@ -212,6 +212,11 @@ def run_fixed_mk1_universal_conveyor(
             selection_result=copy.deepcopy(selection_result),
             selected_candidate=candidate,
         )
+        context["clip_id"] = clip_id
+        context["source_candidate"] = copy.deepcopy(
+            candidate.get("source_candidate") or candidate
+        )
+        context["post_processing_dirs"] = copy.deepcopy(directories)
 
         chain_result = run_module_chain(
             ordered_modules,
