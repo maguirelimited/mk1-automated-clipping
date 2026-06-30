@@ -384,9 +384,11 @@ def run_module_chain(
         module_name = _resolve_module_name(module)
         module_version = _resolve_module_version(module)
 
-        # -- Run the module, catching expected failures --
+        # -- Run the module with prior module results, without mutating input context --
+        invocation_context = dict(context)
+        invocation_context["module_results"] = list(accumulated_results)
         try:
-            result = _invoke_module(module, context, input_path=current_input_path)
+            result = _invoke_module(module, invocation_context, input_path=current_input_path)
         except Exception as exc:
             result = make_module_fail_result(
                 module_name,

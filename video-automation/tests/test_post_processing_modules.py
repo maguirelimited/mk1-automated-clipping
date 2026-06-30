@@ -524,6 +524,28 @@ def test_chain_result_module_results_are_in_order():
     assert returned_names == [f"mod_{i}" for i in range(4)]
 
 
+def test_chain_passes_prior_module_results_to_later_modules():
+    observed_lengths: list[int] = []
+
+    class ObservingModule(PostProcessingModule):
+        module_version = "1.0"
+
+        def __init__(self, name: str):
+            self.module_name = name
+
+        def run(self, context, *, input_path=None, config=None):
+            observed_lengths.append(len(context.get("module_results") or []))
+            return make_module_pass_result(self.module_name, self.module_version)
+
+    result = run_module_chain(
+        [ObservingModule("first"), ObservingModule("second"), ObservingModule("third")],
+        _simple_context(),
+    )
+
+    assert result["status"] == CHAIN_STATUS_PASS
+    assert observed_lengths == [0, 1, 2]
+
+
 # ---------------------------------------------------------------------------
 # 18. Chain final output path equals last passing module output path
 # ---------------------------------------------------------------------------
