@@ -63,17 +63,21 @@ def _valid_report() -> dict:
     return {
         "schema_version": contracts.PROCESSING_REPORT_SCHEMA_VERSION,
         "job_id": "job_123",
+        "processing_version": contracts.PROCESSING_VERSION,
+        "funnel_id": None,
         "sections_analysed": 0,
         "usable_sections": 0,
         "rejected_sections": 0,
         "candidates_discovered": 0,
-        "candidates_after_boundary_pass": 0,
+        "candidates_rejected_by_boundary": 0,
         "duplicates_removed": 0,
         "final_candidate_count": 0,
         "transcript_warnings": [],
         "processing_warnings": [],
         "common_rejection_reasons": [],
         "failed_sections": [],
+        "prompt_metadata": {},
+        "created_at": "2026-06-30T12:00:00+00:00",
     }
 
 

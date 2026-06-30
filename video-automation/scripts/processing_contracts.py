@@ -106,7 +106,7 @@ PROCESSING_REPORT_COUNT_FIELDS = (
     "usable_sections",
     "rejected_sections",
     "candidates_discovered",
-    "candidates_after_boundary_pass",
+    "candidates_rejected_by_boundary",
     "duplicates_removed",
     "final_candidate_count",
 )
@@ -121,8 +121,12 @@ PROCESSING_REPORT_LIST_FIELDS = (
 PROCESSING_REPORT_REQUIRED_FIELDS = (
     "schema_version",
     "job_id",
+    "processing_version",
+    "funnel_id",
     *PROCESSING_REPORT_COUNT_FIELDS,
     *PROCESSING_REPORT_LIST_FIELDS,
+    "prompt_metadata",
+    "created_at",
 )
 
 DURATION_TOLERANCE_SEC = 0.001
@@ -191,34 +195,42 @@ def build_raw_candidate_pool(
 def build_processing_report(
     *,
     job_id: str,
+    processing_version: str = PROCESSING_VERSION,
+    funnel_id: str | None = None,
     sections_analysed: int = 0,
     usable_sections: int = 0,
     rejected_sections: int = 0,
     candidates_discovered: int = 0,
-    candidates_after_boundary_pass: int = 0,
+    candidates_rejected_by_boundary: int = 0,
     duplicates_removed: int = 0,
     final_candidate_count: int = 0,
     transcript_warnings: list[Any] | None = None,
     processing_warnings: list[Any] | None = None,
     common_rejection_reasons: list[Any] | None = None,
     failed_sections: list[Any] | None = None,
+    prompt_metadata: dict[str, Any] | None = None,
+    created_at: str | None = None,
 ) -> dict[str, Any]:
     """Create a processing report payload with default zero counts."""
 
     payload: dict[str, Any] = {
         "schema_version": PROCESSING_REPORT_SCHEMA_VERSION,
         "job_id": job_id,
+        "processing_version": processing_version,
+        "funnel_id": funnel_id,
         "sections_analysed": sections_analysed,
         "usable_sections": usable_sections,
         "rejected_sections": rejected_sections,
         "candidates_discovered": candidates_discovered,
-        "candidates_after_boundary_pass": candidates_after_boundary_pass,
+        "candidates_rejected_by_boundary": candidates_rejected_by_boundary,
         "duplicates_removed": duplicates_removed,
         "final_candidate_count": final_candidate_count,
         "transcript_warnings": list(transcript_warnings or []),
         "processing_warnings": list(processing_warnings or []),
         "common_rejection_reasons": list(common_rejection_reasons or []),
         "failed_sections": list(failed_sections or []),
+        "prompt_metadata": dict(prompt_metadata or {}),
+        "created_at": created_at or _now_iso(),
     }
     validate_processing_report(payload)
     return payload
@@ -271,6 +283,10 @@ def validate_processing_report(payload: Any) -> None:
         )
     if not _is_non_empty_string(payload.get("job_id")):
         errors.append("root.job_id must be a non-empty string")
+    if "processing_version" in payload and not _is_non_empty_string(payload.get("processing_version")):
+        errors.append("root.processing_version must be a non-empty string")
+    if "funnel_id" in payload and payload.get("funnel_id") is not None and not isinstance(payload.get("funnel_id"), str):
+        errors.append("root.funnel_id must be a string or null")
 
     for field in PROCESSING_REPORT_COUNT_FIELDS:
         if field in payload and not _is_non_negative_int(payload.get(field)):
@@ -278,6 +294,10 @@ def validate_processing_report(payload: Any) -> None:
     for field in PROCESSING_REPORT_LIST_FIELDS:
         if field in payload and not isinstance(payload.get(field), list):
             errors.append(f"root.{field} must be a list")
+    if "prompt_metadata" in payload and not isinstance(payload.get("prompt_metadata"), dict):
+        errors.append("root.prompt_metadata must be an object")
+    if "created_at" in payload and not _is_iso_timestamp(payload.get("created_at")):
+        errors.append("root.created_at must be a non-empty ISO timestamp string")
 
     if errors:
         raise ProcessingContractValidationError(PROCESSING_REPORT_FILENAME, errors)
