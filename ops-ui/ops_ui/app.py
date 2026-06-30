@@ -7,6 +7,21 @@ from typing import Any
 
 from flask import Flask, flash, redirect, render_template, request, url_for
 
+from .ai_config import (
+    AI_CONFIG_FIELDS,
+    effective_config,
+    parse_form,
+    source_for,
+)
+from .ai_status import ai_diagnostics, ai_health
+from .processing_config import (
+    fields_view as processing_fields_view,
+    parse_form as parse_processing_form,
+)
+from .post_processing_config import (
+    fields_view as post_processing_fields_view,
+    parse_form as parse_post_processing_form,
+)
 from .config import ServiceConfig, Settings, load_settings
 from .control_export import read_controls_file
 from .http_client import call_json
@@ -569,6 +584,56 @@ def create_app(settings: Settings | None = None) -> Flask:
     def recovery():
         return render_template("recovery.html", **_recovery_context())
 
+    def _ai_settings_context(diagnostics: dict[str, Any] | None = None) -> dict[str, Any]:
+        saved = store.get_ai_config()
+        effective = effective_config(saved)
+        fields = [
+            {
+                "name": field.name,
+                "label": field.label,
+                "kind": field.kind,
+                "choices": field.choices,
+                "help": field.help,
+                "value": effective.get(field.name),
+                "source": source_for(field.name, saved),
+                "env_var": field.env_var,
+            }
+            for field in AI_CONFIG_FIELDS
+        ]
+        health = ai_health(settings.ai_service_url, timeout=settings.service_timeout_sec)
+        return {
+            "ai_fields": fields,
+            "ai_effective": effective,
+            "ai_service_url": settings.ai_service_url,
+            "ai_backend": effective.get("clip_selection_backend"),
+            "ai_health": health,
+            "ai_diagnostics": diagnostics,
+            **_pipeline_settings_context(),
+        }
+
+    def _grouped_fields(view: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        groups: list[dict[str, Any]] = []
+        index: dict[str, dict[str, Any]] = {}
+        for field in view:
+            name = str(field.get("group") or "")
+            bucket = index.get(name)
+            if bucket is None:
+                bucket = {"name": name, "fields": []}
+                index[name] = bucket
+                groups.append(bucket)
+            bucket["fields"].append(field)
+        return groups
+
+    def _pipeline_settings_context() -> dict[str, Any]:
+        processing_saved = store.get_processing_config()
+        post_saved = store.get_post_processing_config()
+        processing_view = processing_fields_view(processing_saved)
+        post_view = post_processing_fields_view(post_saved)
+        return {
+            "processing_field_groups": _grouped_fields(processing_view),
+            "post_processing_field_groups": _grouped_fields(post_view),
+        }
+
     @app.get("/settings")
     def settings_page():
         svc = service_by_key("video-automation")
@@ -588,6 +653,121 @@ def create_app(settings: Settings | None = None) -> Flask:
             "settings.html",
             transcription=transcription,
             service_error=service_error,
+            **_ai_settings_context(),
+        )
+
+    @app.post("/settings/ai")
+    def update_ai_settings():
+        values, errors = parse_form(request.form)
+        if errors:
+            for message in errors:
+                flash(message, "bad")
+            store.log_action("ai-config", "rejected", ok=False, message="; ".join(errors)[:500])
+            return redirect(url_for("settings_page"))
+        if not values:
+            flash("No local AI settings were submitted.", "bad")
+            return redirect(url_for("settings_page"))
+        store.set_ai_config(values)
+        backend = values.get("clip_selection_backend") or store.get_ai_config().get(
+            "clip_selection_backend", "openai"
+        )
+        store.log_action("ai-config", "saved", ok=True, message=f"backend={backend}")
+        note = ""
+        if backend == "ai_service":
+            note = (
+                " Clip selection now routes to the local ai-service (no OpenAI "
+                "fallback). Ensure ai-service and Ollama are running."
+            )
+        flash(f"Local AI settings saved to controls.json.{note}", "ok")
+        return redirect(url_for("settings_page"))
+
+    @app.post("/settings/processing")
+    def update_processing_settings():
+        values, errors = parse_processing_form(request.form)
+        if errors:
+            for message in errors:
+                flash(message, "bad")
+            store.log_action("processing-config", "rejected", ok=False, message="; ".join(errors)[:500])
+            return redirect(url_for("settings_page"))
+        if not values:
+            flash("No processing settings were submitted.", "bad")
+            return redirect(url_for("settings_page"))
+        store.set_processing_config(values)
+        mode = values.get("processing_pipeline_mode") or store.get_processing_config().get(
+            "processing_pipeline_mode", "legacy"
+        )
+        store.log_action("processing-config", "saved", ok=True, message=f"mode={mode}")
+        note = ""
+        if mode == "mk1":
+            note = (
+                " Pipeline mode is mk1: new jobs run transcript sectioning + "
+                "candidate discovery via the local ai-service."
+            )
+        flash(f"Processing settings saved to controls.json.{note}", "ok")
+        return redirect(url_for("settings_page"))
+
+    @app.post("/settings/post-processing")
+    def update_post_processing_settings():
+        values, errors = parse_post_processing_form(request.form)
+        if errors:
+            for message in errors:
+                flash(message, "bad")
+            store.log_action(
+                "post-processing-config", "rejected", ok=False, message="; ".join(errors)[:500]
+            )
+            return redirect(url_for("settings_page"))
+        if not values:
+            flash("No post-processing settings were submitted.", "bad")
+            return redirect(url_for("settings_page"))
+        store.set_post_processing_config(values)
+        mode = values.get("selection_mode") or store.get_post_processing_config().get(
+            "selection_mode", "balanced"
+        )
+        store.log_action("post-processing-config", "saved", ok=True, message=f"selection_mode={mode}")
+        flash(
+            "Post-processing settings saved to controls.json. They apply to new "
+            "mk1 jobs (selection gate + universal conveyor).",
+            "ok",
+        )
+        return redirect(url_for("settings_page"))
+
+    @app.post("/settings/ai/test")
+    def test_ai_model():
+        diagnostics = ai_diagnostics(
+            settings.ai_service_url, timeout=settings.ai_diagnostics_timeout_sec
+        )
+        store.log_action(
+            "ai-diagnostics",
+            settings.ai_service_url,
+            ok=bool(diagnostics.get("ok")),
+            message=str(diagnostics.get("error") or diagnostics.get("status") or ""),
+        )
+        if diagnostics.get("ok"):
+            flash("Model diagnostic passed: the local model returned valid output.", "ok")
+        else:
+            flash(
+                "Model diagnostic did not pass: "
+                + str(diagnostics.get("error") or diagnostics.get("status") or "unknown"),
+                "bad",
+            )
+        svc = service_by_key("video-automation")
+        transcription: dict[str, Any] = {}
+        service_error = ""
+        if svc is None:
+            service_error = "video-automation is not configured."
+        else:
+            ok, payload, status = call_json(
+                svc, "/config/transcription", timeout=settings.service_timeout_sec
+            )
+            if ok:
+                transcription = payload
+            else:
+                service_error = str(payload.get("error") or f"HTTP {status}")
+        return render_template(
+            "settings.html",
+            transcription=transcription,
+            service_error=service_error,
+            **_ai_settings_context(diagnostics=diagnostics),
         )
 
     @app.post("/settings/transcription")

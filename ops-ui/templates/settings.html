@@ -60,4 +60,197 @@
     </p>
   {% endif %}
 </section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Local AI &amp; clip selection</h2>
+    <span class="muted">controls.json · video-automation + ai-service</span>
+  </div>
+
+  <h3>Status</h3>
+  <dl>
+    <div>
+      <dt>Clip selection backend</dt>
+      <dd>
+        <span class="pill {{ 'ok' if ai_backend == 'ai_service' else 'muted' }} mono">{{ ai_backend }}</span>
+        {% if ai_backend == 'ai_service' %}
+          <span class="muted">local ai-service (no OpenAI fallback)</span>
+        {% else %}
+          <span class="muted">existing cloud selector (OpenAI)</span>
+        {% endif %}
+      </dd>
+    </div>
+    <div>
+      <dt>ai-service URL</dt>
+      <dd class="mono">{{ ai_service_url }}</dd>
+    </div>
+    <div>
+      <dt>ai-service reachable</dt>
+      <dd>
+        <span class="pill {{ 'ok' if ai_health.reachable else 'bad' }}">
+          {{ 'yes' if ai_health.reachable else 'no' }}
+        </span>
+        {% if not ai_health.reachable and ai_health.error %}
+          <span class="muted">{{ ai_health.error }}</span>
+        {% endif %}
+      </dd>
+    </div>
+    <div>
+      <dt>Ollama backend reachable</dt>
+      <dd>
+        <span class="pill {{ 'ok' if ai_health.backend_reachable else 'bad' }}">
+          {{ 'yes' if ai_health.backend_reachable else 'no' }}
+        </span>
+      </dd>
+    </div>
+    <div>
+      <dt>Configured model</dt>
+      <dd class="mono">{{ ai_health.model_configured or ai_effective.ai_model }}</dd>
+    </div>
+    <div>
+      <dt>Model available</dt>
+      <dd>
+        <span class="pill {{ 'ok' if ai_health.model_available else 'bad' }}">
+          {{ 'yes' if ai_health.model_available else 'no' }}
+        </span>
+        {% if not ai_health.model_available %}
+          <span class="muted">pull it with <code>ollama pull {{ ai_effective.ai_model }}</code></span>
+        {% endif %}
+      </dd>
+    </div>
+    <div>
+      <dt>Last checked</dt>
+      <dd class="muted">{{ ai_health.checked_at }}</dd>
+    </div>
+  </dl>
+
+  <form method="post" action="{{ url_for('test_ai_model') }}">
+    <div class="actions">
+      <button type="submit">Test model (runs one real generation)</button>
+    </div>
+    <p class="hint muted">
+      The cheap status above refreshes on every page load. The test button runs a
+      real (small) generation against the configured model and can take a few
+      seconds; it is only run when you click it.
+    </p>
+  </form>
+
+  {% if ai_diagnostics %}
+    <dl>
+      <div>
+        <dt>diagnostics/model status</dt>
+        <dd>
+          <span class="pill {{ 'ok' if ai_diagnostics.ok else 'bad' }}">{{ ai_diagnostics.status }}</span>
+          {% if ai_diagnostics.error %}<span class="muted">{{ ai_diagnostics.error }}</span>{% endif %}
+        </dd>
+      </div>
+      {% if ai_diagnostics.response_text %}
+      <div>
+        <dt>Model response</dt>
+        <dd class="mono">{{ ai_diagnostics.response_text }}</dd>
+      </div>
+      {% endif %}
+      <div>
+        <dt>Checked</dt>
+        <dd class="muted">{{ ai_diagnostics.checked_at }}</dd>
+      </div>
+    </dl>
+  {% endif %}
+
+  <h3>Configuration</h3>
+  <p class="hint muted">
+    Saved values are written to <code>controls.json</code> and take precedence over
+    environment variables. Resolution order per field: per-run option (where it
+    applies) &rarr; UI saved value &rarr; environment variable &rarr; built-in
+    default. The <span class="pill muted">source</span> tag shows where the value
+    currently comes from.
+  </p>
+  <form method="post" action="{{ url_for('update_ai_settings') }}">
+    {% for field in ai_fields %}
+      <label class="muted">{{ field.label }}
+        {% if field.kind == 'choice' %}
+          <select name="{{ field.name }}">
+            {% for choice in field.choices %}
+              <option value="{{ choice }}" {{ 'selected' if choice == field.value|string else '' }}>{{ choice }}</option>
+            {% endfor %}
+          </select>
+        {% elif field.kind in ('int', 'float') %}
+          <input type="number" step="{{ '1' if field.kind == 'int' else 'any' }}" name="{{ field.name }}" value="{{ field.value }}">
+        {% else %}
+          <input type="text" name="{{ field.name }}" value="{{ field.value }}">
+        {% endif %}
+        <span class="pill {{ 'ok' if field.source == 'ui' else 'muted' }}">source: {{ field.source }}</span>
+        <span class="hint muted">{{ field.help }} (env: <code>{{ field.env_var }}</code>)</span>
+      </label>
+    {% endfor %}
+    <div class="actions">
+      <button type="submit">Save local AI settings</button>
+    </div>
+  </form>
+
+  <p class="hint muted">
+    Selecting <code>ai_service</code> routes clip selection to the local model.
+    There is no silent fallback to OpenAI: <code>AI_BUSY</code> is retried by
+    video-automation, a <code>usable=false</code> judgement is a controlled
+    "no good clip" outcome, and model/validation errors surface as a controlled
+    <code>AI_SERVICE_FAILED</code>. ai-service only judges; it never owns job truth.
+  </p>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Processing</h2>
+    <span class="muted">controls.json · transcript sectioning &amp; candidate discovery</span>
+  </div>
+  <p class="hint muted">
+    Controls the MK1 processing phase that turns a transcript into a raw
+    candidate pool. Set <strong>Processing pipeline mode</strong> to
+    <code>mk1</code> to route new jobs through the sectioning &rarr; candidate
+    discovery &rarr; selection &rarr; conveyor pipeline. The
+    <span class="pill muted">source</span> tag shows where each value comes from
+    (saved UI value &rarr; environment variable &rarr; built-in default).
+  </p>
+  <form method="post" action="{{ url_for('update_processing_settings') }}">
+    {% for group in processing_field_groups %}
+      {% if group.name %}<h3>{{ group.name }}</h3>{% endif %}
+      {% for field in group.fields %}
+        {% include "_settings_field.html" %}
+      {% endfor %}
+    {% endfor %}
+    <div class="actions">
+      <button type="submit">Save processing settings</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Post-processing</h2>
+    <span class="muted">controls.json · selection gate &amp; universal conveyor</span>
+  </div>
+  <p class="hint muted">
+    Controls the MK1 post-processing phase that turns selected raw candidates
+    into finished clips: the selection gate (which candidates become clips) and
+    the fixed universal conveyor (render &rarr; platform-safe format &rarr;
+    intelligent captions &rarr; validation &rarr; metadata). These apply only to
+    jobs run with <strong>Processing pipeline mode</strong> = <code>mk1</code>.
+  </p>
+  <form method="post" action="{{ url_for('update_post_processing_settings') }}">
+    {% for group in post_processing_field_groups %}
+      {% if group.name %}<h3>{{ group.name }}</h3>{% endif %}
+      {% for field in group.fields %}
+        {% include "_settings_field.html" %}
+      {% endfor %}
+    {% endfor %}
+    <div class="actions">
+      <button type="submit">Save post-processing settings</button>
+    </div>
+  </form>
+  <p class="hint muted">
+    Selection thresholds below are only applied directly when
+    <strong>Selection mode</strong> is <code>custom</code>; the other modes use
+    their own tuned presets. The conveyor (format + caption) settings always
+    apply when post-processing runs.
+  </p>
+</section>
 {% endblock %}

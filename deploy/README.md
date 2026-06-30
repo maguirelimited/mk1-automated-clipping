@@ -26,9 +26,10 @@ supported production startup path is `deploy/scripts/run-*.sh prod`; direct
 Python entrypoints are unsupported for PROD and fail closed when required prod
 runtime variables are missing.
 
-Default ports are DEV `5160/5150/5155/5170` and PROD `5060/5050/5055/5070` for
-source-input, video-automation, output-funnel, and ops-ui respectively. STAGING
-can be added later by adding a new env branch and matching config directory.
+Default ports are DEV `5160/5150/5155/5175/5170` and PROD
+`5060/5050/5055/5075/5070` for source-input, video-automation, output-funnel,
+ai-service, and ops-ui respectively. STAGING can be added later by adding a new
+env branch and matching config directory.
 
 The hard upload gate is `MK04_UPLOAD_MODE=dry_run|real`. DEV defaults to
 `dry_run`; `real` is only accepted when `MK04_ENV=prod`. In dry-run mode,
@@ -108,6 +109,10 @@ environment contract.
   routes to channel profiles, schedules upload windows, and publishes via the
   YouTube adapter. Hosts an in-process upload worker and (when enabled) plan
   worker so external cron is only needed for the daily ingestion trigger.
+- **ai-service** (`127.0.0.1:5075` in prod, optional): local LLM endpoint
+  (`/ai/run`, `/health`) that fronts an Ollama backend for clip selection.
+  Independent and runnable on its own; pipeline services only call it when
+  configured to and keep functioning if it is stopped or removed.
 - **ops-ui** (`127.0.0.1:5070` in prod, optional): read-mostly control
   panel. Not required for autonomous operation; pipeline services keep
   functioning if it is stopped or removed.
@@ -271,9 +276,22 @@ cd /Users/anthonymaguire/VAmk0.4
 ./deploy/scripts/run-all-local.sh dev
 ```
 
-This starts source-input, video-automation, output-funnel, and ops-ui, then
-stops all child processes when you press `Ctrl+C`. It is a local development
-helper; use systemd units for long-running Ubuntu deployments.
+This starts source-input, video-automation, output-funnel, ai-service, and
+ops-ui, then stops all child processes when you press `Ctrl+C`. It is a local
+development helper; use systemd units for long-running Ubuntu deployments.
+
+Each service is independent and can be started on its own with its matching
+`run-*.sh` script — handy when you only want the local LLM endpoint without the
+rest of the stack:
+
+```bash
+cd /Users/anthonymaguire/VAmk0.4
+./deploy/scripts/run-ai-service.sh dev   # binds 127.0.0.1:5175 (dev), 5075 (prod)
+```
+
+The ai-service needs a reachable model backend (Ollama by default at
+`http://localhost:11434`). It still starts and serves `/health` if the backend
+is down — health just reports `backend_reachable: false`.
 
 Terminal 1:
 
@@ -291,8 +309,8 @@ cd /Users/anthonymaguire/VAmk0.4
 
 Defaults:
 
-- DEV binds source-input `5160`, video-automation `5150`, output-funnel `5155`, ops-ui `5170`.
-- PROD binds source-input `5060`, video-automation `5050`, output-funnel `5055`, ops-ui `5070`.
+- DEV binds source-input `5160`, video-automation `5150`, output-funnel `5155`, ai-service `5175`, ops-ui `5170`.
+- PROD binds source-input `5060`, video-automation `5050`, output-funnel `5055`, ai-service `5075`, ops-ui `5070`.
 
 If callers are remote, open firewall/security-group access only for the ports
 they need. Keep source-input bound to localhost unless a remote orchestrator
@@ -487,11 +505,39 @@ Three layers cover the autonomy gap between clipping and publishing:
 
 ## Retention Sweeper
 
-`deploy/scripts/retention-sweeper.sh` removes clipping artefacts older than
-`RETENTION_DAYS` (default 14) from `video-automation/{jobs,output,temp}`.
-`analytics/*.jsonl` and ingestion state (`seen_urls.json`, ready/rejected
-inputs) are explicitly preserved. Installed nightly via
-`deploy/cron/mk04.crontab`. Pass `--dry-run` for a no-op preview.
+`deploy/scripts/retention-sweeper.sh` does **tiered** cleanup so large media
+does not build up forever while small per-job metadata is kept long enough for
+debugging, analytics, review, and training.
+
+Two age thresholds:
+
+- `MEDIA_RETENTION_DAYS` (default 5) — large media. Removes per-job
+  `jobs/*/input_*` source copies, per-job `jobs/*/clips/*` clip mirrors,
+  `output/*` clip files, `temp/*` scratch, and orphaned `input/*` source files.
+- `RETENTION_DAYS` (default 14) — whole per-job folders. A `jobs/<job>/` folder
+  is deleted (metadata included) only once nothing inside it is newer than this
+  threshold.
+
+Preserved until the whole job folder ages out (then removed with it):
+`report.json`, `selection.json`, `transcript.json`, `transcript_payload.json`,
+`analytics.json`, `review.md`, `task.json`. Never swept at any threshold:
+`analytics/*.jsonl`, source-input state (`seen_urls.json`, `input_jobs/*`), and
+`output-funnel/output_funnel.sqlite3` — the sweeper does not touch those dirs.
+
+Set both knobs in `/etc/mk04/$MK04_ENV/env`, or override per-invocation with
+`--media-days N` / `--days N`. Pass `--dry-run` for a no-op preview and
+`--quiet` to suppress stdout (journald logging via `logger` still happens).
+
+Installed nightly in prod via `deploy/cron/mk04.crontab`. Dev is manual; run on
+demand (preview first, then for real):
+
+```bash
+./deploy/scripts/retention-sweeper.sh dev --dry-run
+./deploy/scripts/retention-sweeper.sh dev
+```
+
+A commented dev cron line is included in `deploy/cron/mk04.crontab` for dev
+boxes that should self-clean.
 
 ## Normal Orchestration
 

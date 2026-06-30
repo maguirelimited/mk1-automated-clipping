@@ -1,0 +1,36 @@
+[Unit]
+Description=mk0.4 ai-service (local LLM clip selection)
+After=network-online.target ollama.service
+Wants=network-online.target
+# Soft dependency: if an ollama.service exists (the official installer ships one)
+# start it first. If it does not exist, systemd ignores this Want and the
+# run-ai-service.sh ExecStart still best-effort starts/verifies Ollama.
+Wants=ollama.service
+
+[Service]
+Type=simple
+User=mk04
+Group=mk04
+WorkingDirectory=/opt/mk04/prod/current/ai-service
+Environment=MK04_ENV=prod
+EnvironmentFile=-/etc/mk04/prod/env
+EnvironmentFile=-/etc/mk04/prod/services/ai-service.env
+ExecStart=/opt/mk04/prod/current/deploy/scripts/run-ai-service.sh prod
+Restart=always
+RestartSec=10
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mk04-ai-service
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+LimitNOFILE=2048
+
+[Install]
+WantedBy=multi-user.target

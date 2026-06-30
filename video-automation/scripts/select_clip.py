@@ -17,6 +17,11 @@ from mk04_utils import (
     require_timed_transcript_payload,
 )
 from pipeline_debug_ndjson import write_debug_mode
+from ai_service_client import (
+    AiServiceConfigError,
+    request_clip_selection,
+)
+from ai_settings import resolve_clip_selection_backend
 
 _SELECTION_SYSTEM_INTRO = """You are an expert short-form video editor. You choose clips that would perform well as standalone posts (TikTok, Reels, Shorts).
 
@@ -346,6 +351,239 @@ Transcript:
     return processed
 
 
+def _resolve_selection_backend(selection_options: dict) -> str:
+    """Resolve which clip-selection judgement backend to use.
+
+    Default is the existing ``openai`` inline path. Set ``ai_service`` to route
+    the judgement call through the local ``ai-service`` instead. Resolution
+    order: per-run ``selection_backend`` option -> Ops UI saved setting
+    (controls.json) -> ``CLIP_SELECTION_BACKEND`` env var -> default ``openai``.
+    There is no cloud fallback in MK1: when ``ai_service`` is selected, OpenAI is
+    not used.
+    """
+    raw = selection_options.get("selection_backend")
+    per_run = str(raw).strip() if isinstance(raw, str) and raw.strip() else None
+    return resolve_clip_selection_backend(per_run)
+
+
+def _build_ai_service_input(
+    transcript_path: str,
+    selection_options: dict,
+    *,
+    job_id: str,
+    duration_seconds: float,
+) -> dict:
+    """Build the ai-service clip_selection `input` package from a transcript file."""
+    payload = normalize_transcript_payload(transcript_path)
+    require_timed_transcript_payload(payload)
+
+    segments: list[dict] = []
+    for row in payload.get("segments") or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            start = float(row.get("start"))
+            end = float(row.get("end"))
+        except (TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        segments.append({"start": start, "end": end, "text": str(row.get("text") or "").strip()})
+
+    transcript_text = str(payload.get("full_text") or payload.get("text") or "").strip()
+    if not transcript_text:
+        transcript_text = "\n".join(seg["text"] for seg in segments if seg["text"]).strip()
+
+    min_duration = float(selection_options.get("min_duration_sec", 5))
+    max_duration = float(selection_options.get("max_duration_sec", 30))
+
+    # Note: ai-service constrains final_candidate_cap to 5..10, so it is NOT
+    # derived from max_clips (which can be < 5). ai-service uses its default cap;
+    # video-automation enforces the real max_clips during postprocess_segments.
+    task_input: dict = {
+        "job_id": job_id,
+        "duration_seconds": duration_seconds,
+        "transcript": transcript_text,
+        "segments": segments,
+        "funnel_rules": {
+            "preferred_clip_length_seconds": [min_duration, max_duration],
+        },
+        "chunking_options": {
+            "preferred_clip_length_seconds": [min_duration, max_duration],
+        },
+    }
+    funnel_id = selection_options.get("funnel_id")
+    if isinstance(funnel_id, str) and funnel_id.strip():
+        task_input["funnel_id"] = funnel_id.strip()
+    return task_input
+
+
+def _ai_service_candidates_to_segments(candidates: list[dict]) -> list[dict]:
+    """Map ai-service clip candidates onto selector segment dicts (seconds).
+
+    ai-service (clip_candidates_v2) scores each candidate against a 0-10 rubric
+    and orders candidates by ``scores.overall``. ``pipeline_utils.postprocess_segments``
+    re-ranks by its own ``scores`` dimension dict, so the ai-service overall score
+    is projected onto those dimensions to preserve ai-service ranking through
+    postprocessing. The legacy scalar ``score`` (clip_candidates_v1) is still
+    accepted as a fallback.
+    """
+    segments: list[dict] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        start = candidate.get("start_seconds")
+        end = candidate.get("end_seconds")
+        if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+            continue
+        segment: dict = {"start": float(start), "end": float(end)}
+        reason = candidate.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            segment["reason"] = reason.strip()
+        overall = _ai_service_overall_score(candidate)
+        if overall is not None:
+            score_f = max(0.0, min(10.0, overall))
+            segment["score"] = score_f
+            segment["scores"] = {
+                "hook_strength": score_f,
+                "clarity_standalone": score_f,
+                "engagement_potential": score_f,
+                "minimal_filler": score_f,
+            }
+        segments.append(segment)
+    return segments
+
+
+def _ai_service_overall_score(candidate: dict) -> float | None:
+    """Pull the candidate's overall 0-10 score from the v2 ``scores`` object,
+    falling back to the legacy scalar ``score`` field for v1 candidates."""
+    scores = candidate.get("scores")
+    if isinstance(scores, dict):
+        overall = scores.get("overall")
+        if isinstance(overall, (int, float)) and not isinstance(overall, bool):
+            return float(overall)
+    legacy = candidate.get("score")
+    if isinstance(legacy, (int, float)) and not isinstance(legacy, bool):
+        return float(legacy)
+    return None
+
+
+def _select_segments_via_ai_service(
+    transcript_path: str, selection_options: dict
+) -> tuple[list[dict], dict[str, object]]:
+    config = load_config()
+    sel_cfg = config.get("selection", {}) if isinstance(config.get("selection"), dict) else {}
+    max_clips = int(selection_options.get("max_clips", 5))
+    min_duration_sec = float(
+        selection_options.get("min_duration_sec", sel_cfg.get("min_clip_duration_sec", 5))
+    )
+    max_duration_sec = float(
+        selection_options.get("max_duration_sec", sel_cfg.get("max_clip_duration_sec", 30))
+    )
+    max_overlap_sec = float(
+        selection_options.get("max_overlap_sec", sel_cfg.get("max_overlap_sec", 2))
+    )
+
+    raw_video_duration = selection_options.get("video_duration_sec")
+    try:
+        video_duration_sec = float(raw_video_duration)
+    except (TypeError, ValueError):
+        raise ValueError(
+            "VIDEO_DURATION_REQUIRED: selection_options must include numeric "
+            "`video_duration_sec` from ffprobe."
+        ) from None
+    if video_duration_sec <= 0:
+        raise ValueError("VIDEO_DURATION_REQUIRED: video_duration_sec must be > 0.")
+
+    try:
+        timeline_offset_sec = float(selection_options.get("timeline_offset_sec") or 0)
+    except (TypeError, ValueError):
+        timeline_offset_sec = 0.0
+    if timeline_offset_sec < 0:
+        timeline_offset_sec = 0.0
+
+    job_id = str(selection_options.get("job_id") or "video-automation-selection").strip()
+    try:
+        task_input = _build_ai_service_input(
+            transcript_path,
+            {
+                **selection_options,
+                "min_duration_sec": min_duration_sec,
+                "max_duration_sec": max_duration_sec,
+                "max_clips": max_clips,
+            },
+            job_id=job_id,
+            duration_seconds=video_duration_sec,
+        )
+    except AiServiceConfigError as exc:
+        raise ValueError(f"AI_SERVICE_FAILED bad_request: {exc}") from exc
+
+    result = request_clip_selection(
+        job_id=job_id,
+        task_input=task_input,
+        funnel_id=selection_options.get("funnel_id"),
+        model_preference=selection_options.get("selection_model"),
+    )
+
+    write_debug_mode(
+        "select-clip",
+        "H8-ai-service-selection",
+        "select_clip.py:_select_segments_via_ai_service",
+        "ai-service clip_selection outcome",
+        result.summary(),
+    )
+
+    if result.busy:
+        # AI_BUSY is retryable: video-automation owns the retry/job mechanism.
+        raise ValueError(
+            f"AI_SERVICE_BUSY: {result.error_message or 'Local AI model is busy.'}"
+        )
+    if result.no_clip:
+        # Controlled no-clip outcome — never force a bad clip.
+        raise ValueError(
+            "SELECTOR_REJECTED_AFTER_POSTFILTER ai_service_no_clip: ai-service judged "
+            "the transcript and found no strong standalone clip."
+        )
+    if result.ai_failure:
+        raise ValueError(
+            f"AI_SERVICE_FAILED {result.error_code or 'error'}: "
+            f"{result.error_message or 'ai-service clip selection failed.'}"
+        )
+
+    segments = _ai_service_candidates_to_segments(result.candidates)
+    if not segments:
+        raise ValueError(
+            "SELECTOR_REJECTED_AFTER_POSTFILTER ai_service_no_clip: ai-service returned "
+            "no usable candidates."
+        )
+
+    overlap_floor = max(0.5, float(min_duration_sec) * 0.35)
+    processed = postprocess_segments(
+        normalize_segments(segments),
+        max_clips=max_clips,
+        min_duration_sec=min_duration_sec,
+        max_duration_sec=max_duration_sec,
+        max_overlap_sec=max_overlap_sec,
+        video_duration_sec=video_duration_sec,
+        duration_policy="llm_primary",
+        overlap_min_duration_sec=overlap_floor,
+    )
+    if timeline_offset_sec > 0:
+        processed = shift_segments_wallclock(processed, timeline_offset_sec)
+    if not processed:
+        raise ValueError(
+            "SELECTOR_REJECTED_AFTER_POSTFILTER ai_service_postfilter: no ai-service "
+            "candidates survived duration/overlap/in-bounds filtering."
+        )
+
+    prompt_stats: dict[str, object] = {
+        "selection_backend": "ai_service",
+        "ai_service_request_id": result.request_id,
+        "ai_service_candidate_count": len(result.candidates),
+    }
+    return processed, prompt_stats
+
+
 def run_selection_with_metadata(
     transcript_path: str, selection_options: dict | None = None
 ) -> tuple[list[dict], dict[str, object]]:
@@ -353,13 +591,17 @@ def run_selection_with_metadata(
     if not os.path.exists(path):
         raise ValueError(f"Transcript file not found: {path}")
 
+    options = selection_options or {}
+    if _resolve_selection_backend(options) == "ai_service":
+        return _select_segments_via_ai_service(path, options)
+
     _api_key = os.environ.get("OPENAI_API_KEY")
     if not _api_key or not str(_api_key).strip():
         raise ValueError("OPENAI_API_KEY is not set. Export it before running selection.")
     client = OpenAI(api_key=_api_key)
 
     transcript, prompt_stats = _load_transcript_with_stats(path)
-    return _select_segments(transcript, selection_options or {}, client), prompt_stats
+    return _select_segments(transcript, options, client), prompt_stats
 
 
 def run_selection(transcript_path: str, selection_options: dict | None = None) -> list[dict]:

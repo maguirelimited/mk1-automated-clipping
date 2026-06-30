@@ -80,6 +80,33 @@
 </section>
 
 <section class="card">
+  <div class="card-head">
+    <div>
+      <h2>Storage by category</h2>
+      <p class="hint muted">Read-only breakdown of runtime/log roots on this machine (cached up to {{ storage.cache_ttl_sec|int }}s).</p>
+    </div>
+    <span class="muted">{{ storage.total_bytes|bytes }} across {{ storage.total_file_count }} files · disk used {{ machine.disk.used|bytes }} / {{ machine.disk.total|bytes }}</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Category</th><th>Path</th><th>Size</th><th>Files</th></tr></thead>
+      <tbody>
+        {% for row in storage.categories %}
+          <tr>
+            <td>{{ row.category }}{% if not row.exists %} <span class="pill muted">absent</span>{% endif %}</td>
+            <td class="mono">{{ row.path }}</td>
+            <td>{{ row.bytes|bytes }}</td>
+            <td>{{ row.file_count }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="4" class="muted">No storage categories resolved.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card">
   <div class="card-head"><h2>Local paths</h2></div>
   <dl>
     <div><dt>Input ledger</dt><dd class="mono">{{ input_ledger_dir }}</dd></div>

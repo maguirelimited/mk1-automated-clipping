@@ -52,15 +52,20 @@ def merge_whisper_json_files(
     total_duration_sec: float,
 ) -> dict[str, Any]:
     merged_segments: list[dict[str, Any]] = []
+    merged_words: list[dict[str, Any]] = []
     texts: list[str] = []
     sid = 0
     language = ""
+    engine = ""
     for path, offset_sec in files_and_offsets:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         lang = data.get("language")
         if isinstance(lang, str) and lang.strip():
             language = lang.strip()
+        raw_engine = str(data.get("engine") or "").strip()
+        if raw_engine:
+            engine = raw_engine
         part_text = str(data.get("text") or "").strip()
         if part_text:
             texts.append(part_text)
@@ -78,16 +83,79 @@ def merge_whisper_json_files(
             if e <= s:
                 continue
             tx = str(row.get("text") or "").strip()
-            merged_segments.append(
-                {"id": sid, "start": s, "end": e, "text": tx}
-            )
+            segment: dict[str, Any] = {"id": sid, "start": s, "end": e, "text": tx}
+            words_raw = row.get("words")
+            if isinstance(words_raw, list):
+                segment_words: list[dict[str, Any]] = []
+                for word_row in words_raw:
+                    if not isinstance(word_row, dict):
+                        continue
+                    try:
+                        ws = float(word_row.get("start", 0)) + float(offset_sec)
+                        we = float(word_row.get("end", 0)) + float(offset_sec)
+                    except (TypeError, ValueError):
+                        continue
+                    if we <= ws:
+                        continue
+                    word = str(word_row.get("word") or "").strip()
+                    if not word:
+                        continue
+                    word_obj: dict[str, Any] = {"start": ws, "end": we, "word": word}
+                    score = word_row.get("score")
+                    if score is not None:
+                        try:
+                            word_obj["score"] = float(score)
+                        except (TypeError, ValueError):
+                            pass
+                    segment_words.append(word_obj)
+                    merged_words.append(dict(word_obj))
+                if segment_words:
+                    segment["words"] = segment_words
+            merged_segments.append(segment)
             sid += 1
-    return {
+        top_words_raw = data.get("words")
+        if isinstance(top_words_raw, list) and not merged_words:
+            for word_row in top_words_raw:
+                if not isinstance(word_row, dict):
+                    continue
+                try:
+                    ws = float(word_row.get("start", 0)) + float(offset_sec)
+                    we = float(word_row.get("end", 0)) + float(offset_sec)
+                except (TypeError, ValueError):
+                    continue
+                if we <= ws:
+                    continue
+                word = str(word_row.get("word") or "").strip()
+                if not word:
+                    continue
+                word_obj = {"start": ws, "end": we, "word": word}
+                score = word_row.get("score")
+                if score is not None:
+                    try:
+                        word_obj["score"] = float(score)
+                    except (TypeError, ValueError):
+                        pass
+                merged_words.append(word_obj)
+    # Sort by start time: WhisperX re-segments the overlap region around chunk
+    # boundaries, so a later chunk's first segment can precede the previous
+    # chunk's last segment by a small margin.  Sorting gives downstream
+    # consumers (e.g. transcript_sectioning) a monotonically ordered timeline.
+    merged_segments.sort(key=lambda s: float(s.get("start", 0)))
+    merged_words.sort(key=lambda w: float(w.get("start", 0)))
+    # Reassign sequential ids after sort.
+    for i, seg in enumerate(merged_segments):
+        seg["id"] = i
+    payload: dict[str, Any] = {
         "text": " ".join(texts).strip(),
         "segments": merged_segments,
         "language": language,
         "duration": float(total_duration_sec),
     }
+    if engine:
+        payload["engine"] = engine
+    if merged_words:
+        payload["words"] = merged_words
+    return payload
 
 
 def write_merged_whisper_json(path: str, payload: dict[str, Any]) -> None:

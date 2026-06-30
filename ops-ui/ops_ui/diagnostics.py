@@ -271,9 +271,12 @@ def clip_rows(clips: list[Any], artifacts: dict[str, Any]) -> list[dict[str, Any
         if not isinstance(clip, dict):
             continue
         file_name = str(clip.get("clip_file") or clip.get("job_clip_path") or "")
-        artifact = by_name.get(os.path.basename(file_name)) if file_name else None
+        base_name = os.path.basename(file_name) if file_name else ""
+        artifact = by_name.get(base_name) if base_name else None
         rows.append(
             {
+                "clip_id": clip.get("clip_id"),
+                "clip_file": base_name or None,
                 "title": clip.get("title") or clip.get("clip_id") or "—",
                 "score": clip.get("composite_score"),
                 "start": clip.get("start"),

@@ -109,6 +109,77 @@
 </section>
 
 <section class="card">
+  <div class="card-head">
+    <h2>Storage cleanup</h2>
+    <span class="muted">manual retention sweep</span>
+  </div>
+  <p class="hint muted">
+    Preview is computed read-only in Ops UI; deletion runs the existing
+    <code>retention-sweeper.sh</code>. Media past the media TTL (per-job
+    <code>input_*</code> copies, clip mirrors, <code>output/</code>,
+    <code>temp/</code>, orphan <code>input/</code>) and whole job folders past
+    the metadata TTL are removed. Analytics, ledgers, the queue DB and job
+    metadata (until the folder ages out) are preserved.
+  </p>
+  {% if cleanup_running_block %}
+    <div class="flash bad">A video job is currently <strong>running</strong> — cleanup is blocked until it finishes.</div>
+  {% endif %}
+  <form class="actions" method="post" action="{{ url_for('cleanup_preview_route') }}">
+    <label class="muted">Media TTL (days)
+      <input type="number" name="media_days" min="1" step="1"
+             value="{{ cleanup_preview.media_days if cleanup_preview else cleanup_media_days }}">
+    </label>
+    <label class="muted">Metadata TTL (days)
+      <input type="number" name="metadata_days" min="1" step="1"
+             value="{{ cleanup_preview.metadata_days if cleanup_preview else cleanup_metadata_days }}">
+    </label>
+    <button type="submit">Preview cleanup</button>
+  </form>
+
+  {% if cleanup_preview %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Category</th><th>Files</th><th>Size</th></tr></thead>
+        <tbody>
+          {% for row in cleanup_preview.categories %}
+            <tr>
+              <td>{{ row.category }}</td>
+              <td class="mono">{{ row.file_count }}</td>
+              <td class="mono">{{ row.bytes|bytes }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td><strong>Total (estimate)</strong></td>
+            <td class="mono"><strong>{{ cleanup_preview.total_file_count }}</strong></td>
+            <td class="mono"><strong>{{ cleanup_preview.total_bytes|bytes }}</strong></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    <p>
+      Media TTL <span class="pill warn">{{ cleanup_preview.media_days }}d</span>
+      · Metadata TTL <span class="pill warn">{{ cleanup_preview.metadata_days }}d</span>
+      · <strong>&approx; {{ cleanup_preview.total_bytes|bytes }} would be freed</strong>
+    </p>
+    <form method="post" action="{{ url_for('cleanup_run') }}"
+          onsubmit="return confirm('Permanently delete ~{{ cleanup_preview.total_file_count }} files (~{{ cleanup_preview.total_bytes|bytes }})? This runs the retention sweeper now.');">
+      <input type="hidden" name="confirm" value="1">
+      <input type="hidden" name="media_days" value="{{ cleanup_preview.media_days }}">
+      <input type="hidden" name="metadata_days" value="{{ cleanup_preview.metadata_days }}">
+      <button type="submit"{{ ' disabled' if cleanup_running_block else '' }}>
+        Delete now — removes {{ cleanup_preview.total_file_count }} files (&approx; {{ cleanup_preview.total_bytes|bytes }})
+      </button>
+    </form>
+    <p class="hint muted">
+      Preview is a point-in-time estimate; the sweep tolerates files changing
+      between preview and delete, so freed totals may differ slightly.
+    </p>
+  {% endif %}
+</section>
+
+<section class="card">
   <div class="card-head"><h2>Recent recovery actions</h2></div>
   <ul class="events">
     {% for action in actions %}

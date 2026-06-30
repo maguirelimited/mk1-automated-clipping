@@ -17,9 +17,16 @@ MK04_ENV=prod
 */10 * * * * MK04_ENV=prod PIPELINE_CONFIG_PATH=/etc/mk04/prod/video-automation/pipeline_config.json OUTPUT_FUNNEL_URL=http://127.0.0.1:5055 VIDEO_AUTOMATION_JOBS_DIR=/var/lib/mk04/prod/video-automation/jobs /usr/bin/python3 /opt/mk04/prod/current/video-automation/scripts/handoff_sweeper.py --quiet >/dev/null 2>&1
 
 # --- Retention sweeper -------------------------------------------------------
-# Delete clipping artefacts older than the configured threshold so disk does
-# not fill on a long unattended run.
+# Tiered cleanup so disk does not fill on a long unattended run: large media is
+# removed at MEDIA_RETENTION_DAYS (default 5), whole job folders incl. metadata
+# at RETENTION_DAYS (default 14). Tune via /etc/mk04/prod/env or --media-days /
+# --days flags.
 30 3 * * * /opt/mk04/prod/current/deploy/scripts/retention-sweeper.sh prod >/dev/null 2>&1
+
+# --- Retention sweeper (DEV, optional) ---------------------------------------
+# Dev runs are manual; uncomment on a dev box that should self-clean. Otherwise
+# run on demand: deploy/scripts/retention-sweeper.sh dev --dry-run
+# 30 4 * * * MK04_ENV=dev /home/maguireltd/mk1-automated-clipping/deploy/scripts/retention-sweeper.sh dev >/dev/null 2>&1
 
 # --- Health watchdog ---------------------------------------------------------
 # Calls doctor.sh; on non-zero exit, watchdog.sh delivers a notification

@@ -252,21 +252,35 @@
 {% if clips %}
 <section class="card">
   <div class="card-head"><h2>Generated clips</h2><span class="muted">{{ clips|length }}</span></div>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Title</th><th>Score</th><th>Span</th><th>File</th><th>Size</th></tr></thead>
-      <tbody>
-        {% for clip in clips %}
-          <tr>
-            <td>{{ clip.title }}</td>
-            <td>{{ clip.score or '—' }}</td>
-            <td>{{ clip.start }} – {{ clip.end }}</td>
-            <td class="mono">{{ clip.path or '—' }}</td>
-            <td>{{ clip.size_bytes|bytes if clip.size_bytes else ('yes' if clip.exists else 'missing') }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <div class="clip-grid">
+    {% for clip in clips %}
+      <article class="card clip-card">
+        <div class="card-head">
+          <h3>{{ clip.title }}</h3>
+          <span class="muted">{{ clip.score if clip.score is not none else '—' }}</span>
+        </div>
+        {% if clip.clip_file and clip.exists %}
+          <video class="clip-player" controls preload="metadata"
+                 src="{{ url_for('clip_review_media', job_id=job_id, clip_file=clip.clip_file) }}">
+            Your browser does not support inline video playback.
+          </video>
+        {% endif %}
+        <dl class="clip-meta">
+          <div><dt>Span</dt><dd>{{ clip.start }} – {{ clip.end }}</dd></div>
+          <div><dt>File</dt><dd class="mono">{{ clip.path or '—' }}</dd></div>
+          <div><dt>Size</dt><dd>{{ clip.size_bytes|bytes if clip.size_bytes else ('yes' if clip.exists else 'missing') }}</dd></div>
+        </dl>
+        <div class="actions">
+          {% if clip.clip_id %}
+            <a class="button-link" href="{{ url_for('clip_review_detail', job_id=job_id, clip_id=clip.clip_id) }}">Inspect</a>
+          {% endif %}
+          {% if clip.clip_file and clip.exists %}
+            <a class="button-link" download="{{ clip.clip_file }}"
+               href="{{ url_for('clip_review_media', job_id=job_id, clip_file=clip.clip_file) }}?download=1">Download</a>
+          {% endif %}
+        </div>
+      </article>
+    {% endfor %}
   </div>
 </section>
 {% endif %}

@@ -56,6 +56,153 @@ Minimal request body sent to `POST /jobs` after the source file has already been
 `/process` and `/process-inline` are deprecated compatibility wrappers around `/jobs`. `POST /jobs` also accepts multipart `video_file` directly.
 
 
+## Clip-selection backend (`ai-service` integration)
+
+Clip selection has two judgement backends. The default is the existing inline
+OpenAI call in `scripts/select_clip.py`. The MK1 local backend routes the
+judgement call to the standalone `ai-service` instead.
+
+```text
+selection_backend = "openai"      (default) -> inline OpenAI call
+selection_backend = "ai_service"            -> POST /ai/run task_type=clip_selection
+```
+
+Resolution order (first definite value wins):
+
+1. `selection.selection_backend` on the request body (per-run override).
+2. Ops UI saved setting in the shared `controls.json` (`ai_config.clip_selection_backend`).
+3. `CLIP_SELECTION_BACKEND` environment variable.
+4. Default `openai`.
+
+This is implemented in `scripts/ai_settings.py` (`resolve_clip_selection_backend`)
+and consumed by `scripts/select_clip.py`. The operator normally chooses the
+backend from the Ops UI **Settings → Local AI & clip selection** page; manual
+`.env` editing is only a fallback. video-automation reads the same shared file
+the Ops UI writes — it never calls the Ops UI over HTTP for config.
+
+### Configuration sources
+
+The Ops UI persists these under `ai_config` in `controls.json`. Each value
+resolves UI saved value → environment variable → built-in default.
+
+| Setting (UI) | Env var fallback | Default | Effect |
+|---|---|---|---|
+| `clip_selection_backend` | `CLIP_SELECTION_BACKEND` | `openai` | `ai_service` routes clip selection to the local `ai-service`. |
+| `ai_service_url` | `AI_SERVICE_URL` | `http://127.0.0.1:5075` | Base URL of the local `ai-service`. |
+| `ai_service_timeout_seconds` | `AI_SERVICE_TIMEOUT_SECONDS` | `180` | Per-request timeout for the `/ai/run` call. |
+
+The model-level settings (`ai_provider`, `ai_model`, `ai_base_url`,
+`ai_timeout_seconds`, `ai_temperature`, `ai_top_p`, `ai_max_tokens`) are also
+saved by the Ops UI and consumed by `ai-service` with the same precedence.
+
+If the shared file is missing or invalid, resolution falls back cleanly to the
+environment variable and then the default, so env-only setups keep working.
+
+MK1 has **no cloud fallback**: when `ai_service` is selected and the AI service
+fails, `video-automation` does not silently fall back to OpenAI and does not
+fabricate clip candidates.
+
+### How `clip_selection` calls `ai-service`
+
+`scripts/ai_service_client.py` builds the `/ai/run` request envelope:
+
+```text
+task_type      = clip_selection
+job_id         = job id (job truth stays in video-automation)
+funnel_id      = forwarded when available
+input          = transcript text, timed segments, duration, funnel_rules, chunking_options
+prompt_version = clip_selection_v2
+schema_version = clip_candidates_v2
+```
+
+`ai-service` only judges. It does not write `video-automation` state, decide the
+overall job status, or own retries.
+
+### Result handling
+
+The client classifies every reply into one explicit outcome, mapped onto the
+existing selector subprocess error contract so the current job/report/error
+handling stays in control:
+
+| `ai-service` reply | Client outcome | `select_clip.py` behaviour |
+|---|---|---|
+| HTTP 200 `usable=true` with candidates | `usable` | Map candidates → segments → `postprocess_segments`; continue pipeline. |
+| HTTP 200 `usable=false` (or no candidates) | `no_clip` | Raise `SELECTOR_REJECTED_AFTER_POSTFILTER` → HTTP 422 controlled no-clip; never force a bad clip. |
+| HTTP 503 `AI_BUSY` | `busy` (retryable) | Raise `AI_SERVICE_BUSY` → HTTP 503; retried later via the existing job/retry mechanism. |
+| 4xx/5xx, `MODEL_CALL_FAILED`, `MODEL_OUTPUT_INVALID`, non-JSON, connection refused, timeout | `ai_failure` | Raise `AI_SERVICE_FAILED …` → HTTP 500 controlled AI failure; logs/report preserved for debugging. |
+
+`AI_BUSY` is retryable because `ai-service` runs one heavy local-model task at a
+time and never queues internally. `usable=false` is a valid "no good clip"
+judgement, not a crash.
+
+## GPU phase control (local backend only)
+
+WhisperX transcription and the local LLM (Qwen via Ollama) are both heavy GPU
+phases. On a ~12GB card the 14B model can occupy ~9.8GB resident, leaving too
+little VRAM for WhisperX `medium`, which then fails with CUDA out-of-memory.
+This is a GPU resource-sequencing problem, not a clip-selection logic bug.
+
+MK1 makes the two phases explicit and sequential. The orchestrator
+(`server/app.py::_run_pipeline`) calls into `scripts/gpu_phase_control.py`:
+
+```text
+before WhisperX transcription:
+    prepare_gpu_for_transcription()   # ask Ollama to release the model
+run WhisperX transcription
+before local clip selection:
+    allow_ai_service_selection()      # log marker; Ollama reloads lazily
+```
+
+`prepare_gpu_for_transcription()` is **backend-aware** and only acts when the
+resolved clip-selection backend is `ai_service`. It uses Ollama's supported
+`keep_alive=0` unload (a `POST /api/generate` with `{"keep_alive": 0}`) — the
+least disruptive option. It never kills the Ollama process, never kills GPU
+processes, never restarts the stack, and never switches backends.
+
+It is safe in every degraded case (no crash, controlled log/warning):
+
+```text
+backend == openai            -> no action
+Ollama not installed/running -> "nothing to release", continue
+nvidia-smi missing/driver down -> skip GPU numbers, continue
+WhisperX on CPU              -> skip release
+unload fails / VRAM stays low -> warn + recommend small/tiny or CPU WhisperX
+phase control disabled        -> no action
+```
+
+When `nvidia-smi` is available it captures `used / total / free` VRAM before and
+after, and a simple compute-process list, into the job report
+(`gpu_phase_transcription`). A pressure warning is appended to the job
+`warnings` (it does **not** auto-downgrade the WhisperX model).
+
+Two layers reduce VRAM pressure:
+
+1. **Proactive release before transcription** (`prepare_gpu_for_transcription`).
+2. **Bounded model keep-alive** in `ai-service` (`AI_KEEP_ALIVE`, default `5m`),
+   so the model is evicted after the idle window instead of being pinned in
+   VRAM forever.
+
+### Config
+
+| Setting (UI) | Env var | Default | Effect |
+|---|---|---|---|
+| `local_ai_gpu_phase_control_enabled` | `LOCAL_AI_GPU_PHASE_CONTROL_ENABLED` | `true` | When on, release the local model before WhisperX (ai_service only). |
+| `local_ai_warn_on_gpu_pressure` | `LOCAL_AI_WARN_ON_GPU_PRESSURE` | `true` | Warn + recommend a smaller/CPU WhisperX model under VRAM pressure. |
+| `ai_keep_alive` | `AI_KEEP_ALIVE` | `5m` | How long Ollama keeps the model resident after a call (ai-service side). |
+
+Each resolves UI saved value → env var → default, like the other AI settings.
+
+### Honest limitation
+
+`keep_alive=0` unload is the safest Ollama-supported release, but it is
+**advisory**: another process or a concurrent `ai-service` request can re-load
+the model, and unload timing is not instantaneous. The controller waits briefly
+and re-checks VRAM, but it does not block forever or guarantee a free GPU. If
+free VRAM stays below what the selected WhisperX model needs, it warns and
+recommends `WHISPERX_MODEL=small`/`tiny` or `WHISPERX_DEVICE=cpu`; it never
+silently downgrades the model. Verify on a real GPU box with
+`python3 video-automation/scripts/smoke_gpu_phase_control.py`.
+
 ## Notes for future fields
 
 - New per-run knobs should be added to `_run_pipeline`'s unpack block (currently `app.py:402-414`) and documented here in the same table.

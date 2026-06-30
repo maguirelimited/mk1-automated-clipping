@@ -1,14 +1,16 @@
 :root {
-  --bg: #0d1117;
-  --panel: #151b23;
-  --panel-soft: #1c2430;
-  --border: #303846;
-  --text: #e6edf3;
-  --muted: #8b949e;
+  --bg: #0a0606;
+  --panel: #160d0f;
+  --panel-soft: #211416;
+  --border: #3d2226;
+  --text: #f5e8ea;
+  --muted: #b08a8e;
   --ok: #3fb950;
   --warn: #d29922;
   --bad: #f85149;
-  --blue: #58a6ff;
+  --red: #ff3b3b;
+  /* accent kept under the legacy --blue name so existing references map to red */
+  --blue: var(--red);
 }
 
 * {
@@ -344,10 +346,10 @@ td.actions form {
 }
 
 .logs {
-  background: #070a10;
+  background: #070303;
   border: 1px solid var(--border);
   border-radius: 10px;
-  color: #d1d7df;
+  color: #e3d3d5;
   max-height: 520px;
   overflow: auto;
   padding: 14px;
@@ -551,6 +553,39 @@ tr.error-row td {
   border-radius: 10px;
   max-height: 420px;
   width: 100%;
+}
+
+.clip-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.clip-card .clip-player {
+  max-height: 280px;
+}
+
+.clip-meta {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+}
+
+.clip-meta > div {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.clip-meta dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.clip-meta dd {
+  margin: 0;
+  word-break: break-all;
 }
 
 .stack-actions {

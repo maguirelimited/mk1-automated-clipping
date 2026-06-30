@@ -124,11 +124,22 @@ Shared controls file (default `ops-ui/data/controls.json`, override with `MK04_C
 {
   "ingestion_paused": false,
   "uploads_paused": false,
+  "human_approval_required": false,
+  "publish_approved_only": false,
+  "ai_config": {
+    "clip_selection_backend": "ai_service",
+    "ai_model": "qwen2.5:14b-instruct"
+  },
   "updated_at": "..."
 }
 ```
 
 `source-input` rejects `POST /run-funnel` when `ingestion_paused` is true. `output-funnel` skips `POST /queue/upload-due` and the background upload worker when `uploads_paused` is true.
+
+### Settings (`/settings`)
+
+- **Transcription**: WhisperX model selection (persisted in video-automation pipeline config).
+- **Local AI & clip selection**: view/edit the clip-selection backend (`openai` vs `ai_service`) and the local-model config (`ai_service_url`, timeouts, `ai_model`, `ai_base_url`, temperature, top-p, max tokens). Saved values are written into the `ai_config` block of `controls.json`; `video-automation` and `ai-service` read that same file (resolution: per-run option → UI value → env var → default). A status panel shows ai-service/Ollama reachability, the configured model, and model availability from `GET /health`; a **Test model** button runs `GET /diagnostics/model` on demand. Secrets are never displayed. There is no silent fallback to OpenAI when `ai_service` is selected.
 
 Optional stuck thresholds: `OPS_UI_STUCK_RUNNING_SEC`, `OPS_UI_STUCK_QUEUED_SEC`, `OPS_UI_STUCK_UPLOADING_SEC`. Funnel run timeout: `OPS_UI_FUNNEL_RUN_TIMEOUT_SEC` (default 900).
 

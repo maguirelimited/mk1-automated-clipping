@@ -16,6 +16,29 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DEFAULT_CONFIG_PATH = os.path.join(PROJECT_ROOT, "config", "pipeline_config.json")
 
+DEFAULT_COVER_GAP_MERGE_SEC = 2.0
+
+
+def _resolve_cover_gap_merge_sec() -> float:
+    """Max silence (seconds) bridged when merging segments into speech blocks.
+
+    Word-aligned engines (WhisperX) emit a real gap at every speech pause, so the
+    legacy 0.25s value shattered coverage and rejected normal multi-second clips.
+    Bridging up to this many seconds tolerates natural pauses while still breaking
+    coverage across genuine silence (the guard against hallucinated timestamps).
+    Override with the TRANSCRIPT_COVER_GAP_MERGE_SEC environment variable.
+    """
+    raw = (os.environ.get("TRANSCRIPT_COVER_GAP_MERGE_SEC") or "").strip()
+    if not raw:
+        return DEFAULT_COVER_GAP_MERGE_SEC
+    try:
+        val = float(raw)
+    except ValueError:
+        return DEFAULT_COVER_GAP_MERGE_SEC
+    if not math.isfinite(val) or val <= 0:
+        return DEFAULT_COVER_GAP_MERGE_SEC
+    return val
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -299,12 +322,13 @@ def normalize_transcript_payload(transcript_path: str) -> dict[str, Any]:
 
 
 def merged_transcript_cover_regions(
-    transcript_payload: dict[str, Any], *, gap_merge_sec: float = 0.25
+    transcript_payload: dict[str, Any], *, gap_merge_sec: float = DEFAULT_COVER_GAP_MERGE_SEC
 ) -> list[tuple[float, float]]:
     """Merge Whisper segment timelines into contiguous cover intervals (speech blocks).
 
-    Gaps narrower than gap_merge_sec are bridged — typical Whisper punctuation splits.
-    Wider gaps break coverage so hallucinated timestamps across silence are rejected later.
+    Gaps narrower than gap_merge_sec are bridged — natural speech pauses and
+    punctuation splits. Wider gaps break coverage so hallucinated timestamps across
+    silence are rejected later.
     """
     raw = transcript_payload.get("segments") or []
     intervals: list[tuple[float, float]] = []
@@ -383,7 +407,9 @@ def validate_and_repair_selection(
         )
         return [], [fatal]
 
-    cover_regions = merged_transcript_cover_regions(transcript_payload)
+    cover_regions = merged_transcript_cover_regions(
+        transcript_payload, gap_merge_sec=_resolve_cover_gap_merge_sec()
+    )
     if not cover_regions:
         fatal = categorize_error(
             "selection_validation",
@@ -457,6 +483,12 @@ def create_job_paths(
         "transcript_copy_path": os.path.join(job_dir, "transcript.json"),
         "normalized_transcript_path": os.path.join(job_dir, "transcript_payload.json"),
         "selection_path": os.path.join(job_dir, "selection.json"),
+        "transcript_sections_path": os.path.join(job_dir, "transcript_sections.json"),
+        "section_candidate_discovery_path": os.path.join(
+            job_dir, "section_candidate_discovery.json"
+        ),
+        "raw_candidate_pool_path": os.path.join(job_dir, "raw_candidate_pool.json"),
+        "processing_report_path": os.path.join(job_dir, "processing_report.json"),
         "report_path": os.path.join(job_dir, "report.json"),
         "task_path": os.path.join(job_dir, "task.json"),
         "analytics_path": os.path.join(job_dir, "analytics.json"),
@@ -518,7 +550,7 @@ def build_funnel_job_record(
     }
 
 
-def write_json(path: str, payload: Any) -> None:
+def write_json(path: str, payload: Any, *, sort_keys: bool = False) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with tempfile.NamedTemporaryFile(
         mode="w",
@@ -528,7 +560,7 @@ def write_json(path: str, payload: Any) -> None:
         prefix=f".{os.path.basename(path)}.",
         suffix=".tmp",
     ) as f:
-        json.dump(payload, f, indent=2)
+        json.dump(payload, f, indent=2, sort_keys=sort_keys)
         f.write("\n")
         f.flush()
         os.fsync(f.fileno())

@@ -1,0 +1,15 @@
+<label class="muted">{{ field.label }}
+  {% if field.kind == 'choice' %}
+    <select name="{{ field.name }}">
+      {% for choice in field.choices %}
+        <option value="{{ choice }}" {{ 'selected' if choice == field.value|string else '' }}>{{ choice }}</option>
+      {% endfor %}
+    </select>
+  {% elif field.kind in ('int', 'float') %}
+    <input type="number" step="{{ '1' if field.kind == 'int' else 'any' }}" name="{{ field.name }}" value="{{ field.value }}">
+  {% else %}
+    <input type="text" name="{{ field.name }}" value="{{ field.value }}">
+  {% endif %}
+  <span class="pill {{ 'ok' if field.source == 'ui' else 'muted' }}">source: {{ field.source }}</span>
+  <span class="hint muted">{{ field.help }} (env: <code>{{ field.env_var }}</code>)</span>
+</label>

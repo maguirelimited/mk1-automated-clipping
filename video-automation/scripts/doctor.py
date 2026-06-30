@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import sys
 
-from mk04_utils import ensure_paths, load_config
+from mk04_utils import ensure_paths, load_config, resolve_transcribe_engine
 
 
 def main() -> int:
@@ -16,7 +16,23 @@ def main() -> int:
         checks.append({"name": name, "ok": ok, "detail": detail})
 
     add("ffmpeg", bool(shutil.which("ffmpeg")), shutil.which("ffmpeg") or "missing")
-    add("whisper", bool(shutil.which("whisper")), shutil.which("whisper") or "missing")
+
+    active_engine = resolve_transcribe_engine()
+    whisper_path = shutil.which("whisper")
+    if active_engine == "whisperx":
+        try:
+            import whisperx  # noqa: F401
+
+            add("transcribe_engine:whisperx", True, "import ok (active engine)")
+        except Exception as exc:
+            add("transcribe_engine:whisperx", False, repr(exc))
+        add(
+            "whisper_cli (legacy fallback)",
+            True,
+            whisper_path or "not on PATH — not required while TRANSCRIBE_ENGINE=whisperx",
+        )
+    else:
+        add("whisper", bool(whisper_path), whisper_path or "missing")
     add(
         "OPENAI_API_KEY",
         bool(os.environ.get("OPENAI_API_KEY", "").strip()),

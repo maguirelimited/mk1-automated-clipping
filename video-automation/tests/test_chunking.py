@@ -41,6 +41,35 @@ def test_merge_whisper_offsets_segment_times(tmp_path: Path):
     assert merged["duration"] == 200.0
 
 
+def test_merge_whisper_sorts_boundary_overlap(tmp_path: Path):
+    """Chunk boundaries can produce out-of-order segments when WhisperX re-segments
+    the overlap region.  The merged output must be monotonically ordered by start
+    so that transcript_sectioning does not raise INVALID_SEGMENT_ORDER."""
+    # Simulate two chunks whose boundary segments interleave:
+    #   chunk 0 (offset 0):    seg at 2401.077
+    #   chunk 1 (offset 2400): seg at 0.191  → wall-clock 2400.191
+    # Without sorting, 2401.077 comes before 2400.191.
+    chunk0 = {
+        "text": "But that is venture money.",
+        "segments": [{"start": 2401.077, "end": 2402.841, "text": "But that is venture money."}],
+    }
+    chunk1 = {
+        "text": "Which is crazy.",
+        "segments": [{"start": 0.191, "end": 4.099, "text": "Which is crazy."}],
+    }
+    p0 = tmp_path / "c0.json"
+    p1 = tmp_path / "c1.json"
+    p0.write_text(json.dumps(chunk0), encoding="utf-8")
+    p1.write_text(json.dumps(chunk1), encoding="utf-8")
+
+    merged = merge_whisper_json_files([(str(p0), 0.0), (str(p1), 2400.0)], 4083.0)
+    segs = merged["segments"]
+    starts = [s["start"] for s in segs]
+    assert starts == sorted(starts), f"segments not sorted by start: {starts}"
+    # sequential ids must be reassigned after sort
+    assert [s["id"] for s in segs] == list(range(len(segs)))
+
+
 def test_shift_segments_wallclock():
     seg = [{"start": "00:01:05.000", "end": "00:01:10.500", "duration_sec": 5.5}]
     shifted = shift_segments_wallclock(seg, 3600.0)

@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "usable": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "candidates": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "candidates": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "end_seconds": {
+            "description": "Absolute end timestamp in seconds.",
+            "type": "number"
+          },
+          "reason": {
+            "description": "Why this candidate is worth passing forward.",
+            "type": "string"
+          },
+          "scores": {
+            "additionalProperties": false,
+            "description": "Rubric-backed 0-10 component scores for this candidate.",
+            "properties": {
+              "hook_strength": {
+                "description": "How strongly the opening seconds stop the scroll. 0-10.",
+                "maximum": 10,
+                "minimum": 0,
+                "type": "number"
+              },
+              "insight_value": {
+                "description": "How useful, surprising, or valuable the core idea is. 0-10.",
+                "maximum": 10,
+                "minimum": 0,
+                "type": "number"
+              },
+              "natural_ending": {
+                "description": "How cleanly the clip resolves instead of cutting off. 0-10.",
+                "maximum": 10,
+                "minimum": 0,
+                "type": "number"
+              },
+              "overall": {
+                "description": "Overall short-form potential after weighing the components. 0-10.",
+                "maximum": 10,
+                "minimum": 0,
+                "type": "number"
+              },
+              "retention_potential": {
+                "description": "How well the clip is likely to hold attention throughout. 0-10.",
+                "maximum": 10,
+                "minimum": 0,
+                "type": "number"
+              },
+              "standalone_context": {
+                "description": "How well the clip makes sense on its own. 0-10.",
+                "maximum": 10,
+                "minimum": 0,
+                "type": "number"
+              }
+            },
+            "required": [
+              "hook_strength",
+              "standalone_context",
+              "insight_value",
+              "retention_potential",
+              "natural_ending",
+              "overall"
+            ],
+            "type": "object"
+          },
+          "start_seconds": {
+            "description": "Absolute start timestamp in seconds.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "start_seconds",
+          "end_seconds",
+          "scores",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "confidence": {
+      "description": "Confidence in the section judgement from 0 to 1.",
+      "maximum": 1,
+      "minimum": 0,
+      "type": "number"
+    },
+    "reason": {
+      "description": "Short explanation of the overall judgement for this section.",
+      "type": "string"
+    },
+    "usable": {
+      "description": "Whether this section surfaced at least one candidate worth passing forward.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "usable",
+    "confidence",
+    "reason",
+    "candidates"
+  ],
+  "type": "object"
+}

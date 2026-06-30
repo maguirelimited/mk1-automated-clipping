@@ -96,13 +96,16 @@ _mk04_export_service_urls() {
   local input_host="${INPUT_SERVICE_HOST:-127.0.0.1}"
   local video_host="${VIDEO_AUTOMATION_HOST:-127.0.0.1}"
   local output_host="${OUTPUT_FUNNEL_HOST:-127.0.0.1}"
+  local ai_host="${AI_SERVICE_HOST:-127.0.0.1}"
 
   [[ "$input_host" == "0.0.0.0" || "$input_host" == "::" ]] && input_host="127.0.0.1"
   [[ "$video_host" == "0.0.0.0" || "$video_host" == "::" ]] && video_host="127.0.0.1"
   [[ "$output_host" == "0.0.0.0" || "$output_host" == "::" ]] && output_host="127.0.0.1"
+  [[ "$ai_host" == "0.0.0.0" || "$ai_host" == "::" ]] && ai_host="127.0.0.1"
 
   export VIDEO_AUTOMATION_BASE_URL="${VIDEO_AUTOMATION_BASE_URL:-http://${video_host}:${VIDEO_AUTOMATION_PORT}}"
   export OUTPUT_FUNNEL_URL="${OUTPUT_FUNNEL_URL:-http://${output_host}:${OUTPUT_FUNNEL_PORT}}"
+  export AI_SERVICE_URL="${AI_SERVICE_URL:-http://${ai_host}:${AI_SERVICE_PORT}}"
   export OPS_SOURCE_INPUT_URL="${OPS_SOURCE_INPUT_URL:-http://${input_host}:${INPUT_SERVICE_PORT}}"
   export OPS_VIDEO_AUTOMATION_URL="${OPS_VIDEO_AUTOMATION_URL:-http://${video_host}:${VIDEO_AUTOMATION_PORT}}"
   export OPS_OUTPUT_FUNNEL_URL="${OPS_OUTPUT_FUNNEL_URL:-http://${output_host}:${OUTPUT_FUNNEL_PORT}}"
@@ -132,7 +135,7 @@ _mk04_assert_no_dev_reference() {
   local value="${2:-}"
   [[ -z "$value" ]] && return 0
   case "$value" in
-    *"/dev/"*|*"/mk04/dev"*|*"127.0.0.1:5160"*|*"127.0.0.1:5150"*|*"127.0.0.1:5155"*|*"127.0.0.1:5170"*|*"localhost:5160"*|*"localhost:5150"*|*"localhost:5155"*|*"localhost:5170"*)
+    *"/dev/"*|*"/mk04/dev"*|*"127.0.0.1:5160"*|*"127.0.0.1:5150"*|*"127.0.0.1:5155"*|*"127.0.0.1:5170"*|*"127.0.0.1:5175"*|*"localhost:5160"*|*"localhost:5150"*|*"localhost:5155"*|*"localhost:5170"*|*"localhost:5175"*)
       _mk04_fail_prod_preflight "$name contains DEV path/port reference: $value"
       ;;
   esac
@@ -146,13 +149,14 @@ _mk04_assert_prod_url_port() {
 }
 
 mk04_export_runtime() {
-  local input_port video_port output_port ops_port scheduler_mode
+  local input_port video_port output_port ops_port ai_port scheduler_mode
   case "$MK04_ENV" in
     dev)
       input_port=5160
       video_port=5150
       output_port=5155
       ops_port=5170
+      ai_port=5175
       scheduler_mode="manual"
       ;;
     prod)
@@ -160,6 +164,7 @@ mk04_export_runtime() {
       video_port=5050
       output_port=5055
       ops_port=5070
+      ai_port=5075
       scheduler_mode="autonomous"
       ;;
   esac
@@ -175,6 +180,8 @@ mk04_export_runtime() {
   export OUTPUT_FUNNEL_PORT="${OUTPUT_FUNNEL_PORT:-$output_port}"
   export OPS_UI_HOST="${OPS_UI_HOST:-127.0.0.1}"
   export OPS_UI_PORT="${OPS_UI_PORT:-$ops_port}"
+  export AI_SERVICE_HOST="${AI_SERVICE_HOST:-127.0.0.1}"
+  export AI_SERVICE_PORT="${AI_SERVICE_PORT:-$ai_port}"
 
   export INPUT_SERVICE_ROOT="$MK04_CODE_ROOT/source-input/input_service"
   export INPUT_SERVICE_CONFIG_DIR="${INPUT_SERVICE_CONFIG_DIR:-$MK04_CONFIG_ROOT/source-input}"
@@ -282,7 +289,7 @@ mk04_prod_preflight() {
     VIDEO_FUNNELS_CONFIG_DIR FUNNEL_CONFIG_DIR OUTPUT_FUNNEL_CONFIG_DIR OUTPUT_FUNNEL_SETTINGS \
     OUTPUT_FUNNEL_CHANNELS OUTPUT_FUNNEL_DB OPS_UI_DATA_DIR OPS_UI_DB MK04_CONTROLS_FILE \
     OPS_INPUT_LEDGER_DIR OPS_OUTPUT_FUNNEL_DB OPS_UI_LOG_DIR WATCHDOG_LOG_DIR \
-    VIDEO_AUTOMATION_BASE_URL OUTPUT_FUNNEL_URL OPS_SOURCE_INPUT_URL OPS_VIDEO_AUTOMATION_URL OPS_OUTPUT_FUNNEL_URL
+    VIDEO_AUTOMATION_BASE_URL OUTPUT_FUNNEL_URL AI_SERVICE_URL OPS_SOURCE_INPUT_URL OPS_VIDEO_AUTOMATION_URL OPS_OUTPUT_FUNNEL_URL
   do
     _mk04_assert_no_dev_reference "$name" "${!name:-}"
   done
@@ -291,8 +298,10 @@ mk04_prod_preflight() {
   [[ "$VIDEO_AUTOMATION_PORT" == "5050" ]] || _mk04_fail_prod_preflight "VIDEO_AUTOMATION_PORT must be 5050 (got $VIDEO_AUTOMATION_PORT)"
   [[ "$OUTPUT_FUNNEL_PORT" == "5055" ]] || _mk04_fail_prod_preflight "OUTPUT_FUNNEL_PORT must be 5055 (got $OUTPUT_FUNNEL_PORT)"
   [[ "$OPS_UI_PORT" == "5070" ]] || _mk04_fail_prod_preflight "OPS_UI_PORT must be 5070 (got $OPS_UI_PORT)"
+  [[ "$AI_SERVICE_PORT" == "5075" ]] || _mk04_fail_prod_preflight "AI_SERVICE_PORT must be 5075 (got $AI_SERVICE_PORT)"
   _mk04_assert_prod_url_port VIDEO_AUTOMATION_BASE_URL "$VIDEO_AUTOMATION_BASE_URL" 5050
   _mk04_assert_prod_url_port OUTPUT_FUNNEL_URL "$OUTPUT_FUNNEL_URL" 5055
+  _mk04_assert_prod_url_port AI_SERVICE_URL "$AI_SERVICE_URL" 5075
   _mk04_assert_prod_url_port OPS_SOURCE_INPUT_URL "$OPS_SOURCE_INPUT_URL" 5060
   _mk04_assert_prod_url_port OPS_VIDEO_AUTOMATION_URL "$OPS_VIDEO_AUTOMATION_URL" 5050
   _mk04_assert_prod_url_port OPS_OUTPUT_FUNNEL_URL "$OPS_OUTPUT_FUNNEL_URL" 5055

@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "usable": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "candidates": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "candidates": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "end_seconds": {
+            "description": "Absolute end timestamp in seconds.",
+            "type": "number"
+          },
+          "reason": {
+            "description": "Why this clip is strong.",
+            "type": "string"
+          },
+          "score": {
+            "description": "Clip strength score from 0 to 10.",
+            "maximum": 10,
+            "minimum": 0,
+            "type": "number"
+          },
+          "start_seconds": {
+            "description": "Absolute start timestamp in seconds.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "start_seconds",
+          "end_seconds",
+          "score",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "confidence": {
+      "description": "Confidence in the judgement from 0 to 1.",
+      "maximum": 1,
+      "minimum": 0,
+      "type": "number"
+    },
+    "reason": {
+      "description": "Short explanation of the overall judgement.",
+      "type": "string"
+    },
+    "usable": {
+      "description": "Whether at least one strong standalone clip exists.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "usable",
+    "confidence",
+    "reason",
+    "candidates"
+  ],
+  "type": "object"
+}

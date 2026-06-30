@@ -18,6 +18,7 @@ INPUT_ROOT="$MK04_ROOT/source-input/input_service"
 VIDEO_ROOT="$MK04_ROOT/video-automation"
 OUTPUT_FUNNEL_ROOT="$MK04_ROOT/output-funnel"
 OPS_UI_ROOT="$MK04_ROOT/ops-ui"
+AI_SERVICE_ROOT="$MK04_ROOT/ai-service"
 
 python3 -m venv "$INPUT_ROOT/.venv"
 "$INPUT_ROOT/.venv/bin/python" -m pip install --upgrade pip
@@ -35,7 +36,12 @@ python3 -m venv "$OPS_UI_ROOT/.venv"
 "$OPS_UI_ROOT/.venv/bin/python" -m pip install --upgrade pip
 "$OPS_UI_ROOT/.venv/bin/python" -m pip install -r "$OPS_UI_ROOT/requirements.txt"
 
+python3 -m venv "$AI_SERVICE_ROOT/.venv"
+"$AI_SERVICE_ROOT/.venv/bin/python" -m pip install --upgrade pip
+"$AI_SERVICE_ROOT/.venv/bin/python" -m pip install -r "$AI_SERVICE_ROOT/requirements.txt"
+
 mkdir -p \
+  "$AI_SERVICE_ROOT/logs" \
   "$INPUT_ROOT/data/inputs/ready" \
   "$INPUT_ROOT/data/inputs/rejected" \
   "$INPUT_ROOT/data/state" \
@@ -96,6 +102,10 @@ fi
 if [[ "$MK04_ENV" == "dev" && ! -f "$OUTPUT_FUNNEL_ROOT/.env" && -f "$OUTPUT_FUNNEL_ROOT/.env.example" ]]; then
   cp "$OUTPUT_FUNNEL_ROOT/.env.example" "$OUTPUT_FUNNEL_ROOT/.env"
   echo "Created $OUTPUT_FUNNEL_ROOT/.env from .env.example"
+fi
+if [[ "$MK04_ENV" == "dev" && ! -f "$AI_SERVICE_ROOT/.env" && -f "$AI_SERVICE_ROOT/.env.example" ]]; then
+  cp "$AI_SERVICE_ROOT/.env.example" "$AI_SERVICE_ROOT/.env"
+  echo "Created $AI_SERVICE_ROOT/.env from .env.example"
 fi
 if [[ "$MK04_ENV" == "dev" && ! -f "$OUTPUT_FUNNEL_ROOT/config/settings.json" && -f "$OUTPUT_FUNNEL_ROOT/config/settings.example.json" ]]; then
   cp "$OUTPUT_FUNNEL_ROOT/config/settings.example.json" "$OUTPUT_FUNNEL_ROOT/config/settings.json"

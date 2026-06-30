@@ -103,6 +103,39 @@ from pipeline_debug_ndjson import (
 )
 from input_service import ledger as input_ledger
 
+try:
+    from gpu_phase_control import (
+        allow_ai_service_selection,
+        prepare_gpu_for_transcription,
+    )
+except Exception:  # pragma: no cover - GPU coordination must never block startup.
+    prepare_gpu_for_transcription = None  # type: ignore[assignment]
+    allow_ai_service_selection = None  # type: ignore[assignment]
+
+# MK1 processing / post-processing pipeline (opt-in via processing_pipeline_mode).
+# Imported defensively so a packaging issue never blocks the legacy path/startup.
+try:
+    import processing_settings as mk1_settings
+    from processing_pipeline import (
+        ProcessingPipelineError,
+        run_processing_pipeline,
+    )
+    from processing_integration import ProcessingIntegrationError
+    from section_candidate_discovery import (
+        AiServiceSectionDiscoveryClient,
+        SectionCandidateDiscoveryError,
+    )
+    from post_processing_mk1 import (
+        STATUS_POST_PROCESSING_COMPLETE,
+        STATUS_POST_PROCESSING_PARTIAL,
+        run_post_processing_mk1,
+    )
+
+    _MK1_PIPELINE_AVAILABLE = True
+except Exception as _mk1_import_exc:  # pragma: no cover - defensive import guard.
+    _MK1_PIPELINE_AVAILABLE = False
+    _MK1_IMPORT_ERROR = repr(_mk1_import_exc)
+
 app = Flask(__name__)
 PYTHON = sys.executable
 # Stable identifier returned in JSON (`pipeline`, `/healthz`); keep unchanged for integrations.
@@ -238,6 +271,10 @@ def _lift_adapter_wrapped_video_fields(data: dict[str, Any]) -> dict[str, Any]:
 def _selection_subprocess_http_status(detail: str | None) -> int:
     """Selection ran but produced no valid clips (tunable via HTTP selection + profile)."""
     d = str(detail or "")
+    if "AI_SERVICE_BUSY" in d:
+        # ai-service holds a one-at-a-time local model lock. AI_BUSY is retryable;
+        # video-automation owns the retry/job mechanism (503, not a hard failure).
+        return 503
     if "SELECTOR_REJECTED_AFTER_POSTFILTER" in d:
         return 422
     return 500
@@ -1703,6 +1740,422 @@ def resolve_http_policy_bundle(
     )
 
 
+def _whisperx_model_device_for_log() -> tuple[str | None, str | None]:
+    """Best-effort WhisperX model/device for the GPU pressure check (never raises)."""
+    try:
+        if resolve_transcribe_engine() != "whisperx":
+            return None, None
+        settings = resolve_whisperx_settings()
+        return str(settings.get("model") or "") or None, str(settings.get("device") or "") or None
+    except Exception:
+        return None, None
+
+
+def _gpu_prepare_for_transcription(report: dict[str, Any], warnings: list, job_id: str) -> None:
+    """Sequence the heavy GPU phases: release the local LLM before WhisperX.
+
+    Backend-aware and fully defensive — only the ai_service backend triggers an
+    Ollama release, and any failure here is logged/recorded but never fails the
+    transcription stage.
+    """
+    if prepare_gpu_for_transcription is None:
+        return
+    try:
+        whisperx_model, whisperx_device = _whisperx_model_device_for_log()
+        result = prepare_gpu_for_transcription(
+            whisperx_model=whisperx_model,
+            whisperx_device=whisperx_device,
+            log=lambda msg: print(f"[process] {msg}", flush=True),
+        )
+        report["gpu_phase_transcription"] = result.as_dict()
+        write_debug_agent(
+            "gpu-phase",
+            "GPU1-prepare-transcription",
+            "app.py:_gpu_prepare_for_transcription",
+            "prepared GPU for transcription phase",
+            result.as_dict(),
+        )
+        if result.warning:
+            warnings.append(
+                categorize_error(
+                    "configuration",
+                    "gpu_pressure_warning",
+                    result.warning,
+                    {
+                        "backend": result.backend,
+                        "action": result.action,
+                        "action_succeeded": result.action_succeeded,
+                        "gpu_after": result.gpu_after,
+                    },
+                )
+            )
+    except Exception as exc:  # pragma: no cover - GPU coordination is best-effort.
+        print(f"[process] GPU phase preparation skipped after error: {exc!r}", flush=True)
+
+
+def _gpu_allow_selection(report: dict[str, Any], job_id: str) -> None:
+    """Mark the transition into the local clip-selection phase (best-effort)."""
+    if allow_ai_service_selection is None:
+        return
+    try:
+        result = allow_ai_service_selection(
+            log=lambda msg: print(f"[process] {msg}", flush=True),
+        )
+        if result.attempted:
+            report["gpu_phase_selection"] = result.as_dict()
+    except Exception as exc:  # pragma: no cover - best-effort marker only.
+        print(f"[process] GPU phase selection marker skipped after error: {exc!r}", flush=True)
+
+
+def _resolve_pipeline_mode() -> str:
+    """Resolve the processing pipeline mode, defaulting to legacy if unavailable."""
+    if not _MK1_PIPELINE_AVAILABLE:
+        return "legacy"
+    try:
+        return mk1_settings.resolve_pipeline_mode()
+    except Exception as exc:  # pragma: no cover - never let settings break a job.
+        print(f"[process] pipeline mode resolution failed, using legacy: {exc!r}", flush=True)
+        return "legacy"
+
+
+def _run_mk1_pipeline_after_transcript(
+    *,
+    report: dict[str, Any],
+    job: dict[str, str],
+    jid: str,
+    warnings: list,
+    stage_ms: dict[str, int],
+    total_started: float,
+    video_path: str,
+    transcript_path: str,
+    transcript_payload: dict[str, Any],
+    funnel_id: str | None,
+    output_root: str,
+    filename: str,
+    filename_prefix: str,
+    delivery_mode: str,
+    input_id: str | None,
+    audit_plain: dict[str, Any],
+):
+    """Run the MK1 processing -> post-processing pipeline for an already
+    transcribed job, map finished clips into the standard report/response shape,
+    and hand off to the output funnel. Returns a Flask response (success) or the
+    result of ``_fail`` (controlled failure)."""
+    job_id = str(job["job_id"])
+    job_dir = job["job_dir"]
+
+    # The local model is needed for section candidate discovery; mark the GPU
+    # phase transition just like the legacy selection stage does.
+    report["current_stage"] = "processing"
+    _gpu_allow_selection(report, jid)
+    _progress("Processing (mk1) — sectioning + candidate discovery…", job_id=jid)
+
+    try:
+        sectioning_config = mk1_settings.resolve_sectioning_config()
+        discovery_config = mk1_settings.resolve_discovery_config()
+    except Exception as exc:
+        sectioning_config = None
+        discovery_config = None
+        warnings.append(
+            categorize_error(
+                "configuration",
+                "policy_notice",
+                "Could not resolve MK1 processing settings; using built-in defaults.",
+                repr(exc),
+            )
+        )
+
+    discovery_client = AiServiceSectionDiscoveryClient(
+        job_id=job_id,
+        funnel_id=funnel_id or None,
+    )
+
+    t0 = time.perf_counter()
+    try:
+        processing = run_processing_pipeline(
+            job_id=job_id,
+            job_dir=job_dir,
+            transcript=transcript_payload,
+            transcript_path=transcript_path,
+            source_video_path=os.path.abspath(video_path),
+            funnel_id=funnel_id or None,
+            ai_client=discovery_client,
+            discovery_config=discovery_config,
+            sectioning_config=sectioning_config,
+        )
+    except (ProcessingPipelineError, SectionCandidateDiscoveryError) as exc:
+        err = categorize_error(
+            "processing",
+            "processing_error",
+            f"MK1 processing failed: {getattr(exc, 'message', str(exc))}",
+            {"code": getattr(exc, "code", None)},
+        )
+        report["errors"] = [err]
+        _mark_report_failed(report)
+        return _fail("MK1 processing failed", log_detail=err["details"], status_code=502)
+    except ProcessingIntegrationError as exc:
+        err = categorize_error(
+            "processing",
+            "processing_error",
+            f"MK1 processing artifact write failed: {getattr(exc, 'message', str(exc))}",
+            {"code": getattr(exc, "code", None)},
+        )
+        report["errors"] = [err]
+        _mark_report_failed(report)
+        return _fail("MK1 processing artifact write failed", log_detail=err["details"], status_code=500)
+    stage_ms["processing_ms"] = int((time.perf_counter() - t0) * 1000)
+
+    report["raw_candidate_pool_path"] = processing.raw_candidate_pool_path
+    report["processing_report_path"] = processing.processing_report_path
+    report["processing_summary"] = {
+        "sections_analysed": processing.sections_analysed,
+        "usable_sections": processing.usable_sections,
+        "rejected_sections": processing.rejected_sections,
+        "failed_sections": processing.failed_sections_count,
+        "final_candidate_count": processing.final_candidate_count,
+        "duplicates_removed": processing.duplicates_removed,
+    }
+    _progress(
+        f"Processing done — {processing.final_candidate_count} raw candidate(s)",
+        job_id=jid,
+    )
+
+    # Post-processing can be disabled: the job then ends at the raw candidate
+    # pool with no finished clips (a controlled, successful "processing only").
+    if not mk1_settings.resolve_post_processing_enabled():
+        report["clips"] = []
+        report["status"] = "success"
+        report["current_stage"] = "processing_only"
+        report["completed_at"] = now_iso()
+        stage_ms["total_ms"] = int((time.perf_counter() - total_started) * 1000)
+        write_json(job["report_path"], report)
+        write_review(job["review_path"], report)
+        _progress("Processing-only complete — post-processing disabled", job_id=jid)
+        return jsonify(
+            {
+                "success": True,
+                "pipeline": PIPELINE_NAME,
+                "pipeline_mode": "mk1",
+                "post_processing": "disabled",
+                "input_id": input_id,
+                "source_video": os.path.basename(video_path),
+                "video_basename": filename,
+                "clips": [],
+                "job_id": job_id,
+                "job_dir": job_dir,
+                "report_path": job["report_path"],
+                "raw_candidate_pool_path": processing.raw_candidate_pool_path,
+                "processing_report_path": processing.processing_report_path,
+                "policy_resolution": audit_plain,
+                **_inspection_urls(job_id),
+            }
+        )
+
+    report["current_stage"] = "post_processing"
+    _progress("Post-processing (mk1) — selection gate + universal conveyor…", job_id=jid)
+    try:
+        selection_config = mk1_settings.resolve_selection_config()
+        conveyor_config = mk1_settings.resolve_conveyor_config()
+    except Exception as exc:
+        selection_config = None
+        conveyor_config = None
+        warnings.append(
+            categorize_error(
+                "configuration",
+                "policy_notice",
+                "Could not resolve MK1 post-processing settings; using built-in defaults.",
+                repr(exc),
+            )
+        )
+
+    pp_config: dict[str, Any] = {
+        "execute_post_processing": True,
+        "transcript_path": transcript_path,
+        "output_root": job_dir,
+    }
+    if selection_config:
+        pp_config["selection_config"] = selection_config
+    if conveyor_config:
+        pp_config["conveyor_config"] = conveyor_config
+
+    t1 = time.perf_counter()
+    try:
+        post_result = run_post_processing_mk1(
+            processing.raw_candidate_pool_path,
+            source_video_path=os.path.abspath(video_path),
+            job_metadata={
+                "job_id": job_id,
+                "funnel_id": funnel_id or "",
+                "processing_report_path": processing.processing_report_path,
+            },
+            config=pp_config,
+            output_root=job_dir,
+        )
+    except Exception as exc:  # pragma: no cover - post_processing is defensive itself.
+        err = categorize_error(
+            "post_processing",
+            "post_processing_error",
+            f"MK1 post-processing raised unexpectedly: {exc!r}",
+            None,
+        )
+        report["errors"] = [err]
+        _mark_report_failed(report)
+        return _fail("MK1 post-processing failed", log_detail=err["details"], status_code=500)
+    stage_ms["post_processing_ms"] = int((time.perf_counter() - t1) * 1000)
+
+    pp_report = post_result.get("post_processing_report") if isinstance(post_result, dict) else None
+    report["post_processing_report_path"] = post_result.get("post_processing_report_path")
+    report["selection_result_path"] = post_result.get("selection_result_path")
+    report["post_processing_summary"] = {
+        "status": post_result.get("status"),
+        "candidates_selected": (pp_report or {}).get("candidates_selected"),
+        "clips_passed": (pp_report or {}).get("clips_passed"),
+        "clips_failed": (pp_report or {}).get("clips_failed"),
+    }
+    for note in post_result.get("warnings") or []:
+        warnings.append(
+            categorize_error("post_processing", "post_processing_notice", str(note), None)
+        )
+
+    status = post_result.get("status")
+    finished_clip_paths = list(post_result.get("finished_clip_paths") or [])
+    if status not in (STATUS_POST_PROCESSING_COMPLETE, STATUS_POST_PROCESSING_PARTIAL) or not finished_clip_paths:
+        err = categorize_error(
+            "post_processing",
+            "post_processing_error",
+            "MK1 post-processing produced no finished clips.",
+            {
+                "status": status,
+                "errors": post_result.get("errors"),
+            },
+        )
+        report["errors"] = [err]
+        _mark_report_failed(report)
+        return _fail(
+            "No finished clips after MK1 post-processing",
+            log_detail=json.dumps(post_result.get("errors") or [], default=str)[:500],
+            status_code=422,
+        )
+
+    metadata_by_output = _index_per_clip_metadata(post_result.get("per_clip_metadata_paths") or [])
+
+    clips: list[dict[str, object]] = []
+    base_name = filename_prefix or filename
+    for index, src_clip in enumerate(finished_clip_paths, start=1):
+        meta = metadata_by_output.get(os.path.abspath(src_clip)) or metadata_by_output.get(src_clip) or {}
+        clip_name = f"{base_name}_clip_{index:02d}_{uuid.uuid4().hex[:8]}.mp4"
+        served_path = os.path.join(output_root, clip_name)
+        try:
+            shutil.copy2(src_clip, served_path)
+        except OSError as exc:
+            err = categorize_error(
+                "post_processing",
+                "post_processing_error",
+                "Could not copy finished MK1 clip into the output folder.",
+                {"src": src_clip, "dst": served_path, "error": repr(exc)},
+            )
+            report["errors"] = [err]
+            _mark_report_failed(report)
+            return _fail("Finished clip copy failed", log_detail=repr(exc), status_code=500)
+        job_clip_path = os.path.join(job["clips_dir"], clip_name)
+        maybe_copy(served_path, job_clip_path)
+
+        start_sec = meta.get("input_start_sec")
+        end_sec = meta.get("input_end_sec")
+        clip_payload: dict[str, object] = {
+            "clip_id": f"{job_id}_clip_{index:02d}",
+            "start": start_sec,
+            "end": end_sec,
+            "clip_path": os.path.abspath(served_path),
+            "job_clip_path": job_clip_path,
+            "clip_file": clip_name,
+            "clip_url": f"/output/{clip_name}",
+            "duration_sec": meta.get("input_duration_sec"),
+            "source_candidate_id": meta.get("source_candidate_id"),
+            "scores": meta.get("input_candidate_scores"),
+            "archetype": meta.get("input_candidate_archetype"),
+            "selection_mode": meta.get("selection_mode"),
+            "validation_result": meta.get("validation_result"),
+        }
+        clips.append({k: v for k, v in clip_payload.items() if v is not None})
+
+    report["clips"] = clips
+    report["status"] = "success"
+    report["current_stage"] = "success"
+    report["completed_at"] = now_iso()
+    stage_ms["total_ms"] = int((time.perf_counter() - total_started) * 1000)
+    write_json(job["report_path"], report)
+    write_review(job["review_path"], report)
+    _progress(f"Done (mk1) — {len(clips)} clip(s) ready", job_id=jid)
+
+    handoff = _try_output_funnel_handoff(report, report_path=job["report_path"])
+    report["output_funnel_handoff"] = handoff
+    write_json(job["report_path"], report)
+    if handoff.get("ok") is True:
+        _progress("Output funnel handoff registered", job_id=jid)
+        for line in _output_funnel_schedule_lines(handoff):
+            _progress(f"Output funnel scheduled — {line}", job_id=jid)
+    elif handoff.get("enabled") is True:
+        warnings.append(
+            categorize_error(
+                "output_funnel",
+                "handoff_unavailable",
+                "Output funnel handoff failed; clips remain available in video-automation outputs.",
+                handoff,
+            )
+        )
+        report["warnings"] = warnings
+        write_json(job["report_path"], report)
+
+    funnel_record = report.get("funnel")
+    response: dict[str, object] = {
+        "success": True,
+        "pipeline": PIPELINE_NAME,
+        "pipeline_mode": "mk1",
+        "run_id": uuid.uuid4().hex,
+        "input_id": input_id,
+        "source_video": os.path.basename(video_path),
+        "video_basename": filename,
+        "clips": clips,
+        "delivery_mode": delivery_mode,
+        "job_id": job_id,
+        "job_dir": job_dir,
+        "report_path": job["report_path"],
+        "review_path": job["review_path"],
+        "analytics_path": job["analytics_path"],
+        "transcript_payload_path": job["normalized_transcript_path"],
+        "raw_candidate_pool_path": processing.raw_candidate_pool_path,
+        "processing_report_path": processing.processing_report_path,
+        "post_processing_report_path": post_result.get("post_processing_report_path"),
+        "policy_resolution": audit_plain,
+        **_inspection_urls(job_id),
+    }
+    if isinstance(funnel_record, dict) and funnel_record.get("funnel_id"):
+        response["funnel"] = funnel_record
+        response["funnel_id"] = funnel_record.get("funnel_id")
+        response["funnel_name"] = funnel_record.get("funnel_name")
+        response["enabled_platforms"] = funnel_record.get("enabled_platforms") or []
+        response["funnel_policy_summary"] = funnel_record.get("funnel_policy_summary") or {}
+    return jsonify(response)
+
+
+def _index_per_clip_metadata(metadata_paths: list) -> dict[str, dict[str, Any]]:
+    """Map each per-clip metadata file's output_file_path to its parsed dict."""
+    index: dict[str, dict[str, Any]] = {}
+    for path in metadata_paths:
+        try:
+            data = json.loads(open(path, "r", encoding="utf-8").read())
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        out = data.get("output_file_path")
+        if isinstance(out, str) and out.strip():
+            index[out] = data
+            index[os.path.abspath(out)] = data
+    return index
+
+
 def _run_pipeline(
     video_path: str,
     policy_bundle: dict[str, Any],
@@ -1797,6 +2250,14 @@ def _run_pipeline(
             categorize_error("configuration", "policy_notice", str(notice), None),
         )
 
+    # Resolve the processing pipeline mode once per job. ``mk1`` routes the job
+    # through the new processing -> post-processing pipeline after transcription;
+    # ``legacy`` (default) keeps the existing single-pass selection + clipping.
+    pipeline_mode = _resolve_pipeline_mode()
+    report["pipeline_mode"] = pipeline_mode
+    _funnel_record_initial = report.get("funnel") if isinstance(report.get("funnel"), dict) else {}
+    mk1_funnel_id = str(_funnel_record_initial.get("funnel_id") or "").strip() or None
+
     chunk_scratch_dirs: list[str] = []
     chunk_sidecar_whisper_paths: list[str] = []
     selector_window_paths: list[str] = []
@@ -1829,6 +2290,11 @@ def _run_pipeline(
         chunk_cfg = chunk_eff if chunk_eff else None
         vd = report["video_duration_sec"]
         use_chunks = should_use_chunked_transcription(chunk_cfg, vd)
+
+        # GPU phase sequencing: before any WhisperX work, ask Ollama to release
+        # the local LLM so transcription and clip selection do not fight for
+        # VRAM. No-op unless the resolved clip-selection backend is ai_service.
+        _gpu_prepare_for_transcription(report, warnings, jid)
 
         if not use_chunks:
             engine = resolve_transcribe_engine()
@@ -1905,10 +2371,32 @@ def _run_pipeline(
                     status_code=422,
                 )
             write_json(job["normalized_transcript_path"], transcript_payload)
+
+            if pipeline_mode == "mk1":
+                return _run_mk1_pipeline_after_transcript(
+                    report=report,
+                    job=job,
+                    jid=jid,
+                    warnings=warnings,
+                    stage_ms=stage_ms,
+                    total_started=total_started,
+                    video_path=video_path,
+                    transcript_path=transcript_path,
+                    transcript_payload=transcript_payload,
+                    funnel_id=mk1_funnel_id,
+                    output_root=output_root,
+                    filename=filename,
+                    filename_prefix=filename_prefix,
+                    delivery_mode=delivery_mode,
+                    input_id=input_id,
+                    audit_plain=audit_plain,
+                )
+
             _progress("Transcription done — selecting clips…", job_id=jid)
 
             t1 = time.perf_counter()
             report["current_stage"] = "selection"
+            _gpu_allow_selection(report, jid)
             try:
                 candidate_segments, selector_summary = _select_candidates_from_transcript(
                     script_select=script_select,
@@ -2117,10 +2605,32 @@ def _run_pipeline(
                     status_code=422,
                 )
             write_json(job["normalized_transcript_path"], transcript_payload)
+
+            if pipeline_mode == "mk1":
+                return _run_mk1_pipeline_after_transcript(
+                    report=report,
+                    job=job,
+                    jid=jid,
+                    warnings=warnings,
+                    stage_ms=stage_ms,
+                    total_started=total_started,
+                    video_path=video_path,
+                    transcript_path=transcript_path,
+                    transcript_payload=transcript_payload,
+                    funnel_id=mk1_funnel_id,
+                    output_root=output_root,
+                    filename=filename,
+                    filename_prefix=filename_prefix,
+                    delivery_mode=delivery_mode,
+                    input_id=input_id,
+                    audit_plain=audit_plain,
+                )
+
             _progress("Merged transcript ready — selecting clips per chunk…", job_id=jid)
 
             t1 = time.perf_counter()
             report["current_stage"] = "selection"
+            _gpu_allow_selection(report, jid)
             combined_segments: list[dict] = []
             chunk_selector_summaries: list[dict[str, object]] = []
             for idx, (start_sec, dur_sec) in enumerate(specs):
@@ -3273,10 +3783,26 @@ def doctor():
         _check("flask_import", False, repr(exc))
     ffmpeg_path = shutil.which("ffmpeg")
     ffprobe_path = shutil.which("ffprobe")
-    whisper_path = shutil.which("whisper")
     _check("ffmpeg", bool(ffmpeg_path), ffmpeg_path or "Not found in PATH")
     _check("ffprobe", bool(ffprobe_path), ffprobe_path or "Not found in PATH")
-    _check("whisper", bool(whisper_path), whisper_path or "Not found in PATH")
+
+    active_engine = resolve_transcribe_engine()
+    whisper_path = shutil.which("whisper")
+    if active_engine == "whisperx":
+        try:
+            import whisperx  # noqa: F401
+
+            _check("transcribe_engine:whisperx", True, "import ok (active engine)")
+        except Exception as exc:
+            _check("transcribe_engine:whisperx", False, repr(exc))
+        # Legacy CLI is only the fallback; report it but never fail health on it.
+        _check(
+            "whisper_cli (legacy fallback)",
+            True,
+            whisper_path or "Not on PATH — not required while TRANSCRIBE_ENGINE=whisperx",
+        )
+    else:
+        _check("whisper", bool(whisper_path), whisper_path or "Not found in PATH")
     _check(
         "OPENAI_API_KEY",
         bool(os.environ.get("OPENAI_API_KEY", "").strip()),

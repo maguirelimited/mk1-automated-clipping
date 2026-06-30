@@ -1,6 +1,6 @@
 # mk0.4 systemd units
 
-Drop-in unit files for the four mk0.4 services. They assume:
+Drop-in unit files for the mk0.4 services. They assume:
 
 - PROD deployed copy at `/opt/mk04/prod/current`
 - Service user `mk04:mk04`
@@ -21,13 +21,32 @@ sudo systemctl enable --now \
   mk04-source-input.service \
   mk04-video-automation.service \
   mk04-output-funnel.service \
+  mk04-ai-service.service \
   mk04-ops-ui.service
 ```
+
+`mk04-ai-service` and `mk04-ops-ui` are optional. The pipeline services call
+the local LLM over HTTP only when configured to; enable `mk04-ai-service` only
+on hosts that run a local model backend (e.g. Ollama). It listens on
+`127.0.0.1:5075` in prod and is independent — start, stop, or omit it without
+affecting the other units.
+
+### Ollama (local model backend)
+
+`mk04-ai-service.service` declares a soft dependency on `ollama.service`
+(`Wants=`/`After=`). The official Ollama installer ships that unit; if it is
+present systemd starts it first, and if it is absent the `Want` is simply
+ignored. Independently, `run-ai-service.sh` best-effort runs
+`deploy/scripts/run-ollama.sh` before exec, so Ollama is started/verified even
+without a separate unit. That step is non-fatal by default (clip selection
+falls back to the configured backend); set `MK04_OLLAMA_STRICT=1` to make a
+missing/unreachable backend fail ai-service startup. Model pulling is gated by
+`OLLAMA_AUTO_PULL_MODEL` (default `false`) to avoid surprise downloads.
 
 ## Verify
 
 ```bash
-systemctl status mk04-source-input mk04-video-automation mk04-output-funnel mk04-ops-ui
+systemctl status mk04-source-input mk04-video-automation mk04-output-funnel mk04-ai-service mk04-ops-ui
 journalctl -u mk04-output-funnel -n 100 --no-pager
 ```
 

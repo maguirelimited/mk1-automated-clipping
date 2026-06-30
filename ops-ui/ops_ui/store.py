@@ -4,7 +4,10 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from .ai_config import AI_CONFIG_STORE_PREFIX
 from .control_export import INGESTION_PAUSED, UPLOADS_PAUSED, export_control_flags
+from .post_processing_config import POST_PROCESSING_CONFIG_STORE_PREFIX
+from .processing_config import PROCESSING_CONFIG_STORE_PREFIX
 
 
 class ControlStore:
@@ -69,6 +72,11 @@ class ControlStore:
         return raw.strip().lower() in {"1", "true", "yes", "on"}
 
     def set_control_bool(self, key: str, value: bool) -> None:
+        self._put_control(key, "1" if value else "0")
+        if self.controls_file is not None:
+            self._sync_controls_file()
+
+    def _put_control(self, key: str, value: str) -> None:
         with self.connect() as conn:
             conn.execute(
                 """
@@ -78,10 +86,52 @@ class ControlStore:
                   value = excluded.value,
                   updated_at = excluded.updated_at
                 """,
-                (key, "1" if value else "0"),
+                (key, value),
             )
+
+    def get_ai_config(self) -> dict[str, str]:
+        """Return saved local-AI overrides keyed by bare field name."""
+        out: dict[str, str] = {}
+        for key, value in self.get_controls().items():
+            if key.startswith(AI_CONFIG_STORE_PREFIX):
+                out[key[len(AI_CONFIG_STORE_PREFIX):]] = value
+        return out
+
+    def set_ai_config(self, values: dict[str, str]) -> None:
+        """Persist local-AI overrides (bare field names) and resync the file."""
+        for name, value in values.items():
+            self._put_control(f"{AI_CONFIG_STORE_PREFIX}{name}", str(value))
         if self.controls_file is not None:
             self._sync_controls_file()
+
+    def _get_namespaced(self, prefix: str) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for key, value in self.get_controls().items():
+            if key.startswith(prefix):
+                out[key[len(prefix):]] = value
+        return out
+
+    def _set_namespaced(self, prefix: str, values: dict[str, str]) -> None:
+        for name, value in values.items():
+            self._put_control(f"{prefix}{name}", str(value))
+        if self.controls_file is not None:
+            self._sync_controls_file()
+
+    def get_processing_config(self) -> dict[str, str]:
+        """Return saved processing-phase overrides keyed by bare field name."""
+        return self._get_namespaced(PROCESSING_CONFIG_STORE_PREFIX)
+
+    def set_processing_config(self, values: dict[str, str]) -> None:
+        """Persist processing-phase overrides (bare field names) and resync."""
+        self._set_namespaced(PROCESSING_CONFIG_STORE_PREFIX, values)
+
+    def get_post_processing_config(self) -> dict[str, str]:
+        """Return saved post-processing overrides keyed by bare field name."""
+        return self._get_namespaced(POST_PROCESSING_CONFIG_STORE_PREFIX)
+
+    def set_post_processing_config(self, values: dict[str, str]) -> None:
+        """Persist post-processing overrides (bare field names) and resync."""
+        self._set_namespaced(POST_PROCESSING_CONFIG_STORE_PREFIX, values)
 
     def _sync_controls_file(self) -> None:
         if self.controls_file is None:
@@ -94,6 +144,9 @@ class ControlStore:
             uploads_paused=self.get_control_bool(UPLOADS_PAUSED),
             human_approval_required=self.get_control_bool(HUMAN_APPROVAL_REQUIRED),
             publish_approved_only=self.get_control_bool(PUBLISH_APPROVED_ONLY),
+            ai_config=self.get_ai_config(),
+            processing_config=self.get_processing_config(),
+            post_processing_config=self.get_post_processing_config(),
         )
 
     def get_clip_review(self, job_id: str, clip_id: str) -> dict[str, Any] | None:
