@@ -48,12 +48,15 @@
             "type": "number"
           },
           "hook_text": {
+            "minLength": 1,
             "type": "string"
           },
           "core_idea_summary": {
+            "minLength": 1,
             "type": "string"
           },
           "why_candidate_has_potential": {
+            "minLength": 1,
             "type": "string"
           },
           "scores": {
@@ -114,7 +117,6 @@
         },
         "required": [
           "candidate_local_id",
-          "source_section_id",
           "start_sec",
           "end_sec",
           "duration_sec",

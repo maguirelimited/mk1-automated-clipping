@@ -125,6 +125,22 @@ def test_valid_usable_true_section_result_with_one_candidate_validates():
     )
 
 
+def test_valid_candidate_with_full_evidence_package_validates():
+    candidate = _candidate()
+
+    discovery.validate_section_discovery_result(
+        _result(candidates=[candidate]),
+        section=_section(),
+        config=_config(),
+    )
+
+    assert candidate["hook_text"].strip()
+    assert candidate["core_idea_summary"].strip()
+    assert candidate["why_candidate_has_potential"].strip()
+    assert candidate["source_section_id"] == "section_0001"
+    assert isinstance(candidate["warnings"], list)
+
+
 def test_valid_candidate_with_all_six_scores_validates():
     candidate = _candidate()
 
@@ -170,6 +186,90 @@ def test_invalid_candidate_duration_fails_validation():
         )
 
     assert "duration_sec must match" in str(exc.value)
+
+
+def test_missing_hook_text_fails_validation():
+    candidate = _candidate()
+    del candidate["hook_text"]
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "hook_text is required" in str(exc.value)
+
+
+def test_empty_hook_text_fails_validation():
+    candidate = _candidate()
+    candidate["hook_text"] = "   "
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "hook_text must be a non-empty string" in str(exc.value)
+
+
+def test_missing_core_idea_summary_fails_validation():
+    candidate = _candidate()
+    del candidate["core_idea_summary"]
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "core_idea_summary is required" in str(exc.value)
+
+
+def test_empty_core_idea_summary_fails_validation():
+    candidate = _candidate()
+    candidate["core_idea_summary"] = "\t"
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "core_idea_summary must be a non-empty string" in str(exc.value)
+
+
+def test_missing_why_candidate_has_potential_fails_validation():
+    candidate = _candidate()
+    del candidate["why_candidate_has_potential"]
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "why_candidate_has_potential is required" in str(exc.value)
+
+
+def test_empty_why_candidate_has_potential_fails_validation():
+    candidate = _candidate()
+    candidate["why_candidate_has_potential"] = ""
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "why_candidate_has_potential must be a non-empty string" in str(exc.value)
 
 
 def test_missing_scores_fails_validation():
@@ -240,6 +340,104 @@ def test_non_numeric_score_fails_validation():
         )
 
     assert "scores.insight_value must be an integer within 0-10" in str(exc.value)
+
+
+def test_missing_confidence_fails_validation():
+    candidate = _candidate()
+    del candidate["confidence"]
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "confidence is required" in str(exc.value)
+
+
+def test_confidence_below_zero_fails_validation():
+    candidate = _candidate()
+    candidate["confidence"] = -0.1
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "confidence must be numeric and within 0-1" in str(exc.value)
+
+
+def test_confidence_above_one_fails_validation():
+    candidate = _candidate()
+    candidate["confidence"] = 1.1
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "confidence must be numeric and within 0-1" in str(exc.value)
+
+
+def test_non_numeric_confidence_fails_validation():
+    candidate = _candidate()
+    candidate["confidence"] = "sure"
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "confidence must be numeric and within 0-1" in str(exc.value)
+
+
+def test_missing_warnings_fails_validation():
+    candidate = _candidate()
+    del candidate["warnings"]
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "warnings is required" in str(exc.value)
+
+
+def test_warnings_must_be_list():
+    candidate = _candidate()
+    candidate["warnings"] = "weak_opening"
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "warnings must be a list" in str(exc.value)
+
+
+def test_warning_entries_must_be_strings():
+    candidate = _candidate()
+    candidate["warnings"] = ["weak_opening", {"bad": "shape"}]
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.validate_section_discovery_result(
+            _result(candidates=[candidate]),
+            section=_section(),
+            config=_config(),
+        )
+
+    assert "warnings must contain only strings" in str(exc.value)
 
 
 def test_malformed_model_json_fails_cleanly():
@@ -334,6 +532,36 @@ def test_discovered_candidates_preserve_source_section_id():
     assert result["candidates"][0]["source_section_id"] == "section_0001"
 
 
+def test_missing_source_section_id_is_attached_deterministically():
+    candidate = _candidate()
+    del candidate["source_section_id"]
+    client = FakeModelClient([_response(_result(candidates=[candidate]))])
+
+    result = discovery.discover_candidates_for_section(
+        _section(),
+        ai_client=client,
+        config=_config(),
+        prompt_template="PROMPT",
+    )
+
+    assert result["candidates"][0]["source_section_id"] == "section_0001"
+
+
+def test_mismatched_source_section_id_fails_validation():
+    candidate = _candidate(section_id="section_9999")
+    client = FakeModelClient([_response(_result(candidates=[candidate]))])
+
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.discover_candidates_for_section(
+            _section(),
+            ai_client=client,
+            config=_config(),
+            prompt_template="PROMPT",
+        )
+
+    assert "source_section_id must match input section_id" in str(exc.value)
+
+
 def test_batch_discovery_preserves_scores_on_candidates():
     client = FakeModelClient([_response(_result())])
 
@@ -347,6 +575,23 @@ def test_batch_discovery_preserves_scores_on_candidates():
     scores = batch["section_results"][0]["candidates"][0]["scores"]
     assert tuple(scores.keys()) == contracts.REQUIRED_SCORE_FIELDS
     assert scores["overall_potential"] == 8
+
+
+def test_batch_discovery_preserves_evidence_fields():
+    client = FakeModelClient([_response(_result())])
+
+    batch = discovery.discover_candidates_for_sections(
+        [_section()],
+        ai_client=client,
+        config=_config(),
+        prompt_template="PROMPT",
+    )
+
+    candidate = batch["section_results"][0]["candidates"][0]
+    for field in contracts.CANDIDATE_EVIDENCE_FIELDS:
+        assert field in candidate
+    assert candidate["hook_text"] == "The surprising thing about this business is simple."
+    assert candidate["source_section_id"] == "section_0001"
 
 
 def test_aggregate_counts_are_correct():
@@ -408,6 +653,44 @@ def test_malformed_score_output_stops_batch_when_fail_fast_true():
     assert len(client.prompts) == 1
 
 
+def test_malformed_evidence_output_records_failed_section_when_fail_fast_false():
+    bad = _candidate()
+    bad["hook_text"] = " "
+    good = _result(usable=False, candidates=[])
+    good["section_id"] = "section_0002"
+    client = FakeModelClient([_response(_result(candidates=[bad])), _response(good)])
+
+    batch = discovery.discover_candidates_for_sections(
+        [_section("section_0001"), _section("section_0002")],
+        ai_client=client,
+        config=_config(fail_fast=False),
+        prompt_template="PROMPT",
+    )
+
+    assert batch["sections_processed"] == 1
+    assert len(batch["failed_sections"]) == 1
+    assert batch["failed_sections"][0]["section_id"] == "section_0001"
+    assert batch["rejected_sections"] == 1
+
+
+def test_malformed_evidence_output_stops_batch_when_fail_fast_true():
+    bad = _candidate()
+    bad["why_candidate_has_potential"] = ""
+    client = FakeModelClient([_response(_result(candidates=[bad])), _response(_result())])
+
+    batch = discovery.discover_candidates_for_sections(
+        [_section("section_0001"), _section("section_0002")],
+        ai_client=client,
+        config=_config(fail_fast=True),
+        prompt_template="PROMPT",
+    )
+
+    assert batch["sections_processed"] == 0
+    assert len(batch["failed_sections"]) == 1
+    assert batch["warnings"] == ["fail_fast_stopped_after_section_failure"]
+    assert len(client.prompts) == 1
+
+
 def test_artifact_write_read_works(tmp_path: Path):
     client = FakeModelClient([_response(_result())])
     batch = discovery.discover_candidates_for_sections(
@@ -430,6 +713,27 @@ def test_artifact_write_read_works(tmp_path: Path):
     assert Path(path).name == discovery.SECTION_DISCOVERY_ARTIFACT_FILENAME
     assert reloaded["job_id"] == "job_123"
     assert reloaded["section_results"][0]["section_id"] == "section_0001"
+
+
+def test_ai_service_json_schema_requires_evidence_fields():
+    schema_path = (
+        Path(__file__).resolve().parents[2]
+        / "ai-service"
+        / "schemas"
+        / "section_candidate_discovery_v1.json"
+    )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    candidate_schema = schema["properties"]["candidates"]["items"]
+    required = set(candidate_schema["required"])
+
+    assert {"hook_text", "core_idea_summary", "why_candidate_has_potential"} <= required
+    assert {"confidence", "warnings", "scores"} <= required
+    assert "source_section_id" not in required
+    for field in contracts.CANDIDATE_EVIDENCE_TEXT_FIELDS:
+        assert candidate_schema["properties"][field]["minLength"] == 1
+    assert candidate_schema["properties"]["confidence"]["minimum"] == 0
+    assert candidate_schema["properties"]["confidence"]["maximum"] == 1
+    assert candidate_schema["properties"]["warnings"]["items"]["type"] == "string"
 
 
 def test_ai_service_json_schema_requires_scores():
@@ -456,6 +760,11 @@ def test_ai_service_json_schema_requires_scores():
 
 def test_prompt_1_raw_candidate_score_names_match_discovery_score_names():
     assert discovery.REQUIRED_SCORE_FIELDS == contracts.REQUIRED_SCORE_FIELDS
+
+
+def test_prompt_1_raw_candidate_evidence_names_match_discovery_evidence_names():
+    for field in contracts.CANDIDATE_EVIDENCE_FIELDS:
+        assert field in discovery.CANDIDATE_REQUIRED_FIELDS
 
 
 def test_tests_use_fake_ai_client():

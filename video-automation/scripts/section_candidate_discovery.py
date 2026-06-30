@@ -23,7 +23,7 @@ from ai_service_client import (
     ai_service_url,
 )
 from mk04_utils import now_iso, write_json
-from processing_contracts import REQUIRED_SCORE_FIELDS
+from processing_contracts import CANDIDATE_EVIDENCE_TEXT_FIELDS, REQUIRED_SCORE_FIELDS
 
 SECTION_DISCOVERY_SCHEMA_VERSION = "section_candidate_discovery_v1"
 SECTION_DISCOVERY_BATCH_SCHEMA_VERSION = "section_candidate_discovery_batch_v1"
@@ -53,9 +53,7 @@ CANDIDATE_REQUIRED_FIELDS = (
     "start_sec",
     "end_sec",
     "duration_sec",
-    "hook_text",
-    "core_idea_summary",
-    "why_candidate_has_potential",
+    *CANDIDATE_EVIDENCE_TEXT_FIELDS,
     "scores",
     "confidence",
     "warnings",
@@ -327,8 +325,9 @@ def discover_candidates_for_section(
         result = parse_section_discovery_model_response(response)
 
     capped = _apply_candidate_cap(result, resolved_config)
-    validate_section_discovery_result(capped, section=section, config=resolved_config)
-    return capped
+    with_section_ids = _attach_source_section_ids(capped, section)
+    validate_section_discovery_result(with_section_ids, section=section, config=resolved_config)
+    return with_section_ids
 
 
 def discover_candidates_for_sections(
@@ -655,14 +654,46 @@ def _validate_discovered_candidate(
         if _is_number(section_end) and float(end) > float(section_end) + TIMESTAMP_TOLERANCE_SEC:
             errors.append(f"{path}.end_sec must stay inside section bounds")
 
-    for field in ("hook_text", "core_idea_summary", "why_candidate_has_potential"):
-        if field in candidate and not isinstance(candidate.get(field), str):
-            errors.append(f"{path}.{field} must be a string")
+    for field in CANDIDATE_EVIDENCE_TEXT_FIELDS:
+        if field in candidate:
+            _validate_non_empty_string(candidate.get(field), f"{path}.{field}", errors)
     if "scores" in candidate:
         _validate_candidate_scores(candidate.get("scores"), f"{path}.scores", errors)
     if not _is_number(candidate.get("confidence")) or not 0.0 <= float(candidate["confidence"]) <= 1.0:
         errors.append(f"{path}.confidence must be numeric and within 0-1")
     _validate_string_list(candidate.get("warnings"), f"{path}.warnings", errors)
+
+
+def _attach_source_section_ids(
+    result: dict[str, Any],
+    section: dict[str, Any],
+) -> dict[str, Any]:
+    candidates = result.get("candidates")
+    if not isinstance(candidates, list):
+        return result
+    section_id = section.get("section_id")
+    out = dict(result)
+    fixed_candidates: list[Any] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            fixed_candidates.append(candidate)
+            continue
+        if _is_non_empty_string(candidate.get("source_section_id")):
+            fixed_candidates.append(candidate)
+            continue
+        fixed = dict(candidate)
+        fixed["source_section_id"] = section_id
+        fixed_candidates.append(fixed)
+    out["candidates"] = fixed_candidates
+    return out
+
+
+def _validate_non_empty_string(value: Any, path: str, errors: list[str]) -> None:
+    if not isinstance(value, str):
+        errors.append(f"{path} must be a string")
+        return
+    if not value.strip():
+        errors.append(f"{path} must be a non-empty string")
 
 
 def _validate_candidate_scores(scores: Any, path: str, errors: list[str]) -> None:

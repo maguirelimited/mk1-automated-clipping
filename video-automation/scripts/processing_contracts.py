@@ -32,6 +32,20 @@ REQUIRED_SCORE_FIELDS = (
     "overall_potential",
 )
 
+CANDIDATE_EVIDENCE_TEXT_FIELDS = (
+    "hook_text",
+    "core_idea_summary",
+    "why_candidate_has_potential",
+)
+
+CANDIDATE_EVIDENCE_FIELDS = (
+    "source_section_id",
+    *CANDIDATE_EVIDENCE_TEXT_FIELDS,
+    "scores",
+    "confidence",
+    "warnings",
+)
+
 ALLOWED_ARCHETYPES = frozenset(
     {
         "valuable_insight",

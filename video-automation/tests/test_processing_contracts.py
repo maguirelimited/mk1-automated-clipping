@@ -123,6 +123,13 @@ def test_score_outside_range_fails():
     _assert_invalid(_valid_pool(candidates=[candidate]), "scores.hook_strength")
 
 
+def test_candidate_evidence_field_constants_match_raw_candidate_contract():
+    for field in contracts.CANDIDATE_EVIDENCE_FIELDS:
+        assert field in contracts.CANDIDATE_REQUIRED_FIELDS
+    for field in contracts.CANDIDATE_EVIDENCE_TEXT_FIELDS:
+        assert field in contracts.CANDIDATE_EVIDENCE_FIELDS
+
+
 def test_invalid_archetype_fails():
     candidate = _valid_candidate()
     candidate["archetype"] = "viral_magic"
