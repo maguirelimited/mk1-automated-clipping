@@ -15,6 +15,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from candidate_boundary_sanity import (
+    BoundarySanityConfig,
+    apply_boundary_sanity,
+    rejected_candidate_record,
+)
 from ai_service_client import (
     Transport,
     _TransportError,
@@ -79,6 +84,7 @@ BATCH_REQUIRED_FIELDS = (
     "schema_version",
     *BATCH_COUNT_FIELDS,
     "section_results",
+    "rejected_candidates",
     "warnings",
     "failed_sections",
 )
@@ -92,6 +98,7 @@ ARTIFACT_REQUIRED_FIELDS = (
     "config",
     *BATCH_COUNT_FIELDS,
     "section_results",
+    "rejected_candidates",
     "warnings",
     "failed_sections",
 )
@@ -122,6 +129,9 @@ class CandidateDiscoveryConfig:
     max_candidates_per_section: int = DEFAULT_MAX_CANDIDATES_PER_SECTION
     min_candidate_duration_sec: float = DEFAULT_MIN_CANDIDATE_DURATION_SEC
     max_candidate_duration_sec: float = DEFAULT_MAX_CANDIDATE_DURATION_SEC
+    transcript_start_sec: float | None = None
+    transcript_end_sec: float | None = None
+    video_duration_sec: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -232,6 +242,9 @@ def apply_default_discovery_config(
                     DEFAULT_MAX_CANDIDATE_DURATION_SEC,
                 )
             ),
+            transcript_start_sec=_optional_float(config.get("transcript_start_sec")),
+            transcript_end_sec=_optional_float(config.get("transcript_end_sec")),
+            video_duration_sec=_optional_float(config.get("video_duration_sec")),
         )
     else:
         raise SectionCandidateDiscoveryError(
@@ -334,8 +347,18 @@ def discover_candidates_for_section(
 
     capped = _apply_candidate_cap(result, resolved_config)
     with_section_ids = _attach_source_section_ids(capped, section)
-    validate_section_discovery_result(with_section_ids, section=section, config=resolved_config)
-    return with_section_ids
+    boundary_checked = _apply_boundary_sanity_to_result(
+        with_section_ids,
+        section=section,
+        config=resolved_config,
+    )
+    if resolved_config.fail_fast and boundary_checked.get("rejected_candidates"):
+        raise SectionCandidateDiscoveryError(
+            "BOUNDARY_SANITY_FAILED",
+            "Candidate failed boundary sanity.",
+        )
+    validate_section_discovery_result(boundary_checked, section=section, config=resolved_config)
+    return boundary_checked
 
 
 def discover_candidates_for_sections(
@@ -375,6 +398,12 @@ def discover_candidates_for_sections(
             len(result.get("candidates") or []) for result in section_results
         ),
         "section_results": section_results,
+        "rejected_candidates": [
+            rejected
+            for result in section_results
+            for rejected in (result.get("rejected_candidates") or [])
+            if isinstance(rejected, dict)
+        ],
         "warnings": warnings,
         "failed_sections": failed_sections,
     }
@@ -498,6 +527,8 @@ def validate_section_discovery_batch(batch: Any) -> None:
             errors.append(f"batch.{field} must be a non-negative integer")
     if "section_results" in batch and not isinstance(batch.get("section_results"), list):
         errors.append("batch.section_results must be a list")
+    if "rejected_candidates" in batch and not isinstance(batch.get("rejected_candidates"), list):
+        errors.append("batch.rejected_candidates must be a list")
     if "warnings" in batch:
         _validate_string_list(batch.get("warnings"), "batch.warnings", errors)
     if "failed_sections" in batch and not isinstance(batch.get("failed_sections"), list):
@@ -533,6 +564,7 @@ def build_section_candidate_discovery_artifact(
         "rejected_sections": batch_result["rejected_sections"],
         "candidates_discovered": batch_result["candidates_discovered"],
         "section_results": list(batch_result["section_results"]),
+        "rejected_candidates": list(batch_result.get("rejected_candidates") or []),
         "warnings": list(batch_result["warnings"]),
         "failed_sections": list(batch_result["failed_sections"]),
     }
@@ -614,6 +646,62 @@ def _apply_candidate_cap(
         *warnings,
         "max_candidates_per_section_applied",
     ]
+    return out
+
+
+def _apply_boundary_sanity_to_result(
+    result: dict[str, Any],
+    *,
+    section: dict[str, Any],
+    config: CandidateDiscoveryConfig,
+) -> dict[str, Any]:
+    candidates = result.get("candidates")
+    if not isinstance(candidates, list):
+        return result
+
+    boundary_config = BoundarySanityConfig(
+        min_candidate_duration_sec=config.min_candidate_duration_sec,
+        max_candidate_duration_sec=config.max_candidate_duration_sec,
+        transcript_start_sec=config.transcript_start_sec,
+        transcript_end_sec=config.transcript_end_sec,
+        video_duration_sec=config.video_duration_sec,
+    )
+    accepted_candidates: list[dict[str, Any]] = []
+    rejected_candidates: list[dict[str, Any]] = []
+
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            rejected_candidates.append(
+                {
+                    "source_section_id": str(section.get("section_id") or ""),
+                    "candidate_local_id": "",
+                    "start_sec": None,
+                    "end_sec": None,
+                    "rejection_reasons": ["invalid_timestamp"],
+                }
+            )
+            continue
+        sanity = apply_boundary_sanity(candidate, section, boundary_config)
+        if sanity.accepted:
+            accepted_candidates.append(sanity.candidate)
+        else:
+            rejected_candidates.append(rejected_candidate_record(candidate, sanity))
+
+    out = dict(result)
+    out["candidates"] = accepted_candidates
+    if rejected_candidates:
+        out["rejected_candidates"] = [
+            *(item for item in (result.get("rejected_candidates") or []) if isinstance(item, dict)),
+            *rejected_candidates,
+        ]
+        if result.get("usable") is True and not accepted_candidates:
+            out["usable"] = False
+            out["warnings"] = _merge_string_warnings(
+                out.get("warnings"),
+                ["all_candidates_rejected_by_boundary_sanity"],
+            )
+    else:
+        out.setdefault("rejected_candidates", [])
     return out
 
 
@@ -777,6 +865,21 @@ def _validate_string_list(value: Any, path: str, errors: list[str]) -> None:
         errors.append(f"{path} must contain only strings")
 
 
+def _merge_string_warnings(existing: Any, additions: list[str]) -> list[str]:
+    out: list[str] = []
+    if isinstance(existing, list):
+        out.extend(item for item in existing if isinstance(item, str))
+    out.extend(additions)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in out:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
+
+
 def _check_required_fields(
     payload: dict[str, Any],
     required_fields: tuple[str, ...],
@@ -790,6 +893,18 @@ def _check_required_fields(
 
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return parsed
 
 
 def _is_non_negative_int(value: Any) -> bool:

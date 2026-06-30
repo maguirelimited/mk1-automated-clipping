@@ -70,8 +70,8 @@ def _scores(**overrides) -> dict:
     return scores
 
 
-def _candidate(index: int = 1, *, section_id: str = "section_0001") -> dict:
-    return {
+def _candidate(index: int = 1, *, section_id: str = "section_0001", **overrides) -> dict:
+    candidate = {
         "candidate_local_id": f"{section_id}_candidate_{index:04d}",
         "source_section_id": section_id,
         "start_sec": 120.0 + index,
@@ -86,6 +86,8 @@ def _candidate(index: int = 1, *, section_id: str = "section_0001") -> dict:
         "warnings": [],
         "transcript_quality_flags": [],
     }
+    candidate.update(overrides)
+    return candidate
 
 
 def _result(*, usable: bool = True, candidates: list[dict] | None = None) -> dict:
@@ -1084,6 +1086,80 @@ def test_malformed_transcript_quality_output_records_failed_section_when_fail_fa
 def test_malformed_transcript_quality_output_stops_batch_when_fail_fast_true():
     bad = _candidate()
     bad["transcript_quality_flags"] = ["audio sounds rough"]
+    client = FakeModelClient([_response(_result(candidates=[bad])), _response(_result())])
+
+    batch = discovery.discover_candidates_for_sections(
+        [_section("section_0001"), _section("section_0002")],
+        ai_client=client,
+        config=_config(fail_fast=True),
+        prompt_template="PROMPT",
+    )
+
+    assert batch["sections_processed"] == 0
+    assert len(batch["failed_sections"]) == 1
+    assert batch["warnings"] == ["fail_fast_stopped_after_section_failure"]
+    assert len(client.prompts) == 1
+
+
+def test_batch_discovery_excludes_rejected_boundary_candidates_from_accepted_candidates():
+    bad = _candidate(start_sec=90.0, end_sec=130.0, duration_sec=40.0)
+    good = _candidate(index=2)
+    client = FakeModelClient([_response(_result(candidates=[bad, good]))])
+
+    batch = discovery.discover_candidates_for_sections(
+        [_section()],
+        ai_client=client,
+        config=_config(fail_fast=False),
+        prompt_template="PROMPT",
+    )
+
+    section_result = batch["section_results"][0]
+    assert len(section_result["candidates"]) == 1
+    assert section_result["candidates"][0]["candidate_local_id"] == "section_0001_candidate_0002"
+    assert batch["candidates_discovered"] == 1
+
+
+def test_batch_discovery_records_rejected_boundary_candidates():
+    bad = _candidate(start_sec=90.0, end_sec=130.0, duration_sec=40.0)
+    client = FakeModelClient([_response(_result(candidates=[bad]))])
+
+    batch = discovery.discover_candidates_for_sections(
+        [_section()],
+        ai_client=client,
+        config=_config(fail_fast=False),
+        prompt_template="PROMPT",
+    )
+
+    assert batch["sections_processed"] == 1
+    assert batch["rejected_sections"] == 1
+    assert batch["candidates_discovered"] == 0
+    assert len(batch["rejected_candidates"]) == 1
+    assert batch["rejected_candidates"][0]["candidate_local_id"] == "section_0001_candidate_0001"
+    assert "outside_section_bounds" in batch["rejected_candidates"][0]["rejection_reasons"]
+
+
+def test_malformed_boundary_candidate_continues_when_fail_fast_false():
+    bad = _candidate(start_sec="soon", end_sec=130.0, duration_sec=40.0)
+    good = _result(usable=False, candidates=[])
+    good["section_id"] = "section_0002"
+    client = FakeModelClient([_response(_result(candidates=[bad])), _response(good)])
+
+    batch = discovery.discover_candidates_for_sections(
+        [_section("section_0001"), _section("section_0002")],
+        ai_client=client,
+        config=_config(fail_fast=False),
+        prompt_template="PROMPT",
+    )
+
+    assert batch["sections_processed"] == 2
+    assert batch["rejected_sections"] == 2
+    assert len(batch["failed_sections"]) == 0
+    assert len(batch["rejected_candidates"]) == 1
+    assert "non_numeric_timestamp" in batch["rejected_candidates"][0]["rejection_reasons"]
+
+
+def test_malformed_boundary_candidate_stops_when_fail_fast_true():
+    bad = _candidate(start_sec="soon", end_sec=130.0, duration_sec=40.0)
     client = FakeModelClient([_response(_result(candidates=[bad])), _response(_result())])
 
     batch = discovery.discover_candidates_for_sections(
