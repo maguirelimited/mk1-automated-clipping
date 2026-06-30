@@ -1772,6 +1772,8 @@ def _run_pipeline(
         "video_duration_sec": ffprobe_duration_sec(video_path),
         "transcript_path": None,
         "selection_path": job["selection_path"],
+        "raw_candidate_pool_path": None,
+        "processing_report_path": None,
         "analytics_path": job["analytics_path"],
         "status": "running",
         "current_stage": "transcription",
