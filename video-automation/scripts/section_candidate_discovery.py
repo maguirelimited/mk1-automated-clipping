@@ -20,6 +20,10 @@ from candidate_boundary_sanity import (
     apply_boundary_sanity,
     rejected_candidate_record,
 )
+from candidate_overlap_control import (
+    CandidateOverlapControlError,
+    control_candidate_overlap,
+)
 from ai_service_client import (
     Transport,
     _TransportError,
@@ -78,6 +82,7 @@ BATCH_COUNT_FIELDS = (
     "usable_sections",
     "rejected_sections",
     "candidates_discovered",
+    "duplicates_removed",
 )
 
 BATCH_REQUIRED_FIELDS = (
@@ -85,6 +90,7 @@ BATCH_REQUIRED_FIELDS = (
     *BATCH_COUNT_FIELDS,
     "section_results",
     "rejected_candidates",
+    "duplicate_removals",
     "warnings",
     "failed_sections",
 )
@@ -99,6 +105,7 @@ ARTIFACT_REQUIRED_FIELDS = (
     *BATCH_COUNT_FIELDS,
     "section_results",
     "rejected_candidates",
+    "duplicate_removals",
     "warnings",
     "failed_sections",
 )
@@ -397,6 +404,7 @@ def discover_candidates_for_sections(
         "candidates_discovered": sum(
             len(result.get("candidates") or []) for result in section_results
         ),
+        "duplicates_removed": 0,
         "section_results": section_results,
         "rejected_candidates": [
             rejected
@@ -404,9 +412,11 @@ def discover_candidates_for_sections(
             for rejected in (result.get("rejected_candidates") or [])
             if isinstance(rejected, dict)
         ],
+        "duplicate_removals": [],
         "warnings": warnings,
         "failed_sections": failed_sections,
     }
+    batch = _apply_overlap_control_to_batch(batch)
     validate_section_discovery_batch(batch)
     return batch
 
@@ -529,6 +539,8 @@ def validate_section_discovery_batch(batch: Any) -> None:
         errors.append("batch.section_results must be a list")
     if "rejected_candidates" in batch and not isinstance(batch.get("rejected_candidates"), list):
         errors.append("batch.rejected_candidates must be a list")
+    if "duplicate_removals" in batch and not isinstance(batch.get("duplicate_removals"), list):
+        errors.append("batch.duplicate_removals must be a list")
     if "warnings" in batch:
         _validate_string_list(batch.get("warnings"), "batch.warnings", errors)
     if "failed_sections" in batch and not isinstance(batch.get("failed_sections"), list):
@@ -563,8 +575,10 @@ def build_section_candidate_discovery_artifact(
         "usable_sections": batch_result["usable_sections"],
         "rejected_sections": batch_result["rejected_sections"],
         "candidates_discovered": batch_result["candidates_discovered"],
+        "duplicates_removed": batch_result["duplicates_removed"],
         "section_results": list(batch_result["section_results"]),
         "rejected_candidates": list(batch_result.get("rejected_candidates") or []),
+        "duplicate_removals": list(batch_result.get("duplicate_removals") or []),
         "warnings": list(batch_result["warnings"]),
         "failed_sections": list(batch_result["failed_sections"]),
     }
@@ -703,6 +717,73 @@ def _apply_boundary_sanity_to_result(
     else:
         out.setdefault("rejected_candidates", [])
     return out
+
+
+def _apply_overlap_control_to_batch(batch: dict[str, Any]) -> dict[str, Any]:
+    section_results = batch.get("section_results")
+    if not isinstance(section_results, list):
+        return batch
+
+    accepted_candidates: list[dict[str, Any]] = []
+    for result in section_results:
+        if not isinstance(result, dict):
+            continue
+        for candidate in result.get("candidates") or []:
+            if isinstance(candidate, dict):
+                accepted_candidates.append(candidate)
+
+    try:
+        overlap_result = control_candidate_overlap(accepted_candidates)
+    except CandidateOverlapControlError as exc:
+        raise SectionCandidateDiscoveryError(
+            "OVERLAP_CONTROL_FAILED",
+            f"Candidate overlap control failed: {exc}",
+        ) from exc
+
+    kept_ids = {_candidate_identifier(candidate) for candidate in overlap_result.kept_candidates}
+    next_section_results: list[dict[str, Any]] = []
+    for result in section_results:
+        if not isinstance(result, dict):
+            next_section_results.append(result)
+            continue
+        original_candidates = [
+            candidate for candidate in (result.get("candidates") or []) if isinstance(candidate, dict)
+        ]
+        kept_candidates = [
+            candidate
+            for candidate in original_candidates
+            if _candidate_identifier(candidate) in kept_ids
+        ]
+        updated = dict(result)
+        updated["candidates"] = kept_candidates
+        if result.get("usable") is True and original_candidates and not kept_candidates:
+            updated["usable"] = False
+            updated["warnings"] = _merge_string_warnings(
+                updated.get("warnings"),
+                ["all_candidates_removed_as_timestamp_duplicates"],
+            )
+        next_section_results.append(updated)
+
+    out = dict(batch)
+    out["section_results"] = next_section_results
+    out["duplicate_removals"] = [dict(item) for item in overlap_result.duplicate_removals]
+    out["duplicates_removed"] = len(overlap_result.duplicate_removals)
+    out["usable_sections"] = sum(
+        1 for result in next_section_results if isinstance(result, dict) and result.get("usable") is True
+    )
+    out["rejected_sections"] = sum(
+        1 for result in next_section_results if isinstance(result, dict) and result.get("usable") is False
+    )
+    out["candidates_discovered"] = sum(
+        len(result.get("candidates") or [])
+        for result in next_section_results
+        if isinstance(result, dict)
+    )
+    return out
+
+
+def _candidate_identifier(candidate: dict[str, Any]) -> str:
+    return str(candidate.get("candidate_id") or candidate.get("candidate_local_id") or "")
 
 
 def _validate_discovered_candidate(

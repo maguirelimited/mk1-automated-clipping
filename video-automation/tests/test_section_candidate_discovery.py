@@ -775,7 +775,11 @@ def test_zero_candidate_section_with_section_level_transcript_quality_flags_vali
 
 
 def test_max_candidates_per_section_is_respected():
-    many = [_candidate(index) for index in range(1, 6)]
+    many = [
+        _candidate(1, start_sec=101.0, end_sec=116.0, duration_sec=15.0),
+        _candidate(2, start_sec=117.0, end_sec=132.0, duration_sec=15.0),
+        _candidate(3, start_sec=133.0, end_sec=148.0, duration_sec=15.0),
+    ]
     client = FakeModelClient([_response(_result(candidates=many))])
 
     result = discovery.discover_candidates_for_section(
@@ -929,7 +933,12 @@ def test_batch_discovery_preserves_section_level_transcript_quality_flags():
 
 
 def test_aggregate_counts_are_correct():
-    first = _result(candidates=[_candidate(1), _candidate(2)])
+    first = _result(
+        candidates=[
+            _candidate(1, start_sec=101.0, end_sec=116.0, duration_sec=15.0),
+            _candidate(2, start_sec=130.0, end_sec=145.0, duration_sec=15.0),
+        ]
+    )
     second = _result(usable=False, candidates=[])
     second["section_id"] = "section_0002"
     client = FakeModelClient([_response(first), _response(second)])
