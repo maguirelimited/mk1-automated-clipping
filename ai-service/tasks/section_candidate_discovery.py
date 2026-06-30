@@ -1,11 +1,33 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
-from model_client import OllamaModelClient
-from output_validation import validate_model_output, validate_with_one_repair
 from task_router import AITaskError
+
+BASE_PROMPT_VERSION = "section_candidate_discovery_base_v1"
+DEFAULT_FUNNEL_ID = "business"
+
+FUNNEL_RULE_ALIASES = {
+    "business": "business",
+    "business_ai": "business",
+    "mfm_business_ai_001": "business",
+    "finance": "finance",
+    "sport": "sport",
+    "sports": "sport",
+    "comedy": "comedy",
+}
+
+FUNNEL_RULE_VERSIONS = {
+    "business": "business_v1",
+    "finance": "finance_v1",
+    "sport": "sport_v1",
+    "comedy": "comedy_v1",
+}
+
+PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
+FUNNEL_RULES_DIR = PROMPTS_DIR / "funnel_rules"
 
 
 def run_section_candidate_discovery(
@@ -32,7 +54,12 @@ def run_section_candidate_discovery(
         )
 
     try:
-        client = model_client or OllamaModelClient(settings)
+        if model_client is None:
+            from model_client import OllamaModelClient
+
+            client = OllamaModelClient(settings)
+        else:
+            client = model_client
     except Exception as exc:
         raise AITaskError(
             "MODEL_CALL_FAILED",
@@ -40,10 +67,12 @@ def run_section_candidate_discovery(
             status_code=502,
         ) from exc
 
+    prompt_metadata = resolve_prompt_metadata(payload)
     prompt = build_section_candidate_discovery_prompt(
         prompt_text=prompt_text,
         section=section,
         config=task_input.get("config") if isinstance(task_input.get("config"), dict) else {},
+        prompt_metadata=prompt_metadata,
     )
     try:
         response = client.generate(prompt)
@@ -55,6 +84,8 @@ def run_section_candidate_discovery(
             f"Model call failed: {getattr(response, 'error')}",
             status_code=502,
         )
+
+    from output_validation import validate_model_output, validate_with_one_repair
 
     raw_text = getattr(response, "text", None)
     validation = validate_model_output(raw_text, schema)
@@ -77,7 +108,9 @@ def run_section_candidate_discovery(
             validation.error_message or "Model output did not match section discovery schema.",
             status_code=502,
         )
-    return validation.parsed_output
+    result = dict(validation.parsed_output)
+    result["prompt_metadata"] = prompt_metadata
+    return result
 
 
 def build_section_candidate_discovery_prompt(
@@ -85,16 +118,80 @@ def build_section_candidate_discovery_prompt(
     prompt_text: str,
     section: dict[str, Any],
     config: dict[str, Any],
+    prompt_metadata: dict[str, Any],
 ) -> str:
     context = {
         "section": section,
         "config": config,
+        "prompt_metadata": prompt_metadata,
     }
     return "\n\n".join(
         [
             prompt_text.strip(),
+            "RESOLVED FUNNEL JUDGEMENT RULES:",
+            _load_funnel_rules_text(str(prompt_metadata["funnel_rules_version"])),
             "REQUEST CONTEXT - JSON:",
             json.dumps(context, indent=2, sort_keys=True),
             "Return the JSON object only.",
         ]
     )
+
+
+def resolve_prompt_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    task_input = payload.get("input")
+    task_input = task_input if isinstance(task_input, dict) else {}
+    config = task_input.get("config")
+    config = config if isinstance(config, dict) else {}
+    requested = _first_non_empty(
+        payload.get("funnel_id"),
+        task_input.get("funnel_id"),
+        config.get("funnel_id"),
+    )
+    resolved = resolve_funnel_id(requested)
+    rules_version = FUNNEL_RULE_VERSIONS[resolved]
+    return {
+        "base_prompt_version": str(payload.get("prompt_version") or BASE_PROMPT_VERSION),
+        "requested_funnel_id": requested,
+        "resolved_funnel_id": resolved,
+        "funnel_rules_version": rules_version,
+    }
+
+
+def resolve_funnel_id(funnel_id: Any) -> str:
+    if funnel_id is None or (isinstance(funnel_id, str) and not funnel_id.strip()):
+        return DEFAULT_FUNNEL_ID
+    raw = str(funnel_id).strip().lower()
+    resolved = FUNNEL_RULE_ALIASES.get(raw)
+    if resolved is None:
+        raise AITaskError(
+            "UNKNOWN_FUNNEL_ID",
+            f"Unknown funnel_id {funnel_id!r}. Supported funnel IDs: {', '.join(sorted(FUNNEL_RULE_ALIASES))}.",
+            status_code=400,
+        )
+    return resolved
+
+
+def _load_funnel_rules_text(rules_version: str) -> str:
+    path = (FUNNEL_RULES_DIR / f"{rules_version}.txt").resolve()
+    root = FUNNEL_RULES_DIR.resolve()
+    if path.parent != root:
+        raise AITaskError(
+            "INVALID_FUNNEL_RULES_VERSION",
+            "Funnel rules must be loaded from the configured funnel rules directory.",
+            status_code=500,
+        )
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError as exc:
+        raise AITaskError(
+            "FUNNEL_RULES_NOT_FOUND",
+            f"Funnel rules file not found: {rules_version}",
+            status_code=500,
+        ) from exc
+
+
+def _first_non_empty(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None

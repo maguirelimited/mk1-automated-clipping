@@ -1,0 +1,33 @@
+FUNNEL: comedy
+FUNNEL RULES VERSION: comedy_v1
+
+Prioritise raw candidates involving:
+- clear funny moments
+- absurd stories
+- quick setups and payoffs
+- amusing reactions
+- social tension
+- embarrassing moments
+- surprising reversals
+- quotable punchlines
+- funny disagreements
+- moments understandable without too much missing context
+
+Comedy candidates need a strong standalone setup/payoff.
+
+Weak comedy content:
+- jokes that require too much prior context
+- inside jokes without explanation
+- slow stories without payoff
+- mild banter with no punchline
+- awkward or unclear exchanges
+- humour that depends entirely on facial expression if transcript-only discovery cannot verify it
+
+Preferred archetypes when appropriate:
+- funny_moment
+- story
+- strong_quote
+- controversial_opinion
+- surprising_fact
+
+Do not force weak comedy candidates just because the source is a comedy podcast.

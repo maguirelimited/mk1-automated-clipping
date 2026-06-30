@@ -42,8 +42,9 @@ from processing_contracts import (
 SECTION_DISCOVERY_SCHEMA_VERSION = "section_candidate_discovery_v1"
 SECTION_DISCOVERY_BATCH_SCHEMA_VERSION = "section_candidate_discovery_batch_v1"
 SECTION_DISCOVERY_ARTIFACT_FILENAME = "section_candidate_discovery.json"
-DEFAULT_PROMPT_VERSION = "section_candidate_discovery_v1"
+DEFAULT_PROMPT_VERSION = "section_candidate_discovery_base_v1"
 DEFAULT_SCHEMA_VERSION = "section_candidate_discovery_v1"
+DEFAULT_FUNNEL_ID = "business"
 
 DEFAULT_FAIL_FAST = False
 DEFAULT_MAX_CANDIDATES_PER_SECTION = 3
@@ -139,6 +140,7 @@ class CandidateDiscoveryConfig:
     transcript_start_sec: float | None = None
     transcript_end_sec: float | None = None
     video_duration_sec: float | None = None
+    funnel_id: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -156,6 +158,7 @@ class AiServiceSectionDiscoveryClient:
         job_id: str = "section-candidate-discovery",
         prompt_version: str = DEFAULT_PROMPT_VERSION,
         schema_version: str = DEFAULT_SCHEMA_VERSION,
+        funnel_id: str | None = None,
     ):
         self.base_url = base_url
         self.timeout_seconds = timeout_seconds
@@ -163,6 +166,7 @@ class AiServiceSectionDiscoveryClient:
         self.job_id = job_id
         self.prompt_version = prompt_version
         self.schema_version = schema_version
+        self.funnel_id = funnel_id
 
     def discover_section(
         self,
@@ -177,6 +181,9 @@ class AiServiceSectionDiscoveryClient:
             "prompt_version": self.prompt_version,
             "schema_version": self.schema_version,
         }
+        effective_funnel_id = self.funnel_id or config.funnel_id
+        if effective_funnel_id:
+            envelope["funnel_id"] = effective_funnel_id
         url = (self.base_url.rstrip("/") if self.base_url else ai_service_url()) + "/ai/run"
         timeout = (
             self.timeout_seconds
@@ -252,6 +259,7 @@ def apply_default_discovery_config(
             transcript_start_sec=_optional_float(config.get("transcript_start_sec")),
             transcript_end_sec=_optional_float(config.get("transcript_end_sec")),
             video_duration_sec=_optional_float(config.get("video_duration_sec")),
+            funnel_id=_optional_string(config.get("funnel_id")),
         )
     else:
         raise SectionCandidateDiscoveryError(
@@ -338,15 +346,21 @@ def discover_candidates_for_section(
     ai_client: Any | None = None,
     config: dict[str, Any] | CandidateDiscoveryConfig | None = None,
     prompt_template: str | None = None,
+    funnel_id: str | None = None,
 ) -> dict[str, Any]:
     resolved_config = apply_default_discovery_config(config)
-    client = ai_client or AiServiceSectionDiscoveryClient()
+    effective_funnel_id = funnel_id or resolved_config.funnel_id
+    client = ai_client or AiServiceSectionDiscoveryClient(funnel_id=effective_funnel_id)
     if hasattr(client, "discover_section"):
         result = client.discover_section(section, config=resolved_config)
     else:
+        prompt_config = {
+            **resolved_config.as_dict(),
+            "funnel_id": effective_funnel_id or DEFAULT_FUNNEL_ID,
+        }
         prompt = build_section_discovery_prompt(
             section,
-            config=resolved_config,
+            config=prompt_config,
             prompt_template=prompt_template,
         )
         response = client.generate(prompt)
@@ -374,6 +388,7 @@ def discover_candidates_for_sections(
     ai_client: Any | None = None,
     config: dict[str, Any] | CandidateDiscoveryConfig | None = None,
     prompt_template: str | None = None,
+    funnel_id: str | None = None,
 ) -> dict[str, Any]:
     resolved_config = apply_default_discovery_config(config)
     section_results: list[dict[str, Any]] = []
@@ -387,6 +402,7 @@ def discover_candidates_for_sections(
                 ai_client=ai_client,
                 config=resolved_config,
                 prompt_template=prompt_template,
+                funnel_id=funnel_id,
             )
             section_results.append(result)
         except SectionCandidateDiscoveryError as exc:
@@ -986,6 +1002,12 @@ def _optional_float(value: Any) -> float | None:
     if not math.isfinite(parsed):
         return None
     return parsed
+
+
+def _optional_string(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def _is_non_negative_int(value: Any) -> bool:

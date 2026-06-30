@@ -36,6 +36,16 @@ class FakeModelClient:
         return response
 
 
+class FakeDiscoveryClient:
+    def __init__(self, result: dict):
+        self.result = result
+        self.configs = []
+
+    def discover_section(self, section: dict, *, config):
+        self.configs.append(config)
+        return self.result
+
+
 def _section(section_id: str = "section_0001") -> dict:
     return {
         "section_id": section_id,
@@ -1316,6 +1326,70 @@ def test_prompt_1_raw_candidate_transcript_quality_flags_match_discovery_flags()
         discovery.ALLOWED_TRANSCRIPT_QUALITY_FLAG_VALUES
         == contracts.ALLOWED_TRANSCRIPT_QUALITY_FLAG_VALUES
     )
+
+
+def test_ai_service_client_forwards_funnel_id_in_request():
+    calls = []
+
+    def transport(url, envelope, timeout):
+        del url, timeout
+        calls.append(envelope)
+        return (
+            200,
+            json.dumps(
+                {
+                    "status": "ok",
+                    "result": _result(usable=False, candidates=[]),
+                }
+            ),
+        )
+
+    client = discovery.AiServiceSectionDiscoveryClient(
+        base_url="http://ai-service.test",
+        transport=transport,
+        funnel_id="finance",
+    )
+
+    result = client.discover_section(_section(), config=_config())
+
+    assert result["usable"] is False
+    assert calls[0]["funnel_id"] == "finance"
+    assert calls[0]["prompt_version"] == discovery.DEFAULT_PROMPT_VERSION
+
+
+def test_batch_discovery_forwards_funnel_id_to_fake_prompt_context():
+    client = FakeModelClient([_response(_result(usable=False, candidates=[]))])
+
+    discovery.discover_candidates_for_sections(
+        [_section()],
+        ai_client=client,
+        config=_config(),
+        funnel_id="comedy",
+        prompt_template="PROMPT",
+    )
+
+    assert '"funnel_id": "comedy"' in client.prompts[0]
+
+
+def test_batch_discovery_preserves_prompt_metadata_returned_by_ai_service():
+    result = _result(usable=False, candidates=[])
+    result["prompt_metadata"] = {
+        "base_prompt_version": "section_candidate_discovery_base_v1",
+        "requested_funnel_id": "mfm_business_ai_001",
+        "resolved_funnel_id": "business",
+        "funnel_rules_version": "business_v1",
+    }
+    client = FakeDiscoveryClient(result)
+
+    batch = discovery.discover_candidates_for_sections(
+        [_section()],
+        ai_client=client,
+        config=_config(),
+        funnel_id="mfm_business_ai_001",
+    )
+
+    assert batch["section_results"][0]["prompt_metadata"]["resolved_funnel_id"] == "business"
+    assert batch["section_results"][0]["prompt_metadata"]["funnel_rules_version"] == "business_v1"
 
 
 def test_tests_use_fake_ai_client():

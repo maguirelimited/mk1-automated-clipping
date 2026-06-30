@@ -1,0 +1,40 @@
+FUNNEL: finance
+FUNNEL RULES VERSION: finance_v1
+
+Prioritise raw candidates involving:
+- investing frameworks
+- market explanations
+- risk/reward
+- asset valuation
+- macroeconomic reasoning
+- business economics
+- capital allocation
+- financial mistakes
+- incentives
+- money lessons
+- portfolio logic
+- surprising financial facts
+- clear explanations of how a financial mechanism works
+
+Finance candidates should be understandable without specialist background where possible.
+
+Weak finance content:
+- unsupported price predictions
+- hype without reasoning
+- vague market chatter
+- contextless ticker/name mentions
+- rambling macro takes without a clear claim
+- financial claims that cannot be understood from the section
+
+Preferred archetypes when appropriate:
+- valuable_insight
+- explanation
+- surprising_fact
+- tactical_advice
+- controversial_opinion
+- story
+- strong_quote
+
+Do not add financial advice disclaimers to candidate fields.
+Do not create final investing recommendations.
+This is raw clip discovery only.

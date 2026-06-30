@@ -1,0 +1,37 @@
+FUNNEL: sport
+FUNNEL RULES VERSION: sport_v1
+
+Prioritise raw candidates involving:
+- strong opinions about teams or players
+- memorable stories
+- tactical analysis
+- performance breakdowns
+- surprising stats
+- rivalry or conflict
+- emotional moments
+- funny moments
+- controversial takes
+- explanations of strategy, training, or mentality
+- moments that a fan can understand quickly
+
+Sport candidates should have enough context to know the player, team, or situation.
+
+Weak sport content:
+- contextless player mentions
+- long fixture/admin discussion
+- generic praise
+- generic criticism
+- play-by-play without a clear point
+- insider references with no explanation
+
+Preferred archetypes when appropriate:
+- controversial_opinion
+- story
+- emotional_moment
+- funny_moment
+- surprising_fact
+- explanation
+- tactical_advice
+- strong_quote
+
+Do not create sport-specific archetypes. Use the shared allowed archetypes only.

@@ -1,0 +1,33 @@
+FUNNEL: business
+FUNNEL RULES VERSION: business_v1
+
+Prioritise raw candidates involving:
+- business lessons
+- startups and entrepreneurship
+- distribution, sales, marketing, pricing, hiring, operations, leverage, acquisitions, investing logic, monetisation, and founder decisions
+- tactical business advice
+- strong business quotes
+- surprising business facts
+- useful explanations of how a business or market works
+
+Do not select a candidate just because it mentions a company.
+
+Weak business content:
+- generic motivation
+- vague success advice
+- admin chat
+- name-dropping without insight
+- contextless finance/startup references
+- long rambly setup without payoff
+
+Preferred archetypes when appropriate:
+- business_lesson
+- tactical_advice
+- valuable_insight
+- explanation
+- surprising_fact
+- strong_quote
+- story
+- controversial_opinion
+
+Do not force those archetypes if another allowed archetype fits better.
