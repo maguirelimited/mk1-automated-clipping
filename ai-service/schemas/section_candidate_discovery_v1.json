@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "section_candidate_discovery_v1"
+    },
+    "section_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "usable": {
+      "type": "boolean"
+    },
+    "confidence": {
+      "maximum": 1,
+      "minimum": 0,
+      "type": "number"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "candidates": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_local_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "source_section_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "start_sec": {
+            "type": "number"
+          },
+          "end_sec": {
+            "type": "number"
+          },
+          "duration_sec": {
+            "type": "number"
+          },
+          "hook_text": {
+            "type": "string"
+          },
+          "core_idea_summary": {
+            "type": "string"
+          },
+          "why_candidate_has_potential": {
+            "type": "string"
+          },
+          "confidence": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "candidate_local_id",
+          "source_section_id",
+          "start_sec",
+          "end_sec",
+          "duration_sec",
+          "hook_text",
+          "core_idea_summary",
+          "why_candidate_has_potential",
+          "confidence",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "section_id",
+    "usable",
+    "confidence",
+    "reason",
+    "warnings",
+    "candidates"
+  ],
+  "type": "object"
+}
