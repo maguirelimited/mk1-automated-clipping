@@ -165,7 +165,14 @@ def run_post_processing_mk1(
         warnings.append("zero_candidates_received")
 
     # ------------------------------------------------------------------
-    # 7. Return structured READY_FOR_SELECTION result
+    # 7. Resolve the intended post-processing report path
+    # ------------------------------------------------------------------
+    post_processing_report_path = os.path.join(
+        directories["reports"], "post_processing_report.json"
+    )
+
+    # ------------------------------------------------------------------
+    # 8. Return structured READY_FOR_SELECTION result
     # ------------------------------------------------------------------
     return {
         "schema_version": POST_PROCESSING_ENTRYPOINT_SCHEMA_VERSION,
@@ -176,6 +183,7 @@ def run_post_processing_mk1(
         "source_video_path": str(resolved_video_path),
         "output_root": str(effective_output_root),
         "directories": directories,
+        "post_processing_report_path": post_processing_report_path,
         "raw_candidates_received": raw_candidates_received,
         "job_metadata": job_metadata,
         "config": config,
