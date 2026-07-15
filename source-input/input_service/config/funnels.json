@@ -1,18 +1,49 @@
 [
   {
-    "funnel_id": "mfm_business_ai_001",
+    "active": true,
+    "analytics_config": {
+      "enabled": false,
+      "event_namespace": "mfm_business_ai_001",
+      "track_fields": [
+        "source_url",
+        "source_title",
+        "clip_count",
+        "posting_status"
+      ],
+      "webhook_url": ""
+    },
     "angle": "business productivity ai leverage podcasts",
-    "source_type": "youtube_channels",
+    "funnel_id": "mfm_business_ai_001",
+    "max_downloads_per_run": 1,
+    "max_duration_minutes": 180,
+    "min_duration_minutes": 25,
     "pipeline_profile": "mfm_business_ai_001",
+    "posting_config": {
+      "default_caption_style": "business-insight",
+      "enabled": false,
+      "hashtags": [
+        "business",
+        "productivity",
+        "aitools",
+        "startups",
+        "entrepreneurship",
+        "saas"
+      ],
+      "mode": "manual_review",
+      "platforms": [
+        "youtube_shorts"
+      ],
+      "requires_human_approval": true
+    },
+    "source_type": "youtube_channels",
     "sources": [
       {
-        "source_id": "my_first_million",
-        "label": "My First Million",
-        "source_type": "youtube_channel",
-        "url": "https://www.youtube.com/@MyFirstMillionPod/videos",
         "active": true,
-        "max_videos_per_source": 25,
         "hydrate_missing_duration": true,
+        "label": "My First Million",
+        "max_videos_per_source": 25,
+        "source_id": "my_first_million",
+        "source_type": "youtube_channel",
         "title_blocklist": [
           "shorts",
           "short",
@@ -24,74 +55,43 @@
           "teaser",
           "preview",
           "compilation"
-        ]
+        ],
+        "url": "https://www.youtube.com/@MyFirstMillionPod/videos"
       }
-    ],
-    "min_duration_minutes": 25,
-    "max_duration_minutes": 180,
-    "max_downloads_per_run": 1,
-    "posting_config": {
-      "enabled": false,
-      "mode": "manual_review",
-      "platforms": [
-        "youtube_shorts"
-      ],
-      "default_caption_style": "business-insight",
-      "hashtags": [
-        "business",
-        "productivity",
-        "aitools",
-        "startups",
-        "entrepreneurship",
-        "saas"
-      ],
-      "requires_human_approval": true
-    },
-    "analytics_config": {
-      "enabled": false,
-      "event_namespace": "mfm_business_ai_001",
-      "webhook_url": "",
-      "track_fields": [
-        "source_url",
-        "source_title",
-        "clip_count",
-        "posting_status"
-      ]
-    },
-    "active": true
+    ]
   },
   {
-    "funnel_id": "template_youtube_podcast_001",
-    "angle": "copy this inactive template for a new YouTube podcast funnel",
-    "source_type": "youtube_channels",
-    "pipeline_profile": "template_youtube_podcast_001",
-    "sources": [
-      {
-        "source_id": "replace_me",
-        "label": "Replace Me Channel",
-        "source_type": "youtube_channel",
-        "url": "https://www.youtube.com/@ReplaceMe/videos",
-        "active": false,
-        "max_videos_per_source": 25,
-        "hydrate_missing_duration": true
-      }
-    ],
-    "min_duration_minutes": 20,
-    "max_duration_minutes": 180,
-    "max_downloads_per_run": 1,
-    "posting_config": {
-      "enabled": false,
-      "mode": "manual_review",
-      "platforms": [],
-      "hashtags": [],
-      "requires_human_approval": true
-    },
+    "active": false,
     "analytics_config": {
       "enabled": false,
       "event_namespace": "template_youtube_podcast_001",
-      "webhook_url": "",
-      "track_fields": []
+      "track_fields": [],
+      "webhook_url": ""
     },
-    "active": false
+    "angle": "copy this inactive template for a new YouTube podcast funnel",
+    "funnel_id": "template_youtube_podcast_001",
+    "max_downloads_per_run": 1,
+    "max_duration_minutes": 180,
+    "min_duration_minutes": 20,
+    "pipeline_profile": "template_youtube_podcast_001",
+    "posting_config": {
+      "enabled": false,
+      "hashtags": [],
+      "mode": "manual_review",
+      "platforms": [],
+      "requires_human_approval": true
+    },
+    "source_type": "youtube_channels",
+    "sources": [
+      {
+        "active": false,
+        "hydrate_missing_duration": true,
+        "label": "Replace Me Channel",
+        "max_videos_per_source": 25,
+        "source_id": "replace_me",
+        "source_type": "youtube_channel",
+        "url": "https://www.youtube.com/@ReplaceMe/videos"
+      }
+    ]
   }
 ]

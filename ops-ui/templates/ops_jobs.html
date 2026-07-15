@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="overview-page">
+  <header class="overview-intro">
+    <p class="muted"><a href="{{ url_for('ops_overview') }}">← Operator Console</a></p>
+    <h2>Jobs</h2>
+    <p class="muted">
+      Which work units exist, and which ones need inspection?
+      {% if list_connected %}
+        Showing {{ jobs_filtered_count }} of {{ jobs_total }}.
+      {% endif %}
+      {% if jobs_filter_run_id %}
+        Filtered to run <code>{{ jobs_filter_run_id }}</code>.
+        <a href="{{ url_for('ops_run_detail', run_id=jobs_filter_run_id) }}">Open run</a>
+        ·
+        <a href="{{ url_for('ops_jobs') }}">Clear filter</a>
+      {% endif %}
+    </p>
+    {% set links = [
+      {"label": "Operator Console", "href": url_for('ops_overview'), "primary": true},
+      {"label": "Runs", "href": url_for('ops_runs')},
+      {"label": "Outputs", "href": url_for('ops_outputs')},
+      {"label": "Failures", "href": url_for('ops_failures')},
+    ] %}
+    {% include "partials/_ops_loop_nav.html" %}
+  </header>
+
+  {% if not list_connected %}
+  <div class="flash bad">
+    Jobs unavailable — observability backend disconnected. Job data is not fabricated.
+  </div>
+  <p class="console-section-link">
+    <a href="{{ url_for('ops_overview') }}">Return to Operator Console</a>
+  </p>
+  {% else %}
+
+  {% with fields=filter_fields, action=filter_action, clear_url=filter_clear_url %}
+    {% include "partials/_filter_bar.html" %}
+  {% endwith %}
+
+  {% with jobs=jobs, jobs_empty=jobs_empty, jobs_error=jobs_error, title='Pipeline jobs', show_view_all=false %}
+    {% include "partials/_jobs_table.html" %}
+  {% endwith %}
+  {% endif %}
+</section>
+{% endblock %}

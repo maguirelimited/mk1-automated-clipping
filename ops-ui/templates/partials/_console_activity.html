@@ -1,0 +1,58 @@
+<article class="card overview-card console-section console-activity">
+  <h3>Current activity</h3>
+  {% if not overview_connected %}
+  <p class="overview-metric status-muted">Unknown</p>
+  <p class="muted">Activity unavailable while disconnected.</p>
+  {% else %}
+  <p class="overview-metric status-{{ 'warn' if overview_activity == 'running' else ('bad' if overview_activity in ['failing', 'blocked'] else 'muted') }}">
+    {{ overview_activity|upper }}
+  </p>
+  {% if overview_current_activity %}
+  <p class="muted">{{ overview_current_activity }}</p>
+  {% endif %}
+  {% if console_queue and (console_queue.pending > 0 or console_queue.failed > 0) %}
+  <p class="muted console-queue-hint">
+    Queue: {{ console_queue.pending }} pending, {{ console_queue.failed }} failed
+  </p>
+  {% endif %}
+  {% if overview_active_run %}
+  <dl class="overview-dl">
+    <div>
+      <dt>Active run</dt>
+      <dd>
+        <a href="{{ url_for('ops_run_detail', run_id=overview_active_run.run_id) }}">
+          <code>{{ overview_active_run.run_id }}</code>
+        </a>
+      </dd>
+    </div>
+    {% if overview_active_run.trigger %}
+    <div><dt>Trigger</dt><dd>{{ overview_active_run.trigger }}</dd></div>
+    {% endif %}
+    {% if overview_active_run.funnel_id %}
+    <div><dt>Funnel</dt><dd>{{ overview_active_run.funnel_id }}</dd></div>
+    {% endif %}
+    {% if overview_active_run.started_at %}
+    <div><dt>Started</dt><dd>{{ overview_active_run.started_at }}</dd></div>
+    {% endif %}
+    {% if overview_active_run.status %}
+    <div><dt>Status</dt><dd>{{ overview_active_run.status }}</dd></div>
+    {% endif %}
+  </dl>
+  {% elif overview_activity|lower == 'idle' %}
+  <p class="muted">No pipeline run or video jobs in progress.</p>
+  {% endif %}
+  {% if overview_active_run %}
+  <div class="console-run-links">
+    <a href="{{ url_for('ops_run_detail', run_id=overview_active_run.run_id) }}">Monitor run</a>
+    <a href="{{ url_for('ops_jobs', state='running') }}">View jobs</a>
+    <a href="{{ url_for('ops_jobs', run_id=overview_active_run.run_id) }}">Jobs for this run</a>
+  </div>
+  {% elif console_activity_href %}
+  <p class="console-section-link">
+    <a href="{{ console_activity_href }}">
+      {% if overview_activity in ['failing', 'blocked'] %}Inspect jobs{% else %}Monitor run{% endif %}
+    </a>
+  </p>
+  {% endif %}
+  {% endif %}
+</article>

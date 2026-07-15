@@ -125,3 +125,80 @@ def test_model_test_button_handles_unreachable(tmp_path: Path) -> None:
     # Renders the settings page with a degraded diagnostic; never 500s.
     assert resp.status_code == 200
     assert b"diagnostics/model status" in resp.data
+
+
+def _fake_ai_health(url: str, timeout: float) -> dict:
+    return {
+        "reachable": False,
+        "status": "unreachable",
+        "status_code": None,
+        "provider": None,
+        "model_configured": None,
+        "backend_reachable": False,
+        "model_available": False,
+        "error": "mock",
+        "checked_at": "now",
+    }
+
+
+def test_health_probe_uses_effective_saved_ai_service_url(
+    tmp_path: Path, monkeypatch
+) -> None:
+    settings = _settings(tmp_path)
+    store = ControlStore(settings.control_db_path, controls_file=settings.controls_file)
+    store.init_db()
+    store.set_ai_config({"ai_service_url": "http://127.0.0.1:5999"})
+
+    probed: list[str] = []
+
+    def _capture_health(url: str, timeout: float) -> dict:
+        probed.append(url)
+        return _fake_ai_health(url, timeout)
+
+    monkeypatch.setattr("ops_ui.app.ai_health", _capture_health)
+
+    app = create_app(settings)
+    response = app.test_client().get("/settings")
+    assert response.status_code == 200
+    assert probed == ["http://127.0.0.1:5999"]
+    assert b"http://127.0.0.1:5999" in response.data
+    assert settings.ai_service_url.encode() not in response.data
+
+
+def test_health_probe_falls_back_to_settings_url_without_ui_or_env(
+    tmp_path: Path, monkeypatch
+) -> None:
+    settings = _settings(tmp_path)
+    monkeypatch.delenv("AI_SERVICE_URL", raising=False)
+    monkeypatch.delenv("OPS_AI_SERVICE_URL", raising=False)
+
+    probed: list[str] = []
+
+    def _capture_health(url: str, timeout: float) -> dict:
+        probed.append(url)
+        return _fake_ai_health(url, timeout)
+
+    monkeypatch.setattr("ops_ui.app.ai_health", _capture_health)
+
+    app = create_app(settings)
+    app.test_client().get("/settings")
+    assert probed == [settings.ai_service_url]
+
+
+def test_health_probe_uses_env_ai_service_url_when_no_ui_saved(
+    tmp_path: Path, monkeypatch
+) -> None:
+    settings = _settings(tmp_path)
+    monkeypatch.setenv("AI_SERVICE_URL", "http://127.0.0.1:5888")
+
+    probed: list[str] = []
+
+    def _capture_health(url: str, timeout: float) -> dict:
+        probed.append(url)
+        return _fake_ai_health(url, timeout)
+
+    monkeypatch.setattr("ops_ui.app.ai_health", _capture_health)
+
+    app = create_app(settings)
+    app.test_client().get("/settings")
+    assert probed == ["http://127.0.0.1:5888"]

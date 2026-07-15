@@ -1,0 +1,32 @@
+# config/platforms/youtube.yaml
+#
+# Platform configuration for YouTube Shorts.
+# Do not include secrets, API tokens, OAuth credentials, or real channel IDs here.
+# Real credentials belong in deploy/env/<environment>/env.example (filled locally).
+
+platform:
+  id: youtube
+  name: YouTube Shorts
+  enabled: true
+
+uploading:
+  # Platform-level upload toggle. Environment config and runtime kill switch
+  # take precedence over this value.
+  enabled: false
+
+format:
+  aspect_ratio: "9:16"
+  width: 1080
+  height: 1920
+  max_duration_seconds: 60
+  title_max_length: 100
+  caption_max_length: 5000
+
+accounts:
+  # Populated locally via credentials — never committed.
+  default_channel_id: null
+
+posting:
+  # Hashtag and scheduling placeholders. Populated per-funnel or at runtime.
+  default_hashtags: []
+  posting_windows: []

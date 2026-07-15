@@ -14,8 +14,10 @@ from .adapters.x import XAdapter
 from .adapters.youtube import YouTubeAdapter
 from .config import load_channel_profiles, load_settings, runtime_environment, upload_mode
 from .models import FailureClass, PublishResult, PublishState, UploadStatus
+from .runtime_upload_control import upload_block_reason
 from .store import OutputStore
 from .time_utils import now_iso, now_utc, parse_iso_datetime
+from .upload_authority import assert_real_upload_permitted
 
 log = logging.getLogger("output_funnel.uploader")
 
@@ -81,6 +83,17 @@ def upload_due_jobs(
         except Exception:
             publisher_cfg = {}
     lease_seconds = int(publisher_cfg.get("lease_seconds") or 1800)
+    if upload_mode() == "real":
+        block = upload_block_reason()
+        if block:
+            return {
+                "count": 0,
+                "uploaded": 0,
+                "missed": len(missed_results),
+                "results": list(missed_results),
+                "skipped": True,
+                "reason": block,
+            }
     claimed = store.claim_upload_due_jobs(now=now_str, limit=limit, lease_owner=lease_owner, lease_seconds=lease_seconds)
     results: list[dict[str, Any]] = list(missed_results)
     for job in claimed:
@@ -139,6 +152,17 @@ def upload_one_job(
             "reason": account_block["reason"],
             "retry_at": account_block.get("retry_at"),
         }
+    if mode == "real":
+        block = upload_block_reason()
+        if block:
+            _release_upload_blocked(store, upload_job_id, upload_job, block)
+            return {
+                "upload_job_id": upload_job_id,
+                "uploaded": False,
+                "reason": block,
+                "upload_mode": mode,
+                "environment": runtime_environment(),
+            }
     if mode == "dry_run":
         result = _dry_run_result(upload_job)
     else:
@@ -168,9 +192,29 @@ def upload_one_job(
         else:
             start = time.monotonic()
             try:
+                # Final gate immediately before any platform API call.
+                assert_real_upload_permitted()
                 reconciled = adapter.reconcile(upload_job, source_clip, profile)
-                result = reconciled if reconciled is not None else adapter.publish(upload_job, source_clip, profile)
+                if reconciled is None:
+                    assert_real_upload_permitted()
+                    result = adapter.publish(upload_job, source_clip, profile)
+                else:
+                    result = reconciled
             except Exception as exc:
+                if str(exc).startswith("real upload denied:"):
+                    _release_upload_blocked(
+                        store,
+                        upload_job_id,
+                        upload_job,
+                        str(exc).removeprefix("real upload denied:").strip() or "uploads_blocked",
+                    )
+                    return {
+                        "upload_job_id": upload_job_id,
+                        "uploaded": False,
+                        "reason": str(exc).removeprefix("real upload denied:").strip() or "uploads_blocked",
+                        "upload_mode": mode,
+                        "environment": runtime_environment(),
+                    }
                 failure_class = (
                     FailureClass.AUTHENTICATION_FAILURE
                     if "token" in str(exc).lower() or "auth" in str(exc).lower()
@@ -318,6 +362,23 @@ def _account_block_reason(store: OutputStore, upload_job: dict[str, Any]) -> dic
         if dt is not None and dt > now:
             return {"reason": reason, "retry_at": state.get(key)}
     return None
+
+
+def _release_upload_blocked(
+    store: OutputStore,
+    upload_job_id: int,
+    upload_job: dict[str, Any],
+    reason: str,
+) -> None:
+    store.update_upload_job(
+        upload_job_id,
+        status=UploadStatus.PENDING_UPLOAD,
+        last_error=reason,
+        lease_owner=None,
+        lease_token=None,
+        lease_heartbeat_at=None,
+        lease_expires_at=None,
+    )
 
 
 def _defer_account_blocked(

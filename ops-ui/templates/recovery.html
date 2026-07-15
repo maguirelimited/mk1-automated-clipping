@@ -94,6 +94,12 @@
           <strong>{{ item.id }}</strong>
           <span>{{ item.status }} @ {{ item.stage }} — {{ item.detail }}</span>
           <time>{{ item.since }}</time>
+          {% if item.can_cancel %}
+            <form method="post" action="{{ url_for('cancel_video_job', job_id=item.id) }}"
+                  onsubmit="return confirm('Mark {{ item.id }} as failed (operator cancel)?');">
+              <button type="submit" class="secondary">Cancel job</button>
+            </form>
+          {% endif %}
         </li>
       {% else %}
         <li class="muted">No stuck jobs detected with current thresholds.</li>
@@ -104,6 +110,9 @@
       queued &gt; {{ (status.stuck_queued_sec / 60)|round(0) }}m,
       uploading &gt; {{ (status.stuck_uploading_sec / 60)|round(0) }}m.
       Tune via <code>OPS_UI_STUCK_*_SEC</code>.
+      Running jobs use <code>heartbeat_at</code> when present.
+      video-automation also auto-fails stale queued/running jobs
+      (<code>VIDEO_JOB_STALE_*_SEC</code>) while the service is up.
     </p>
   </article>
 </section>

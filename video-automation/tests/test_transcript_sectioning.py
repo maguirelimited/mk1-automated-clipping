@@ -213,6 +213,101 @@ def test_sectioning_does_not_call_the_ai_service(monkeypatch: pytest.MonkeyPatch
     assert len(sections) == 1
 
 
+def test_default_sectioning_config_uses_production_defaults():
+    cfg = sectioning.default_sectioning_config()
+
+    assert cfg.target_section_duration_sec == 300.0
+    assert cfg.max_section_duration_sec == 420.0
+    assert cfg.overlap_sec == 60.0
+    assert cfg.min_section_duration_sec == 60.0
+
+
+def test_sectioning_is_deterministic_for_same_transcript():
+    transcript = _transcript(14)
+    first = sectioning.section_transcript(transcript, config=_test_config())
+    second = sectioning.section_transcript(transcript, config=_test_config())
+
+    assert first == second
+
+
+def test_sections_use_whole_whisper_segments_only():
+    transcript = _transcript(14)
+    sections = sectioning.section_transcript(transcript, config=_test_config())
+    segment_by_index = {
+        index: segment for index, segment in enumerate(transcript["segments"])
+    }
+
+    for section in sections:
+        refs = section["source_segment_refs"]
+        indices = [ref["segment_index"] for ref in refs]
+        assert indices == list(range(indices[0], indices[-1] + 1))
+        for ref in refs:
+            source = segment_by_index[ref["segment_index"]]
+            assert ref["start_sec"] == source["start"]
+            assert ref["end_sec"] == source["end"]
+
+
+def test_production_defaults_create_overlapping_neighbours():
+    cfg = sectioning.default_sectioning_config()
+    sections = sectioning.section_transcript(
+        _transcript(50, step=10.0, duration=10.0),
+        config=cfg,
+    )
+
+    assert len(sections) >= 2
+    assert sections[0]["overlap"]["has_next_overlap"] is True
+    assert sections[1]["overlap"]["has_previous_overlap"] is True
+    assert sections[1]["overlap"]["overlap_before_sec"] >= 50.0
+
+
+def test_production_defaults_respect_duration_constraints():
+    cfg = sectioning.default_sectioning_config()
+    sections = sectioning.section_transcript(
+        _transcript(50, step=10.0, duration=10.0),
+        config=cfg,
+    )
+
+    for section in sections:
+        assert section["duration_sec"] >= cfg.min_section_duration_sec - 0.001
+        assert (
+            section["duration_sec"] <= cfg.max_section_duration_sec + 0.001
+            or section["metadata"].get("duration_exceeds_max_reason")
+        )
+
+
+def test_sections_expose_discovery_compatible_fields():
+    sections = sectioning.section_transcript(
+        _transcript(8),
+        source_transcript_path="/tmp/transcript.json",
+        config=_test_config(),
+    )
+
+    for section in sections:
+        assert set(section) >= set(sectioning.SECTION_REQUIRED_FIELDS)
+        assert isinstance(section["section_id"], str) and section["section_id"]
+        assert section["end_sec"] > section["start_sec"]
+        assert isinstance(section["text"], str) and section["text"].strip()
+
+
+def test_transcript_sections_artifact_includes_presentation_metadata():
+    sections = sectioning.section_transcript(_transcript(14), config=_test_config())
+    artifact = sectioning.build_transcript_sections_artifact(
+        job_id="job_123",
+        source_transcript_path="/tmp/transcript.json",
+        sections=sections,
+        sectioning_config=_test_config(),
+        created_at="2026-06-30T12:00:00+00:00",
+    )
+
+    presentation = artifact["presentation"]
+    assert presentation["strategy"] == sectioning.MK1_PRESENTATION_STRATEGY
+    assert presentation["section_count"] == len(sections)
+    assert presentation["source_segment_count"] == 14
+    assert presentation["partition_target_sec"] == 60.0
+    assert presentation["overlap_sec"] == 20.0
+    sectioning.validate_transcript_sections_artifact(artifact)
+
+
 def _write_transcript_file(tmp_root: Path, payload: dict) -> str:
     tmp_root.mkdir(parents=True, exist_ok=True)
     path = tmp_root / "mk1_sectioning_test_transcript.json"

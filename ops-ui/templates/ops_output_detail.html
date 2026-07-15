@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+
+{% set disable_auto_refresh = true %}
+
+{% block content %}
+<section class="overview-page output-detail-page">
+  <header class="overview-intro">
+    <p class="muted">
+      <a href="{{ url_for('ops_overview') }}">← Operator Console</a>
+      ·
+      <a href="{% if output_run_id %}{{ url_for('ops_outputs', run_id=output_run_id) }}{% elif job_id %}{{ url_for('ops_outputs', job_id=job_id) }}{% else %}{{ url_for('ops_outputs') }}{% endif %}">Outputs</a>
+    </p>
+    <h2>Clip <code>{{ clip.clip_id }}</code></h2>
+    <p class="muted">
+      What is this clip, can you preview it, and where did it come from?
+      Review only — approving or rejecting here does not gate publishing.
+    </p>
+    {% if output_loop_links %}
+    <nav class="console-links" aria-label="Clip inspection navigation">
+      {% for link in output_loop_links %}
+      <a class="console-link{% if loop.first %} console-link-primary{% endif %}{% if 'Legacy' in link.label %} console-link-muted{% endif %}" href="{{ link.href }}">{{ link.label }}</a>
+      {% endfor %}
+    </nav>
+    {% endif %}
+  </header>
+
+  <div class="overview-grid output-detail-grid">
+    <article class="card overview-card">
+      <h3>Preview</h3>
+      {% if clip.preview_available and output.media_path %}
+      <video class="output-preview" controls preload="metadata" src="{{ output.media_path }}">
+        Preview unavailable in this browser.
+      </video>
+      {% else %}
+      <p class="muted">
+        Preview unavailable.
+        {% if output_preview_unavailable_reason %}
+        {{ output_preview_unavailable_reason }}
+        {% endif %}
+      </p>
+      {% endif %}
+      {% if not clip.exists %}
+      <p class="flash bad">Output file is missing on disk.</p>
+      {% endif %}
+    </article>
+
+    <article class="card overview-card">
+      <h3>Usability</h3>
+      <p class="overview-metric status-{{ output_validation_tone }}">
+        {{ clip.validation_state or "unknown" }}
+      </p>
+      <dl class="overview-dl">
+        <div><dt>File on disk</dt><dd>{{ "yes" if clip.exists else "no" }}</dd></div>
+        <div><dt>Posting status</dt><dd>{{ clip.posting_state or "unknown" }}</dd></div>
+        <div><dt>Platform</dt><dd>{{ clip.platform or "—" }}</dd></div>
+        <div><dt>Funnel</dt><dd>{{ clip.funnel or "—" }}</dd></div>
+        {% if output.validation_summary and output.validation_summary.detail and output.validation_summary.detail != "Not available" %}
+        <div><dt>Validation detail</dt><dd>{{ output.validation_summary.detail }}</dd></div>
+        {% endif %}
+      </dl>
+      {% if clip.warnings %}
+      <h4 class="subheading">Warnings</h4>
+      <ul class="plain-list">
+        {% for warning in clip.warnings %}
+        <li>{{ warning }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </article>
+  </div>
+
+  <article class="card overview-card">
+    <h3>Identity &amp; source</h3>
+    <dl class="overview-dl">
+      <div><dt>Clip ID</dt><dd><code>{{ clip.clip_id }}</code></dd></div>
+      <div>
+        <dt>Job</dt>
+        <dd><a href="{{ url_for('ops_job_detail', job_id=job_id) }}"><code>{{ job_id }}</code></a></dd>
+      </div>
+      {% if output_run_id %}
+      <div>
+        <dt>Run</dt>
+        <dd><a href="{{ url_for('ops_run_detail', run_id=output_run_id) }}"><code>{{ output_run_id }}</code></a></dd>
+      </div>
+      {% endif %}
+      <div><dt>Environment</dt><dd>{{ clip.environment or "—" }}</dd></div>
+      <div><dt>Preset</dt><dd>{{ clip.preset or "—" }}</dd></div>
+      <div><dt>Source candidate</dt><dd>{{ clip.source_candidate or "—" }}</dd></div>
+      <div><dt>Path</dt><dd><code>{{ clip.output_path or "—" }}</code></dd></div>
+      <div><dt>Created</dt><dd>{{ clip.created_at or "—" }}</dd></div>
+      <div>
+        <dt>Duration</dt>
+        <dd>{% if clip.duration_seconds is not none %}{{ clip.duration_seconds }}s{% else %}—{% endif %}</dd>
+      </div>
+      <div>
+        <dt>Size</dt>
+        <dd>{% if clip.size_bytes is not none %}{{ clip.size_bytes }} bytes{% else %}—{% endif %}</dd>
+      </div>
+    </dl>
+  </article>
+
+  <article class="card overview-card">
+    <h3>Reframing</h3>
+    {% if output_reframe.available %}
+    <p class="overview-metric status-{{ output_reframe_tone or 'muted' }}">
+      {{ output_reframe.detail_title }}
+    </p>
+    {% if output_reframe.detail_lines %}
+    <dl class="overview-dl">
+      {% for label, value in output_reframe.detail_lines %}
+      <div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>
+      {% endfor %}
+    </dl>
+    {% endif %}
+    {% if output_reframe.metrics %}
+    <h4 class="subheading">Eligibility metrics</h4>
+    <dl class="overview-dl">
+      {% for label, value in output_reframe.metrics %}
+      <div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>
+      {% endfor %}
+    </dl>
+    {% endif %}
+    {% if output_reframe.consistency_warnings %}
+    <h4 class="subheading">Metadata warnings</h4>
+    <ul class="plain-list">
+      {% for warning in output_reframe.consistency_warnings %}
+      <li class="status-bad">{{ warning }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% else %}
+    <p class="muted">Reframe metadata not available for this clip.</p>
+    {% endif %}
+  </article>
+
+  <article class="card overview-card">
+    <h3>Generated metadata</h3>
+    {% if output_metadata_available %}
+    <dl class="overview-dl">
+      <div><dt>Title / hook</dt><dd>{{ output_metadata_title or "—" }}</dd></div>
+      <div><dt>Candidate</dt><dd>{{ output.metadata_summary.candidate_id or "—" }}</dd></div>
+      <div><dt>Duration</dt><dd>{{ output.metadata_summary.duration_sec or "—" }}</dd></div>
+      <div><dt>Validation</dt><dd>{{ output_metadata_validation or "—" }}</dd></div>
+      <div><dt>Metadata path</dt><dd><code>{{ output.metadata_summary.path or "—" }}</code></dd></div>
+    </dl>
+    {% if output.metadata_summary.warnings %}
+    <h4 class="subheading">Metadata warnings</h4>
+    <ul class="plain-list">
+      {% for warning in output.metadata_summary.warnings %}
+      <li>{{ warning }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% else %}
+    <p class="muted">{{ output.metadata_summary.detail if output.metadata_summary else "Metadata not available for this clip." }}</p>
+    {% endif %}
+  </article>
+
+  {% if output.related_reports %}
+  <article class="card overview-card output-advanced">
+    <h3>Related reports</h3>
+    <p class="muted">Advanced diagnostic references — not required for daily inspection.</p>
+    <table class="overview-table">
+      <thead>
+        <tr><th>Report</th><th>Exists</th><th>Path</th></tr>
+      </thead>
+      <tbody>
+        {% for report in output.related_reports %}
+        <tr>
+          <td>{{ report.report_type }}</td>
+          <td>{{ "yes" if report.exists else "no" }}</td>
+          <td class="muted"><code>{{ report.path }}</code></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </article>
+  {% endif %}
+
+  {% if output.module_results %}
+  <article class="card overview-card output-advanced">
+    <h3>Module results</h3>
+    <ul class="plain-list">
+      {% for module in output.module_results %}
+      <li>
+        {% if module is mapping %}
+          {{ module.module_name or module.module or module }}
+          {% if module.status %} — {{ module.status }}{% endif %}
+        {% else %}
+          {{ module }}
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </article>
+  {% endif %}
+</section>
+{% endblock %}

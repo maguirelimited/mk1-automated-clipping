@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="overview-page">
+  <header class="overview-intro">
+    <p class="muted"><a href="{{ url_for('ops_overview') }}">← Operator Console</a></p>
+    <h2>Failures</h2>
+    <p class="muted">
+      What failed, and where should you inspect or recover?
+      Aggregated from existing observability data — no separate failure registry.
+    </p>
+    {% if failures_loop_links %}
+    {% set links = failures_loop_links %}
+    {% include "partials/_ops_loop_nav.html" %}
+    {% endif %}
+  </header>
+
+  {% if not failures_connected %}
+  <div class="flash bad">
+    Failures unavailable — observability backend disconnected. Failure data is not fabricated.
+  </div>
+  <p class="console-section-link">
+    <a href="{{ url_for('ops_overview') }}">Return to Operator Console</a>
+  </p>
+  {% elif failures_error %}
+  <div class="flash bad">Failures unavailable ({{ failures_error }}).</div>
+  <p class="console-section-link">
+    <a href="{{ url_for('ops_overview') }}">Return to Operator Console</a>
+  </p>
+  {% else %}
+
+  <div class="overview-grid">
+    <article class="card overview-card">
+      <h3>Total failures</h3>
+      <p class="overview-metric">{{ failures_total }}</p>
+    </article>
+    <article class="card overview-card">
+      <h3>Failed jobs</h3>
+      <p class="overview-metric">{{ failures_jobs }}</p>
+      {% if failures_jobs %}
+      <p class="console-section-link">
+        <a href="{{ url_for('ops_jobs', state='failed') }}">Open in Jobs</a>
+      </p>
+      {% endif %}
+    </article>
+    <article class="card overview-card">
+      <h3>Failed runs</h3>
+      <p class="overview-metric">{{ failures_runs }}</p>
+      {% if failures_runs %}
+      <p class="console-section-link">
+        <a href="{{ url_for('ops_runs', status='failed') }}">View failed runs</a>
+      </p>
+      {% endif %}
+    </article>
+    <article class="card overview-card">
+      <h3>Distinct groups</h3>
+      <p class="overview-metric">{{ failures_groups_count }}</p>
+    </article>
+  </div>
+
+  <article class="card overview-card">
+    <h3>Failure groups</h3>
+    {% if failure_groups %}
+    <table class="overview-table">
+      <thead>
+        <tr>
+          <th>Category</th>
+          <th>Name</th>
+          <th>Count</th>
+          <th>Latest</th>
+          <th>Severity</th>
+          <th>Reason</th>
+          <th>Suggested next</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for group in failure_groups %}
+        <tr>
+          <td>{{ group.category }}</td>
+          <td><code>{{ group.name }}</code></td>
+          <td>{{ group.count }}</td>
+          <td>{{ group.latest_occurrence or "Not available" }}</td>
+          <td>
+            <span class="badge status-{{ 'bad' if group.severity in ['ERROR', 'CRITICAL'] else ('warn' if group.severity == 'WARN' else 'muted') }}">
+              {{ group.severity }}
+            </span>
+          </td>
+          <td class="muted">{{ group.representative_reason or "Not available" }}</td>
+          <td class="muted">{{ group.suggested_next_inspection_target or "Not available" }}</td>
+          <td>
+            <a href="{{ url_for('ops_failure_group', group_key=group.group_key) }}">Inspect</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% elif failures_empty %}
+    <p class="muted">No failures recorded right now.</p>
+    <nav class="console-links">
+      <a class="console-link console-link-primary" href="{{ url_for('ops_overview') }}">Operator Console</a>
+      <a class="console-link" href="{{ url_for('ops_runs') }}">Runs</a>
+      <a class="console-link" href="{{ url_for('ops_jobs') }}">Jobs</a>
+    </nav>
+    {% endif %}
+  </article>
+  {% endif %}
+</section>
+{% endblock %}

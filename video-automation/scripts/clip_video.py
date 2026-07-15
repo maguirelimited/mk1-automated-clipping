@@ -206,14 +206,6 @@ def run_clip(video_path: str, start: str, end: str, output_path: str | None = No
     start = str(start).strip()
     end = str(end).strip()
 
-    output_dir = ensure_paths(load_config())["output"]
-
-    if output_path:
-        output_video = os.path.abspath(output_path)
-    else:
-        stem = os.path.splitext(os.path.basename(input_video))[0]
-        output_video = os.path.join(output_dir, f"{stem}_clip_{uuid.uuid4().hex[:10]}.mp4")
-
     if not os.path.exists(input_video):
         raise ValueError(f"Input video not found: {input_video}")
 
@@ -231,6 +223,13 @@ def run_clip(video_path: str, start: str, end: str, output_path: str | None = No
             "Requested clip timestamps exceed input video duration "
             f"({input_duration_sec:.3f}s)"
         )
+
+    if output_path:
+        output_video = os.path.abspath(output_path)
+    else:
+        output_dir = ensure_paths(load_config())["output"]
+        stem = os.path.splitext(os.path.basename(input_video))[0]
+        output_video = os.path.join(output_dir, f"{stem}_clip_{uuid.uuid4().hex[:10]}.mp4")
 
     # Stream copy is fast but cuts only on keyframes; timestamps can drift slightly vs exact HH:MM:SS.
     print("RUNNING FFMPEG...", file=sys.stderr)

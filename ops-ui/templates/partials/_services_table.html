@@ -1,0 +1,31 @@
+<article class="card overview-card">
+  <h3>Services</h3>
+  {% if services_error %}
+  <p class="muted">Services unavailable ({{ services_error }}).</p>
+  {% elif services %}
+  <table class="overview-table">
+    <thead>
+      <tr>
+        <th>Service</th>
+        <th>Health</th>
+        <th>State</th>
+        <th>Detail</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for service in services %}
+      <tr>
+        <td>{{ service.name }}</td>
+        <td><span class="badge status-{{ service.tone }}">{{ service.health }}</span></td>
+        <td>{{ service.state }}</td>
+        <td class="muted">{{ service.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% elif services_empty %}
+  <p class="muted">No services reported.</p>
+  {% else %}
+  <p class="muted">Unavailable while disconnected.</p>
+  {% endif %}
+</article>

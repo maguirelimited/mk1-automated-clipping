@@ -25,6 +25,7 @@ if SCRIPTS_DIR not in sys.path:
 
 import processing_contracts as contracts  # noqa: E402
 from processing_integration import (  # noqa: E402
+    collect_candidates_from_batch,
     legacy_segments_from_raw_candidate_pool,
     link_processing_artifacts_in_report,
 )
@@ -213,6 +214,65 @@ def test_full_pipeline_writes_raw_candidate_pool(tmp_path):
 def test_full_pipeline_writes_processing_report(tmp_path):
     _, _, report_path = _run_full_pipeline(tmp_path)
     assert report_path.exists(), "processing_report.json was not written"
+
+
+def test_full_pipeline_writes_transcript_sections(tmp_path):
+    _run_full_pipeline(tmp_path)
+    sections_path = tmp_path / "transcript_sections.json"
+    assert sections_path.exists(), "transcript_sections.json was not written"
+
+
+def test_full_pipeline_writes_section_candidate_discovery(tmp_path):
+    _run_full_pipeline(tmp_path)
+    discovery_path = tmp_path / "section_candidate_discovery.json"
+    assert discovery_path.exists(), "section_candidate_discovery.json was not written"
+
+
+def test_full_pipeline_writes_candidate_processing(tmp_path):
+    _run_full_pipeline(tmp_path)
+    processing_path = tmp_path / "candidate_processing.json"
+    assert processing_path.exists(), "candidate_processing.json was not written"
+
+
+def test_transcript_sections_artifact_matches_sectioned_transcript(tmp_path):
+    _run_full_pipeline(tmp_path, job_id="sections_job")
+    sections_path = tmp_path / "transcript_sections.json"
+    payload = json.loads(sections_path.read_text())
+    assert payload["schema_version"] == "transcript_sections_v1"
+    assert payload["job_id"] == "sections_job"
+    assert isinstance(payload.get("sections"), list)
+    assert len(payload["sections"]) >= 1
+    assert payload["sections"][0]["section_id"].startswith("section_")
+
+
+def test_discovery_artifact_links_to_transcript_sections_path(tmp_path):
+    _run_full_pipeline(tmp_path)
+    sections_path = tmp_path / "transcript_sections.json"
+    discovery_path = tmp_path / "section_candidate_discovery.json"
+    discovery = json.loads(discovery_path.read_text())
+    assert discovery["schema_version"] == "section_candidate_discovery_batch_v1"
+    assert discovery["source_transcript_sections_path"] == str(sections_path)
+
+
+def test_pool_candidates_match_processed_batch_after_artifact_writes(tmp_path):
+    _, pool_path, _ = _run_full_pipeline(tmp_path, job_id="parity_job")
+    pool = json.loads(pool_path.read_text())
+    processed = json.loads((tmp_path / "candidate_processing.json").read_text())
+    batch_for_pool = {
+        "section_results": processed["section_results"],
+        "rejected_candidates": processed.get("rejected_candidates") or [],
+        "duplicate_removals": processed.get("duplicate_removals") or [],
+        "duplicates_removed": processed.get("duplicates_removed") or 0,
+        "sections_received": processed.get("sections_received") or 0,
+        "sections_processed": processed.get("sections_processed") or 0,
+        "usable_sections": processed.get("usable_sections") or 0,
+        "rejected_sections": processed.get("rejected_sections") or 0,
+        "candidates_discovered": processed.get("candidates_discovered") or 0,
+        "warnings": processed.get("warnings") or [],
+        "failed_sections": processed.get("failed_sections") or [],
+    }
+    expected = collect_candidates_from_batch(batch_for_pool, "parity_job")
+    assert pool["candidates"] == expected
 
 
 def test_full_pipeline_returns_correct_paths(tmp_path):

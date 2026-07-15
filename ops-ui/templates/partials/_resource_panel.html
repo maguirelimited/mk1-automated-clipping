@@ -1,0 +1,21 @@
+<article class="card overview-card">
+  <h3>Resources</h3>
+  <table class="overview-table">
+    <thead>
+      <tr>
+        <th>Resource</th>
+        <th>Status</th>
+        <th>Detail</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in resources %}
+      <tr>
+        <td>{{ row.label }}</td>
+        <td>{{ row.status }}</td>
+        <td class="muted">{{ row.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</article>

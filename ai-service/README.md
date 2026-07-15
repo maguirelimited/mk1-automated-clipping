@@ -129,9 +129,10 @@ video-automation + ai-service read controls.json (no HTTP call to Ops UI)
 Resolution per field: per-run option -> UI saved value -> env var -> default
 ```
 
-- **Default backend stays `openai`** for safety (the cloud selector is
-  unchanged). Switching to `ai_service` is a single, persistent dropdown choice
-  in the Ops UI; once saved it takes precedence over environment variables.
+- **Default backend is `ai_service`** (local ai-service via Ollama). The legacy
+  `openai` inline selector remains available for rollback/testing. Per-run
+  options, Ops UI saved values, and env vars can override the default; saved UI
+  values take precedence over environment variables.
 - **No silent fallback.** When `ai_service` is selected, OpenAI is never used as
   a backstop. `AI_BUSY` is retried by video-automation, `usable=false` is a
   controlled "no good clip" outcome, and model/validation errors surface as a

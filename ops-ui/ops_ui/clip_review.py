@@ -1,3 +1,11 @@
+"""Legacy Clip Review helpers (deprecated).
+
+GET /clip-review redirects to /ops/outputs. Approve/reject/flag and policy-control
+POST routes return 410 Gone (retired; they never gated publishing).
+
+These helpers remain for feedback/requeue routes, clip_reviews SQLite access, and
+unit tests. They are not part of the MK1 daily operator workflow.
+"""
 from __future__ import annotations
 
 import re
@@ -242,7 +250,7 @@ def load_review_queue(
             "counts": _empty_counts(),
         }
     jobs = payload.get("jobs") if isinstance(payload.get("jobs"), list) else []
-    clips: list[dict[str, Any]] = []
+    pending: list[tuple[str, str, dict[str, Any], dict[str, Any], dict[str, Any] | None]] = []
     for summary in jobs:
         if not isinstance(summary, dict):
             continue
@@ -265,16 +273,21 @@ def load_review_queue(
             clip_id = str(clip.get("clip_id") or clip.get("clip_index") or "").strip()
             if not clip_id:
                 clip_id = f"{job_id}_clip_{clip.get('clip_index', 0)}"
-            review = store.get_clip_review(job_id, clip_id)
-            row = enrich_clip_row(
-                job_id=job_id,
-                job=job_payload,
-                clip=clip,
-                review=review,
-                input_source=input_source,
-                video_svc=svc,
-            )
-            clips.append(row)
+            pending.append((job_id, clip_id, job_payload, clip, input_source))
+
+    reviews = store.get_clip_reviews([(job_id, clip_id) for job_id, clip_id, *_ in pending])
+    clips: list[dict[str, Any]] = []
+    for job_id, clip_id, job_payload, clip, input_source in pending:
+        review = reviews.get(clip_key(job_id, clip_id))
+        row = enrich_clip_row(
+            job_id=job_id,
+            job=job_payload,
+            clip=clip,
+            review=review,
+            input_source=input_source,
+            video_svc=svc,
+        )
+        clips.append(row)
     clips.sort(key=lambda row: str(row.get("completed_at") or ""), reverse=True)
     counts = _count_by_status(clips)
     filtered = _filter_clips(clips, status_filter)

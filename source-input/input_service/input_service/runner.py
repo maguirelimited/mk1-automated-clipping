@@ -50,6 +50,7 @@ from .source_checker import (
     SourceCheckError,
     iter_source_candidates,
 )
+from .log_util import detail, verbose_enabled
 from .storage import StorageError, reject_file, store_ready
 
 
@@ -75,6 +76,14 @@ def emit_progress(message: str, *, funnel_id: str | None = None) -> None:
     if funnel_id:
         prefix = f"[input funnel={funnel_id}]"
     print(f"{prefix} {message}", flush=True)
+
+
+def emit_stage(stage: str, *, funnel_id: str | None = None, note: str | None = None) -> None:
+    """Print a single-word pipeline stage; add detail only when verbose."""
+    if note and verbose_enabled():
+        emit_progress(f"{stage} — {note}", funnel_id=funnel_id)
+    else:
+        emit_progress(stage, funnel_id=funnel_id)
 
 
 # #region agent log
@@ -231,24 +240,30 @@ def _failed(funnel_id: str | None, error: str) -> dict[str, Any]:
     return payload
 
 
-def run_funnel(funnel_id: str) -> dict[str, Any]:
+def run_funnel(
+    funnel_id: str,
+    *,
+    orchestration_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Run one funnel and return a JSON-serialisable response dict.
 
     This function never raises; all problems are mapped to a structured
     response (``input_ready`` / ``no_input_available`` / ``failed``).
     """
     paths.ensure_dirs()
-    log.info("Funnel started: funnel_id=%s", funnel_id)
-    emit_progress("Run started — loading funnel config…", funnel_id=funnel_id)
+    detail(log, "Funnel started: funnel_id=%s", funnel_id)
+    emit_stage("config", funnel_id=funnel_id)
 
     # ---- load funnel ------------------------------------------------------
     try:
         funnel: Funnel = load_funnel(funnel_id)
-        emit_progress(
-            f"Funnel loaded ({len(funnel.source_configs)} source(s)) — scanning channels…",
+        emit_stage(
+            "scanning",
             funnel_id=funnel.funnel_id,
+            note=f"{len(funnel.source_configs)} source(s)",
         )
-        log.info(
+        detail(
+            log,
             "Funnel loaded: funnel_id=%s sources=%s duration_min=%s-%s max_downloads=%s",
             funnel.funnel_id,
             len(funnel.source_configs),
@@ -257,16 +272,16 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
             funnel.max_downloads_per_run,
         )
     except FunnelNotFoundError as exc:
-        log.info("Final funnel status: funnel_id=%s status=failed error=unknown_funnel", funnel_id)
+        detail(log, "Final funnel status: funnel_id=%s status=failed error=unknown_funnel", funnel_id)
         return _failed(funnel_id, f"unknown_funnel: {exc}")
     except FunnelInactiveError as exc:
-        log.info("Final funnel status: funnel_id=%s status=failed error=inactive_funnel", funnel_id)
+        detail(log, "Final funnel status: funnel_id=%s status=failed error=inactive_funnel", funnel_id)
         return _failed(funnel_id, f"inactive_funnel: {exc}")
     except FunnelInvalidError as exc:
-        log.info("Final funnel status: funnel_id=%s status=failed error=invalid_funnel", funnel_id)
+        detail(log, "Final funnel status: funnel_id=%s status=failed error=invalid_funnel", funnel_id)
         return _failed(funnel_id, f"invalid_funnel: {exc}")
     except FunnelError as exc:  # safety net
-        log.info("Final funnel status: funnel_id=%s status=failed error=funnel_error", funnel_id)
+        detail(log, "Final funnel status: funnel_id=%s status=failed error=funnel_error", funnel_id)
         return _failed(funnel_id, f"funnel_error: {exc}")
 
     # ---- check sources ----------------------------------------------------
@@ -304,7 +319,8 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
             if rejected:
                 reason = rejected[0].reason
                 rejection_counts[reason] += 1
-                log.info(
+                detail(
+                    log,
                     "Candidate rejected: funnel_id=%s url=%s reason=%s",
                     funnel.funnel_id,
                     cand.url,
@@ -313,7 +329,8 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
                 continue
             if ledger.source_has_non_failed_record(video_id=cand.video_id, url=cand.url):
                 ledger_blocked += 1
-                log.info(
+                detail(
+                    log,
                     "Candidate skipped by ledger: funnel_id=%s url=%s",
                     funnel.funnel_id,
                     cand.url,
@@ -321,15 +338,17 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
                 continue
             valid_count += 1
             cand = valid[0]
-            emit_progress(
-                f"Found valid candidate {valid_count} after checking {scanned} video(s)",
+            emit_stage(
+                "candidate",
                 funnel_id=funnel.funnel_id,
+                note=f"{valid_count} after {scanned} checked",
             )
 
             # ---- download / validate / store selected candidate -----------
             title_preview = (cand.title or "untitled")[:72]
-            emit_progress(f"Trying: {title_preview}", funnel_id=funnel.funnel_id)
-            log.info(
+            emit_stage("select", funnel_id=funnel.funnel_id, note=title_preview)
+            detail(
+                log,
                 "Selected candidate URL: funnel_id=%s url=%s title=%s duration_seconds=%s",
                 funnel.funnel_id,
                 cand.url,
@@ -348,13 +367,14 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
                 log.exception("Failed to create input ledger record")
                 return _failed(funnel.funnel_id, f"ledger_create_failed: {exc}")
             input_id = str(record["input_id"])
-            emit_progress("Downloading…", funnel_id=funnel.funnel_id)
+            emit_stage("downloading", funnel_id=funnel.funnel_id)
             try:
                 dl = download_candidate(cand, funnel_id=funnel.funnel_id)
             except DownloadFailed as exc:
-                emit_progress("Download failed — trying next candidate", funnel_id=funnel.funnel_id)
+                emit_stage("retry", funnel_id=funnel.funnel_id, note="download failed")
                 log.warning("Download failed for %s: %s", cand.url, exc)
-                log.info(
+                detail(
+                    log,
                     "Download failure reason: funnel_id=%s url=%s reason=%s",
                     funnel.funnel_id,
                     cand.url,
@@ -368,7 +388,8 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
                 continue
             except Exception as exc:  # pragma: no cover - last-resort guard
                 log.exception("Unexpected download error for %s", cand.url)
-                log.info(
+                detail(
+                    log,
                     "Download failure reason: funnel_id=%s url=%s reason=%s",
                     funnel.funnel_id,
                     cand.url,
@@ -380,14 +401,14 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
                     log.exception("Failed to mark input ledger download failure")
                 last_error = f"download_failed: {exc}"
                 continue
-            log.info("Download success path: funnel_id=%s path=%s", funnel.funnel_id, dl.file_path)
-            emit_progress("Download complete — validating media…", funnel_id=funnel.funnel_id)
+            detail(log, "Download success path: funnel_id=%s path=%s", funnel.funnel_id, dl.file_path)
+            emit_stage("validating", funnel_id=funnel.funnel_id)
 
             # validate
             try:
                 validate_media(dl.file_path, funnel)
             except ValidationError as exc:
-                emit_progress("Validation failed — trying next candidate", funnel_id=funnel.funnel_id)
+                emit_stage("retry", funnel_id=funnel.funnel_id, note="validation failed")
                 log.warning("Validation failed for %s: %s", dl.file_path, exc)
                 reject_file(dl.file_path, funnel.funnel_id, reason=str(exc))
                 try:
@@ -406,7 +427,7 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
                 last_error = f"validation_failed: {exc}"
                 continue
 
-            emit_progress("Valid — copying into pipeline input folder…", funnel_id=funnel.funnel_id)
+            emit_stage("storing", funnel_id=funnel.funnel_id)
             # store (video-automation input dir first; local READY_DIR as fallback)
             try:
                 ready_path = store_ready(dl.file_path, funnel.funnel_id, input_id=input_id)
@@ -416,7 +437,8 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
                     ledger.mark_failed(input_id, f"storage_failed: {exc}")
                 except ledger.LedgerError:
                     log.exception("Failed to mark input ledger storage failure")
-                log.info(
+                detail(
+                    log,
                     "Final funnel status: funnel_id=%s status=failed error=storage_failed reason=%s",
                     funnel.funnel_id,
                     exc,
@@ -443,15 +465,13 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
                 return _failed(funnel.funnel_id, f"ledger_update_failed: {exc}")
 
             _cleanup_funnel_tmp_after_store(funnel.funnel_id)
-            emit_progress(
-                "Stored — handing off to video automation (clip job)…",
-                funnel_id=funnel.funnel_id,
-            )
+            emit_stage("handoff", funnel_id=funnel.funnel_id)
 
             clipping = enqueue_clipping_job(
                 input_id=input_id,
                 funnel_id=funnel.funnel_id,
                 pipeline_profile=funnel.pipeline_profile,
+                orchestration_context=orchestration_context,
             )
             if not clipping.get("success"):
                 err = str(clipping.get("error") or "clipping_enqueue_failed")
@@ -467,7 +487,8 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
                     log.exception("Failed to mark input ledger after clipping enqueue failure")
                 return _failed(funnel.funnel_id, f"clipping_enqueue_failed: {err}")
 
-            log.info(
+            detail(
+                log,
                 "Final funnel status: funnel_id=%s status=input_ready input_id=%s "
                 "video_path=%s clipping_job_id=%s",
                 funnel.funnel_id,
@@ -476,9 +497,10 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
                 clipping.get("job_id"),
             )
             clip_job = clipping.get("job_id") or "?"
-            emit_progress(
-                f"Done — input_ready (input_id={input_id}, clip job={clip_job})",
+            emit_stage(
+                "ready",
                 funnel_id=funnel.funnel_id,
+                note=f"input_id={input_id} clip_job={clip_job}",
             )
             payload = _success(funnel, ready_path, cand, record)
             payload["clipping_job"] = {
@@ -489,7 +511,8 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
             }
             return payload
     except SourceCheckError as exc:
-        log.info(
+        detail(
+            log,
             "Final funnel status: funnel_id=%s status=failed error=source_check_failed reason=%s",
             funnel.funnel_id,
             exc,
@@ -497,7 +520,8 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
         return _failed(funnel.funnel_id, f"source_check_failed: {exc}")
     except Exception as exc:  # pragma: no cover - last-resort guard
         log.exception("Unexpected source check error")
-        log.info(
+        detail(
+            log,
             "Final funnel status: funnel_id=%s status=failed error=source_check_failed reason=%s",
             funnel.funnel_id,
             exc,
@@ -532,9 +556,11 @@ def run_funnel(funnel_id: str) -> dict[str, Any]:
         reason = "All valid candidates already have active or completed input ledger records."
     else:
         reason = last_error or "No valid non-duplicate video found."
-    log.info(
+    detail(
+        log,
         "Final funnel status: funnel_id=%s status=no_input_available reason=%s",
         funnel.funnel_id,
         reason,
     )
+    emit_stage("empty", funnel_id=funnel.funnel_id, note=reason[:80] if verbose_enabled() else None)
     return _no_input(funnel, reason)

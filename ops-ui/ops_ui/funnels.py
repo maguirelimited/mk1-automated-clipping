@@ -8,7 +8,18 @@ from typing import Any
 
 from .config import BASE_DIR, Settings
 from .diagnostics import default_input_ledger_dir, filter_log_text
+from .funnel_management.registry import FunnelNotFoundError, FunnelRegistry, FunnelRegistryError
+from .funnel_management.dependency_paths import resolve_funnel_dependency_paths
+from .funnel_management.readiness_summary import build_simple_funnel_status
+from .funnel_management.validation import (
+    FunnelValidationIssue,
+    FunnelValidationReport,
+    FunnelValidator,
+    operational_state_label,
+    readiness_label,
+)
 from .http_client import call_json
+from .outputs_ui import outputs_page_href
 from .recovery import is_failed_upload
 from .store import ControlStore
 from .system import journal_logs
@@ -492,3 +503,603 @@ def _upload_jobs(settings: Settings, *, limit: int) -> list[dict[str, Any]]:
         return []
     jobs = payload.get("jobs")
     return jobs if isinstance(jobs, list) else []
+
+
+def _optional_file(path: Path) -> Path | None:
+    return path if path.is_file() else None
+
+
+def _optional_dir(path: Path) -> Path | None:
+    return path if path.is_dir() else None
+
+
+def _source_funnels_config_path() -> Path | None:
+    raw = os.environ.get("SOURCE_INPUT_FUNNELS", "").strip()
+    if raw:
+        return _optional_file(Path(raw).expanduser())
+    return _optional_file(BASE_DIR / "source-input" / "input_service" / "config" / "funnels.json")
+
+
+def _video_funnels_dir() -> Path | None:
+    raw = os.environ.get("FUNNEL_CONFIG_DIR") or os.environ.get("VIDEO_FUNNELS_CONFIG_DIR", "")
+    if raw.strip():
+        return _optional_dir(Path(raw).expanduser())
+    return _optional_dir(BASE_DIR / "video-automation" / "config" / "funnels")
+
+
+def _video_pipeline_profiles_path() -> Path | None:
+    raw = os.environ.get("VIDEO_PIPELINE_PROFILES", "").strip()
+    if raw:
+        return _optional_file(Path(raw).expanduser())
+    return _optional_file(BASE_DIR / "video-automation" / "config" / "video_pipeline_profiles.json")
+
+
+def _output_channels_config_path() -> Path | None:
+    raw = os.environ.get("OUTPUT_FUNNEL_CHANNELS", "").strip()
+    if raw:
+        return _optional_file(Path(raw).expanduser())
+    for candidate in (
+        BASE_DIR / "output-funnel" / "config" / "channels.json",
+        BASE_DIR / "output-funnel" / "config" / "channels.example.json",
+    ):
+        found = _optional_file(candidate)
+        if found is not None:
+            return found
+    return None
+
+
+def ai_rule_registry_path() -> Path | None:
+    """Public accessor for the funnel rule registry JSON path."""
+    path = resolve_funnel_dependency_paths().ai_rule_registry_path
+    return path if path is not None and path.is_file() else path
+
+
+def _ai_rule_registry_path() -> Path | None:
+    raw = os.environ.get("AI_FUNNEL_RULE_REGISTRY", "").strip()
+    if raw:
+        return _optional_file(Path(raw).expanduser())
+    return _optional_file(BASE_DIR / "ai-service" / "config" / "funnel_rule_registry.json")
+
+
+def _ai_prompts_dir() -> Path | None:
+    raw = os.environ.get("AI_FUNNEL_RULES_DIR", "").strip()
+    if raw:
+        return _optional_dir(Path(raw).expanduser())
+    return _optional_dir(BASE_DIR / "ai-service" / "prompts" / "funnel_rules")
+
+
+def _config_manager_funnels_dir() -> Path | None:
+    raw = os.environ.get("CONFIG_MANAGER_FUNNELS_DIR", "").strip()
+    if raw:
+        return _optional_dir(Path(raw).expanduser())
+    return _optional_dir(BASE_DIR / "config" / "funnels")
+
+
+def build_funnel_validator() -> FunnelValidator:
+    """Build a validator using the same dependency paths as sync."""
+    deps = resolve_funnel_dependency_paths()
+    return FunnelValidator(
+        source_funnels_path=deps.source_funnels_path,
+        video_funnels_dir=deps.video_funnels_dir,
+        video_pipeline_profiles_path=deps.video_pipeline_profiles_path,
+        output_channels_path=deps.output_channels_path,
+        ai_rule_registry_path=deps.ai_rule_registry_path,
+        ai_prompts_dir=deps.ai_prompts_dir,
+        config_manager_funnels_dir=deps.config_manager_funnels_dir,
+    )
+
+
+def _validation_issue_summary(*, error_count: int, warning_count: int) -> str:
+    parts: list[str] = []
+    if error_count:
+        label = "error" if error_count == 1 else "errors"
+        parts.append(f"{error_count} {label}")
+    if warning_count:
+        label = "warning" if warning_count == 1 else "warnings"
+        parts.append(f"{warning_count} {label}")
+    return ", ".join(parts) if parts else "OK"
+
+
+def _compact_ops_row(
+    ops: dict[str, Any] | None,
+    *,
+    funnel_id: str,
+    store: ControlStore,
+    ingestion_paused: bool,
+    enabled: bool,
+) -> dict[str, Any]:
+    paused = bool(ops.get("paused")) if ops else is_funnel_paused(store, funnel_id)
+    if ops is not None:
+        can_run = bool(ops.get("can_run"))
+        return {
+            "available": True,
+            "paused": paused,
+            "can_run": can_run,
+            "health": ops.get("health") or "—",
+            "last_run_at": ops.get("last_run_at") or "—",
+            "last_success_at": ops.get("last_success_at") or "—",
+            "failure_count": ops.get("failure_count", 0),
+            "queue_depth": ops.get("queue_depth", 0),
+            "active_video_jobs": ops.get("active_video_jobs", 0),
+            "active_upload_jobs": ops.get("active_upload_jobs", 0),
+        }
+    return {
+        "available": False,
+        "paused": paused,
+        "can_run": enabled and not paused and not ingestion_paused,
+        "health": "—",
+        "last_run_at": "—",
+        "last_success_at": "—",
+        "failure_count": 0,
+        "queue_depth": 0,
+        "active_video_jobs": 0,
+        "active_upload_jobs": 0,
+    }
+
+
+def build_canonical_funnel_list_rows(
+    *,
+    registry: FunnelRegistry,
+    validator: FunnelValidator,
+    store: ControlStore,
+    ingestion_paused: bool,
+    ops_rows_by_id: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Build list-page rows from registry funnels, validation, and optional ops overlay."""
+    ops_rows_by_id = ops_rows_by_id or {}
+    rows: list[dict[str, Any]] = []
+    for funnel in registry.list_funnels():
+        report = validator.validate_funnel(funnel)
+        funnel_id = funnel.identity.funnel_id
+        ops = ops_rows_by_id.get(funnel_id)
+        target_platforms = list(funnel.distribution.target_platforms)
+        rows.append(
+            {
+                "funnel_id": funnel_id,
+                "display_name": funnel.identity.display_name,
+                "category": funnel.identity.category or "—",
+                "environment": funnel.identity.environment,
+                "status": funnel.identity.status,
+                "enabled": funnel.identity.enabled,
+                "source_count": len(funnel.acquisition.sources),
+                "target_platforms": target_platforms,
+                "target_platforms_display": ", ".join(target_platforms) if target_platforms else "—",
+                "route_count": len(funnel.distribution.channel_routes),
+                "readiness_status": report.status,
+                "sync_ready": report.sync_ready,
+                "processing_ready": report.processing_ready,
+                "processing_label": readiness_label(report.processing_state),
+                "runnable": report.runnable,
+                "error_count": len(report.errors),
+                "warning_count": len(report.warnings),
+                "validation_summary": _validation_issue_summary(
+                    error_count=len(report.errors),
+                    warning_count=len(report.warnings),
+                ),
+                "ops": _compact_ops_row(
+                    ops,
+                    funnel_id=funnel_id,
+                    store=store,
+                    ingestion_paused=ingestion_paused,
+                    enabled=funnel.identity.enabled,
+                ),
+            }
+        )
+    return rows
+
+
+def load_canonical_funnel_page(
+    settings: Settings,
+    store: ControlStore,
+    *,
+    ingestion_paused: bool,
+    registry_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Load canonical funnel list data for the /funnels page."""
+    registry = FunnelRegistry(registry_dir)
+    validator = build_funnel_validator()
+
+    ops_rows_by_id: dict[str, dict[str, Any]] = {}
+    trigger_history_rows: list[dict[str, Any]] = []
+    ops_available = False
+    try:
+        board = load_funnel_board(settings, store, ingestion_paused=ingestion_paused)
+        ops_rows_by_id = {
+            str(row.get("funnel_id") or ""): row
+            for row in board.get("rows", [])
+            if isinstance(row, dict) and row.get("funnel_id")
+        }
+        trigger_history_rows = board.get("trigger_history") or []
+        ops_available = True
+    except Exception:
+        ops_available = False
+
+    rows = build_canonical_funnel_list_rows(
+        registry=registry,
+        validator=validator,
+        store=store,
+        ingestion_paused=ingestion_paused,
+        ops_rows_by_id=ops_rows_by_id,
+    )
+
+    return {
+        "rows": rows,
+        "empty_registry": not rows,
+        "registry_path": str(registry.registry_dir),
+        "ops_available": ops_available,
+        "trigger_history": trigger_history_rows,
+    }
+
+
+class FunnelDetailNotFoundError(Exception):
+    """Raised when a canonical funnel is not in the registry."""
+
+
+def _validation_issue_dict(issue: FunnelValidationIssue) -> dict[str, Any]:
+    return {
+        "code": issue.code,
+        "message": issue.message,
+        "severity": issue.severity,
+        "section": issue.section,
+        "field": issue.field,
+        "source": issue.source,
+    }
+
+
+def _validation_view(report: FunnelValidationReport) -> dict[str, Any]:
+    return {
+        "status": report.status,
+        "runnable": report.runnable,
+        "valid_config": report.valid_config,
+        "dependencies_ok": report.dependencies_ok,
+        "sync_ready": report.sync_ready,
+        "processing_ready": report.processing_ready,
+        "posting_ready": report.posting_ready,
+        "sync_state": report.sync_state,
+        "processing_state": report.processing_state,
+        "posting_state": report.posting_state,
+        "sync_label": readiness_label(report.sync_state),
+        "processing_label": readiness_label(report.processing_state),
+        "posting_label": readiness_label(report.posting_state),
+        "checked_at": report.checked_at,
+        "error_count": len(report.errors),
+        "warning_count": len(report.warnings),
+        "info_count": len(report.info),
+        "errors": [_validation_issue_dict(issue) for issue in report.errors],
+        "warnings": [_validation_issue_dict(issue) for issue in report.warnings],
+        "info": [_validation_issue_dict(issue) for issue in report.info],
+    }
+
+
+def _detail_ops_view(
+    ops: dict[str, Any] | None,
+    *,
+    funnel_id: str,
+    store: ControlStore,
+    ingestion_paused: bool,
+    enabled: bool,
+) -> dict[str, Any]:
+    compact = _compact_ops_row(
+        ops,
+        funnel_id=funnel_id,
+        store=store,
+        ingestion_paused=ingestion_paused,
+        enabled=enabled,
+    )
+    if ops is not None:
+        compact["operator_status"] = ops.get("operator_status") or "—"
+        compact["last_run_state"] = ops.get("last_run_state") or "—"
+    else:
+        compact["operator_status"] = "paused" if compact["paused"] else "—"
+        compact["last_run_state"] = "—"
+    return compact
+
+
+def load_canonical_funnel_detail(
+    funnel_id: str,
+    settings: Settings,
+    store: ControlStore,
+    *,
+    ingestion_paused: bool,
+    registry_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Load read-only detail view data for one canonical funnel."""
+    clean_id = str(funnel_id or "").strip()
+    if not clean_id:
+        raise FunnelDetailNotFoundError("Funnel ID is required.")
+
+    registry = FunnelRegistry(registry_dir)
+    try:
+        funnel = registry.get_funnel(clean_id)
+    except FunnelNotFoundError as exc:
+        raise FunnelDetailNotFoundError(str(exc)) from exc
+
+    validator = build_funnel_validator()
+    report = validator.validate_funnel(funnel)
+
+    ops_row: dict[str, Any] | None = None
+    trigger_history_rows: list[dict[str, Any]] = []
+    ops_available = False
+    try:
+        board = load_funnel_board(settings, store, ingestion_paused=ingestion_paused)
+        ops_by_id = {
+            str(row.get("funnel_id") or ""): row
+            for row in board.get("rows", [])
+            if isinstance(row, dict) and row.get("funnel_id")
+        }
+        ops_row = ops_by_id.get(clean_id)
+        trigger_history_rows = [
+            action
+            for action in board.get("trigger_history") or []
+            if isinstance(action, dict) and str(action.get("target") or "") == clean_id
+        ]
+        ops_available = True
+    except Exception:
+        ops_available = False
+
+    identity = funnel.identity
+    processing = funnel.processing
+    distribution = funnel.distribution
+
+    return {
+        "funnel_id": clean_id,
+        "identity": {
+            "funnel_id": identity.funnel_id,
+            "display_name": identity.display_name,
+            "description": identity.description or "—",
+            "category": identity.category or "—",
+            "enabled": identity.enabled,
+            "environment": identity.environment,
+            "status": identity.status,
+            "template_source": identity.template_source or "—",
+            "created_at": identity.created_at,
+            "updated_at": identity.updated_at,
+            "operator_note": identity.operator_note or "—",
+        },
+        "acquisition": {
+            "source_type": funnel.acquisition.source_type,
+            "min_duration_minutes": funnel.acquisition.min_duration_minutes,
+            "max_duration_minutes": funnel.acquisition.max_duration_minutes,
+            "max_downloads_per_run": funnel.acquisition.max_downloads_per_run,
+            "sources": [
+                {
+                    "source_id": source.source_id,
+                    "label": source.label,
+                    "url": source.url,
+                    "source_type": source.source_type,
+                    "active": source.active,
+                    "max_videos_per_source": source.max_videos_per_source,
+                    "hydrate_missing_duration": source.hydrate_missing_duration,
+                    "title_allowlist": list(source.title_allowlist),
+                    "title_blocklist": list(source.title_blocklist),
+                    "title_allowlist_display": ", ".join(source.title_allowlist) or "—",
+                    "title_blocklist_display": ", ".join(source.title_blocklist) or "—",
+                }
+                for source in funnel.acquisition.sources
+            ],
+        },
+        "processing": {
+            "pipeline_profile": processing.pipeline_profile,
+            "ai_rule_profile": processing.ai_rules.ai_rule_profile,
+            "max_clips": processing.selection.max_clips,
+            "min_clip_duration_sec": processing.selection.min_clip_duration_sec,
+            "max_clip_duration_sec": processing.selection.max_clip_duration_sec,
+            "max_overlap_sec": processing.selection.max_overlap_sec,
+            "filename_prefix": processing.output.filename_prefix,
+            "delivery_mode": processing.output.delivery_mode,
+            "platforms": [
+                {"name": name, "enabled": bool(enabled)}
+                for name, enabled in sorted(processing.platforms.items())
+            ],
+        },
+        "distribution": {
+            "posting_enabled": distribution.posting_enabled,
+            "posting_mode": distribution.posting_mode,
+            "target_platforms": list(distribution.target_platforms),
+            "target_platforms_display": ", ".join(distribution.target_platforms) or "—",
+            "channel_routes": [
+                {
+                    "channel_id": route.channel_id,
+                    "platform": route.platform,
+                    "enabled": route.enabled,
+                }
+                for route in distribution.channel_routes
+            ],
+        },
+        "mappings": {
+            "config_manager_funnel_id": funnel.mappings.config_manager_funnel_id or "—",
+        },
+        "validation": _validation_view(report),
+        "simple_status": build_simple_funnel_status(
+            posting_enabled=distribution.posting_enabled,
+            identity_status=identity.status,
+            identity_enabled=identity.enabled,
+            report=report,
+            ops=_compact_ops_row(
+                ops_row,
+                funnel_id=clean_id,
+                store=store,
+                ingestion_paused=ingestion_paused,
+                enabled=identity.enabled,
+            ),
+        ),
+        "operational_label": operational_state_label(
+            report=report,
+            identity_enabled=identity.enabled,
+            identity_status=identity.status,
+            paused=_compact_ops_row(
+                ops_row,
+                funnel_id=clean_id,
+                store=store,
+                ingestion_paused=ingestion_paused,
+                enabled=identity.enabled,
+            )["paused"],
+        ),
+        "ops": _detail_ops_view(
+            ops_row,
+            funnel_id=clean_id,
+            store=store,
+            ingestion_paused=ingestion_paused,
+            enabled=identity.enabled,
+        ),
+        "ops_available": ops_available,
+        "trigger_history": trigger_history_rows[:10],
+        "registry_path": str(registry.registry_dir),
+        "outputs_href": outputs_page_href(funnel_id=clean_id),
+        "jobs_href": f"/ops/jobs?funnel={clean_id}",
+    }
+
+
+def _console_funnel_option_label(row: dict[str, Any], *, env_token: str) -> str:
+    funnel_id = str(row.get("funnel_id") or "")
+    display = str(row.get("display_name") or funnel_id)
+    funnel_env = str(row.get("environment") or "").strip().lower()
+    if funnel_env and funnel_env != env_token and env_token in {"dev", "prod"}:
+        return f"{display} ({funnel_env})"
+    return display
+
+
+def _console_funnel_disabled_hint(
+    row: dict[str, Any],
+    *,
+    env_token: str,
+    ingestion_paused: bool,
+) -> str | None:
+    if ingestion_paused:
+        return "ingestion paused"
+    if not row.get("enabled"):
+        return "disabled"
+    funnel_env = str(row.get("environment") or "").strip().lower()
+    if funnel_env and funnel_env != env_token and env_token in {"dev", "prod"}:
+        return f"{funnel_env} only"
+    ops = row.get("ops") if isinstance(row.get("ops"), dict) else {}
+    if ops.get("paused"):
+        return "paused"
+    if not row.get("runnable"):
+        return "not runnable"
+    if ops.get("available") and not ops.get("can_run"):
+        return "cannot run"
+    return None
+
+
+def _console_funnel_option_from_row(
+    row: dict[str, Any],
+    *,
+    env_token: str,
+    ingestion_paused: bool,
+) -> dict[str, Any]:
+    hint = _console_funnel_disabled_hint(
+        row, env_token=env_token, ingestion_paused=ingestion_paused
+    )
+    return {
+        "funnel_id": str(row.get("funnel_id") or ""),
+        "label": _console_funnel_option_label(row, env_token=env_token),
+        "disabled": hint is not None,
+        "disabled_hint": hint,
+        "selected": False,
+    }
+
+
+def _console_funnel_option_from_source(
+    source: dict[str, Any],
+    *,
+    ingestion_paused: bool,
+) -> dict[str, Any]:
+    funnel_id = str(source.get("funnel_id") or "").strip()
+    active = bool(source.get("active", True))
+    hint = "ingestion paused" if ingestion_paused else ("inactive" if not active else None)
+    return {
+        "funnel_id": funnel_id,
+        "label": funnel_id,
+        "disabled": hint is not None,
+        "disabled_hint": hint,
+        "selected": False,
+    }
+
+
+def _pick_console_default_funnel(options: list[dict[str, Any]]) -> str:
+    for opt in options:
+        if not opt.get("disabled"):
+            opt["selected"] = True
+            return str(opt.get("funnel_id") or "")
+    if options:
+        options[0]["selected"] = True
+        return str(options[0].get("funnel_id") or "")
+    return ""
+
+
+def load_console_funnel_context(
+    settings: Settings,
+    store: ControlStore,
+    *,
+    ingestion_paused: bool,
+    env_token: str | None = None,
+    registry_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Compact canonical funnel data for the Operator Console."""
+    token = (env_token or settings.environment or "dev").strip().lower()
+
+    try:
+        page = load_canonical_funnel_page(
+            settings,
+            store,
+            ingestion_paused=ingestion_paused,
+            registry_dir=registry_dir,
+        )
+    except Exception:
+        page = None
+
+    rows: list[dict[str, Any]] = []
+    registry_path = ""
+    ops_available = False
+    if isinstance(page, dict):
+        rows = page.get("rows") or []
+        registry_path = str(page.get("registry_path") or "")
+        ops_available = bool(page.get("ops_available"))
+
+    options = [
+        _console_funnel_option_from_row(
+            row, env_token=token, ingestion_paused=ingestion_paused
+        )
+        for row in rows
+        if row.get("funnel_id")
+    ]
+
+    if not options:
+        for source in _source_funnels(settings):
+            if not isinstance(source, dict):
+                continue
+            funnel_id = str(source.get("funnel_id") or "").strip()
+            if funnel_id:
+                options.append(
+                    _console_funnel_option_from_source(
+                        source, ingestion_paused=ingestion_paused
+                    )
+                )
+
+    default_id = _pick_console_default_funnel(options) if options else ""
+
+    summary_rows = [
+        {
+            "funnel_id": str(row.get("funnel_id") or ""),
+            "display_name": str(row.get("display_name") or row.get("funnel_id") or ""),
+            "readiness_status": str(row.get("readiness_status") or "—"),
+            "runnable": bool(row.get("runnable")),
+            "enabled": bool(row.get("enabled")),
+            "source_count": row.get("source_count", 0),
+            "target_platforms_display": str(row.get("target_platforms_display") or "—"),
+            "validation_summary": str(row.get("validation_summary") or "—"),
+            "ops": row.get("ops") if isinstance(row.get("ops"), dict) else {},
+        }
+        for row in rows
+    ]
+
+    return {
+        "console_funnel_options": options,
+        "console_default_funnel_id": default_id,
+        "console_funnel_rows": summary_rows,
+        "console_funnels_empty": not summary_rows and not options,
+        "console_funnels_registry_path": registry_path,
+        "console_funnels_ops_available": ops_available,
+        "console_ingestion_paused": ingestion_paused,
+    }

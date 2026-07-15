@@ -22,6 +22,7 @@ except Exception:  # pragma: no cover
     YoutubeDL = None  # type: ignore[assignment]
     DownloadError = Exception  # type: ignore[assignment,misc]
 
+from .log_util import detail
 from . import paths
 from .source_checker import Candidate
 from .yt_dlp_cookies import apply_yt_dlp_auth_runtime_options
@@ -81,7 +82,8 @@ def download_candidate(candidate: Candidate, *, funnel_id: str) -> DownloadResul
             pass
 
     opts = apply_yt_dlp_auth_runtime_options(_ydl_options(tmp_dir, candidate.video_id))
-    log.info(
+    detail(
+        log,
         "Download started: funnel_id=%s url=%s video_id=%s tmp_dir=%s",
         funnel_id,
         candidate.url,
@@ -110,5 +112,5 @@ def download_candidate(candidate: Candidate, *, funnel_id: str) -> DownloadResul
         mp4 = [m for m in matches if m.suffix.lower() == ".mp4"]
         file_path = mp4[0] if mp4 else max(matches, key=lambda p: p.stat().st_size)
 
-    log.info("Download succeeded: funnel_id=%s path=%s", funnel_id, file_path)
+    detail(log, "Download succeeded: funnel_id=%s path=%s", funnel_id, file_path)
     return DownloadResult(file_path=file_path, candidate=candidate)

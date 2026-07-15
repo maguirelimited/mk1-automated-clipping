@@ -3,33 +3,87 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    {% if not disable_auto_refresh|default(false) %}
     <meta http-equiv="refresh" content="30">
-    <title>mk04 Mission Control</title>
+    {% endif %}
+    <title>mk04 Operations{% if shell_environment_label is defined %} · {{ shell_environment_label }}{% endif %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='ops.css') }}">
   </head>
-  <body>
-    {% if runtime is defined %}
-    <div class="env-banner env-{{ runtime.environment }}">
-      {{ runtime.environment|upper }} ENVIRONMENT · uploads {{ runtime.upload_mode|upper }} · config {{ runtime.config_root }}
+  <body class="{% if shell_is_production %}shell-prod{% else %}shell-dev{% endif %}{% if not shell_connected %} shell-disconnected{% endif %}">
+    {# Environment banner — always visible; impossible to confuse dev/prod #}
+    <div class="env-banner env-{{ shell_environment_css|default('unknown') }}{% if not shell_connected %} env-disconnected{% endif %}" role="banner">
+      <div class="env-banner-main">{{ shell_banner_main|default('UNKNOWN') }}</div>
+      <div class="env-banner-sub">{{ shell_banner_sub|default('') }}</div>
     </div>
-    {% endif %}
+
+    {# Global status header — health, activity, upload, scheduler from /health + /status #}
+    <section class="status-header" aria-label="Operational status">
+      <div class="status-pill status-{{ shell_health_badge.tone|default('muted') }}">
+        <span class="status-pill-label">Health</span>
+        <span class="status-pill-value">{{ shell_health_badge.label|default('UNKNOWN') }}</span>
+      </div>
+      <div class="status-pill status-{{ 'warn' if shell_activity == 'running' else ('bad' if shell_activity in ['failing', 'blocked'] else 'muted') }}">
+        <span class="status-pill-label">Activity</span>
+        <span class="status-pill-value">{{ shell_activity|default('unknown')|upper }}</span>
+      </div>
+      <div class="status-pill status-{{ 'ok' if shell_upload == 'enabled' else ('warn' if shell_upload == 'disabled' else 'muted') }}">
+        <span class="status-pill-label">Upload</span>
+        <span class="status-pill-value">{{ shell_upload|default('unknown')|upper }}</span>
+      </div>
+      <div class="status-pill status-{{ 'ok' if shell_scheduler in ['enabled', 'manual'] else ('warn' if shell_scheduler == 'disabled' else 'muted') }}">
+        <span class="status-pill-label">Scheduler</span>
+        <span class="status-pill-value">{{ shell_scheduler|default('unknown')|upper }}</span>
+      </div>
+      {% if not shell_connected %}
+      <div class="status-pill status-bad">
+        <span class="status-pill-label">Backend</span>
+        <span class="status-pill-value">DISCONNECTED</span>
+      </div>
+      {% endif %}
+    </section>
+
     <header class="topbar">
       <div>
-        <p class="eyebrow">mk04 internal operations</p>
-        <h1>Mission Control{% if runtime is defined %} · {{ runtime.environment|upper }}{% endif %}</h1>
+        <p class="eyebrow">mk04 operations</p>
+        <h1>Operations Console · {{ shell_environment_label|default('UNKNOWN') }}</h1>
       </div>
-      <nav>
-        <a href="{{ url_for('dashboard') }}">Dashboard</a>
-        <a href="{{ url_for('funnels_page') }}">Funnels</a>
-        <a href="{{ url_for('publishing') }}">Publishing</a>
-        <a href="{{ url_for('clip_review') }}">Clip review</a>
-        <a href="{{ url_for('failed_jobs') }}">Failed jobs</a>
-        <a href="{{ url_for('recovery') }}">Recovery</a>
-        <a href="{{ url_for('settings_page') }}">Settings</a>
-        <a href="{{ url_for('health') }}">Health</a>
-        <a href="{{ url_for('logs') }}">Logs</a>
-      </nav>
+      <div class="topbar-right">
+        <nav class="ops-nav" aria-label="Operations">
+          <div class="ops-nav-group ops-nav-primary" aria-label="Daily operator">
+            {% for item in shell_nav_primary|default([]) %}
+              <a href="{{ item.path }}"
+                 title="{{ item.title or '' }}"
+                 class="{% if item.path == '/ops' %}{% if request.path == '/ops' %}active{% endif %}{% elif request.path == item.path or request.path.startswith(item.path + '/') %}active{% endif %}">
+                {{ item.label }}
+              </a>
+            {% endfor %}
+          </div>
+          <span class="ops-nav-separator" aria-hidden="true">·</span>
+          <div class="ops-nav-group ops-nav-secondary" aria-label="Diagnostics">
+            {% for item in shell_nav_secondary|default([]) %}
+              <a href="{{ item.path }}"
+                 title="{{ item.title or '' }}"
+                 class="{% if request.path == item.path or request.path.startswith(item.path + '/') %}active{% endif %}">
+                {{ item.label }}
+              </a>
+            {% endfor %}
+          </div>
+        </nav>
+        {% if auth_enabled and auth_user %}
+        <form method="post" action="{{ url_for('logout') }}" class="logout-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="filter-clear">Sign out ({{ auth_user }})</button>
+        </form>
+        {% endif %}
+      </div>
     </header>
+
+    <nav class="legacy-nav" aria-label="Advanced and legacy tools">
+      <span class="legacy-nav-label" title="Deep tools outside the daily /ops workflow">Advanced / Legacy</span>
+      {% for item in shell_nav_legacy|default([]) %}
+      <a href="{{ item.path }}" title="{{ item.title or '' }}">{{ item.label }}</a>
+      {% endfor %}
+    </nav>
 
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}

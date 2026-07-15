@@ -1,0 +1,95 @@
+# config/environments/prod.yaml
+#
+# Production environment configuration.
+#
+# Rules:
+#   - Production state must be completely separate from development state.
+#   - Production startup must refuse if required secrets or paths are missing.
+#   - The uploading.enabled value below is the default config — it is NOT
+#     a hard override. An emergency runtime kill switch
+#     (data/prod/control_state.json, written by the disable-uploads command)
+#     must always take precedence over this value immediately, without
+#     requiring a config edit or service restart.
+#
+# Pre-bootstrap safety: uploading.enabled stays false until deliberately
+# armed. Real posting also requires MK04_UPLOAD_MODE=real and valid
+# destination credentials.
+#
+# Secrets (API keys, tokens, credentials) must not appear here.
+# They belong in deploy/env/prod/env.example (filled in /etc/mk04/prod/env,
+# never committed to Git).
+
+environment:
+  name: production
+
+paths:
+  data_root: data/prod
+  # Repo-local defaults for tests/CI. When MK04_RUNTIME_ROOT is set (deployed prod),
+  # ConfigManager resolves jobs/output under $MK04_RUNTIME_ROOT/video-automation/.
+  jobs_root: jobs/prod
+  outputs_root: outputs/prod
+  logs_root: logs/prod
+  reports_root: reports/prod
+  database_path: database/prod.db
+
+uploading:
+  enabled: false
+
+runtime:
+  require_production_secrets: true
+
+# Storage retention overrides (merged after system.yaml).
+# Production defaults are conservative. Policy only — no engine.
+storage:
+  retention:
+    enabled: false
+    source_videos_days: 7
+    transcripts_days: 30
+    raw_candidate_pools_days: 30
+    processing_reports_days: 90
+    selection_results_days: 90
+    post_processing_reports_days: 90
+    clip_metadata_days: 180
+    intermediate_renders_days: 14
+    temporary_files_days: 3
+    logs_days: 30
+    run_records_days: 90
+    config_snapshots_days: 180
+    database_backups_days: 30
+    successful_job_artifacts_days: 14
+    failed_job_artifacts_days: 90
+  disk_pressure:
+    warning_percent: 80
+    urgent_percent: 90
+    critical_percent: 95
+    reject_new_jobs_percent: 98
+  # Conservative production default: scheduled dry-run only.
+  # Set mode: apply only after dry-run reports are trusted.
+  schedule:
+    enabled: true
+    mode: dry_run
+    frequency: daily
+  log_rotation:
+    enabled: true
+    max_bytes: 104857600
+    backup_count: 8
+    compress: true
+    journal:
+      system_max_use: 500M
+      runtime_max_use: 100M
+      max_file_sec: 1month
+  database_backup:
+    enabled: true
+    verify_integrity: true
+    location: backups/{env}/database
+  allowed_delete_roots:
+    - jobs
+    - logs
+    - reports
+    - data
+    - backups
+  protected_artifact_types:
+    - final_clip
+    - database
+  auto_delete_final_clips_prod: false
+  allow_final_clip_auto_deletion_opt_in: false

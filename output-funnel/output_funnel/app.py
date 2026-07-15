@@ -39,6 +39,29 @@ _UPLOAD_WORKER_STARTED = False
 _UPLOAD_WORKER_LOCK = threading.Lock()
 _UPLOAD_WORKER_MIN_INTERVAL_SEC = 15
 
+
+def _runtime_upload_block_response():
+    from .runtime_upload_control import upload_block_reason
+
+    if upload_mode() != "real":
+        return None
+    reason = upload_block_reason()
+    if not reason:
+        return None
+    return (
+        jsonify(
+            {
+                "success": False,
+                "pipeline": PIPELINE_NAME,
+                "error": f"uploads blocked: {reason}",
+                "count": 0,
+                "uploaded": 0,
+                "reason": reason,
+            }
+        ),
+        503,
+    )
+
 _PLAN_WORKER_STARTED = False
 _PLAN_WORKER_LOCK = threading.Lock()
 # Planning is cheap; allow a faster tick than uploads but never busy-loop.
@@ -244,6 +267,9 @@ def upload_due_route():
                 "uploaded": 0,
             }
         ), 503
+    blocked = _runtime_upload_block_response()
+    if blocked is not None:
+        return blocked
     data = _payload()
     limit = int(data.get("limit") or 10)
     result = upload_due(store=_store(), limit=limit)
@@ -263,6 +289,21 @@ def publish_due_route():
         "DEPRECATED route /queue/publish-due called; rerouting to upload-due. "
         "Update callers to POST /queue/upload-due."
     )
+    from .control_gate import uploads_paused
+
+    if uploads_paused():
+        return jsonify(
+            {
+                "success": False,
+                "pipeline": PIPELINE_NAME,
+                "error": "uploads_paused: uploads are stopped by operator controls",
+                "count": 0,
+                "uploaded": 0,
+            }
+        ), 503
+    blocked = _runtime_upload_block_response()
+    if blocked is not None:
+        return blocked
     data = _payload()
     limit = int(data.get("limit") or 10)
     result = publish_due(store=_store(), limit=limit)
@@ -288,6 +329,9 @@ def upload_queue_item(upload_job_id: int):
                 "error": "uploads_paused: uploads are stopped by operator controls",
             }
         ), 503
+    blocked = _runtime_upload_block_response()
+    if blocked is not None:
+        return blocked
     result = upload_one_job(_store(), upload_job_id, profiles=load_channel_profiles())
     _log_upload_result({"results": [result]})
     return jsonify({"success": bool(result.get("uploaded")), "pipeline": PIPELINE_NAME, **result})
@@ -576,9 +620,17 @@ def start_upload_worker(
         while True:
             try:
                 from .control_gate import uploads_paused
+                from .runtime_upload_control import upload_block_reason
 
                 if uploads_paused():
                     log.info("upload worker tick skipped env=%s upload_mode=%s reason=uploads_paused", runtime_environment(), upload_mode())
+                elif upload_mode() == "real" and upload_block_reason():
+                    log.info(
+                        "upload worker tick skipped env=%s upload_mode=%s reason=%s",
+                        runtime_environment(),
+                        upload_mode(),
+                        upload_block_reason(),
+                    )
                 else:
                     result = do_upload()
                     if isinstance(result, dict) and result.get("count"):
@@ -597,6 +649,20 @@ def start_upload_worker(
 
 
 def main() -> None:
+    import sys
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parent
+    for candidate in (here, *here.parents):
+        scripts_dir = candidate / "scripts"
+        if (scripts_dir / "http_access_log.py").is_file():
+            text = str(scripts_dir)
+            if text not in sys.path:
+                sys.path.insert(0, text)
+            break
+    from http_access_log import configure_quiet_http_access_logging
+
+    configure_quiet_http_access_logging(service_label="output-funnel")
     cfg = load_settings()
     mode = upload_mode()
     start_plan_worker(settings=cfg)

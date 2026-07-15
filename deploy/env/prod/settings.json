@@ -26,11 +26,11 @@
     "auto_upload": false,
     "upload_limit": 1,
     "plan_worker": {
-      "enabled": true,
+      "enabled": false,
       "interval_seconds": 300
     },
     "upload_worker": {
-      "enabled": true,
+      "enabled": false,
       "interval_seconds": 60
     }
   }

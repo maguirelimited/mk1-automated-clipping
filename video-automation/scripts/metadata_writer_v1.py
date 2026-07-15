@@ -290,6 +290,12 @@ class MetadataWriterV1Module(PostProcessingModule):
             "created_at": now,
         }
 
+        # Provenance: include execution context from the module context dict.
+        # New jobs carry this from ExecutionContext.save(); legacy jobs omit it.
+        raw_exec_ctx = context.get("execution_context")
+        if isinstance(raw_exec_ctx, dict) and raw_exec_ctx:
+            clip_metadata["execution_context"] = dict(raw_exec_ctx)
+
         # ------------------------------------------------------------------
         # 11. Serialise and write
         # ------------------------------------------------------------------

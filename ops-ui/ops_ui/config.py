@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
+
+_SCRIPTS_CONFIG = BASE_DIR / "scripts" / "config"
+if str(_SCRIPTS_CONFIG) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_CONFIG))
+
+from environment_names import EnvironmentNameError, normalize_runtime_env  # noqa: E402
 
 
 def _env(name: str, default: str) -> str:
@@ -51,16 +58,25 @@ class Settings:
     runtime_root: Path = Path("/var/lib/mk04/dev")
     log_root: Path = Path("/var/log/mk04/dev")
     scheduler_mode: str = "manual"
+    # Phase 13 security foundation. Tests construct Settings with auth_enabled=False.
+    auth_enabled: bool = False
+    operator_password: str = ""
+    secret_key: str = "mk04-ops-ui-dev-secret-change-me"
+    session_lifetime_minutes: int = 60
 
 
 def load_settings() -> Settings:
     data_dir = Path(_env("OPS_UI_DATA_DIR", str(BASE_DIR / "ops-ui" / "data"))).expanduser()
-    env = _env("MK04_ENV", "dev")
+    try:
+        env = normalize_runtime_env(_env("MK04_ENV", "dev"))
+    except EnvironmentNameError as exc:
+        raise RuntimeError(str(exc)) from exc
     input_port = _env("INPUT_SERVICE_PORT", _default_port(env, dev="5160", prod="5060"))
     video_port = _env("VIDEO_AUTOMATION_PORT", _default_port(env, dev="5150", prod="5050"))
     output_port = _env("OUTPUT_FUNNEL_PORT", _default_port(env, dev="5155", prod="5055"))
     ops_port = _env("OPS_UI_PORT", _default_port(env, dev="5170", prod="5070"))
     ai_port = _env("AI_SERVICE_PORT", _default_port(env, dev="5175", prod="5075"))
+    auth_disabled = _env("OPS_UI_AUTH_DISABLED", "0").lower() in {"1", "true", "yes", "on"}
     return Settings(
         environment=env,
         upload_mode=_env("MK04_UPLOAD_MODE", "dry_run"),
@@ -78,11 +94,15 @@ def load_settings() -> Settings:
         journal_lines=int(_env("OPS_UI_JOURNAL_LINES", "80")),
         funnel_run_timeout_sec=float(_env("OPS_UI_FUNNEL_RUN_TIMEOUT_SEC", "900")),
         ai_service_url=_env("OPS_AI_SERVICE_URL", _env("AI_SERVICE_URL", f"http://127.0.0.1:{ai_port}")),
-        ai_service_unit=_env("OPS_AI_SERVICE_UNIT", "mk04-ai-service.service"),
+        ai_service_unit=_env("OPS_UI_AI_SERVICE_UNIT", "mk04-ai-service.service"),
         ai_diagnostics_timeout_sec=float(_env("OPS_UI_AI_DIAGNOSTICS_TIMEOUT_SEC", "30")),
         stuck_running_sec=float(_env("OPS_UI_STUCK_RUNNING_SEC", "7200")),
         stuck_queued_sec=float(_env("OPS_UI_STUCK_QUEUED_SEC", "1800")),
         stuck_uploading_sec=float(_env("OPS_UI_STUCK_UPLOADING_SEC", "1800")),
+        auth_enabled=not auth_disabled,
+        operator_password=_env("OPS_UI_OPERATOR_PASSWORD", ""),
+        secret_key=_env("OPS_UI_SECRET_KEY", "mk04-ops-ui-dev-secret-change-me"),
+        session_lifetime_minutes=int(_env("OPS_UI_SESSION_LIFETIME_MINUTES", "60")),
         services=(
             ServiceConfig(
                 key="source-input",

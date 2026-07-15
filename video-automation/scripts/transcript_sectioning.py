@@ -1,7 +1,15 @@
-"""Deterministic transcript sectioning for processing candidate discovery.
+"""MK1 Transcript Presentation — deterministic fixed-partition sectioning.
 
-This module only turns timestamped transcript segments into bounded, traceable
-sections. It does not call any model, discover candidates, or affect rendering.
+This is the canonical MK1 stage between WhisperX output and Discovery. It turns
+timestamped Whisper segments into bounded, inspectable sections using:
+
+- fixed partition target duration (tunable default, not a proven optimum)
+- fixed overlap between neighbouring sections (tunable default)
+- Whisper segment-boundary snapping (never mid-segment cuts)
+- deterministic processing with no AI partitioning
+
+This module does not call any model, discover candidates, or affect rendering.
+Sentence-boundary snapping is a possible future deterministic enhancement.
 """
 
 from __future__ import annotations
@@ -19,9 +27,14 @@ from mk04_utils import now_iso, write_json
 TRANSCRIPT_SECTIONS_SCHEMA_VERSION = "transcript_sections_v1"
 TRANSCRIPT_SECTIONS_FILENAME = "transcript_sections.json"
 
+# MK1 fixed-partition presentation strategy identifier (artifact metadata).
+MK1_PRESENTATION_STRATEGY = "mk1_fixed_partition_v1"
+
+# Tunable implementation defaults — chosen around the local model's usable context
+# window (target) and intended max clip length (~120s, overlap). Not benchmarked.
 DEFAULT_TARGET_SECTION_DURATION_SEC = 300.0
 DEFAULT_MAX_SECTION_DURATION_SEC = 420.0
-DEFAULT_OVERLAP_SEC = 30.0
+DEFAULT_OVERLAP_SEC = 60.0
 DEFAULT_MIN_SECTION_DURATION_SEC = 60.0
 SECTION_DURATION_TOLERANCE_SEC = 0.001
 
@@ -69,6 +82,8 @@ class TranscriptSectioningError(RuntimeError):
 
 @dataclass(frozen=True)
 class TranscriptSectioningConfig:
+    """MK1 transcript presentation settings (fixed partition + fixed overlap)."""
+
     target_section_duration_sec: float = DEFAULT_TARGET_SECTION_DURATION_SEC
     max_section_duration_sec: float = DEFAULT_MAX_SECTION_DURATION_SEC
     overlap_sec: float = DEFAULT_OVERLAP_SEC
@@ -210,6 +225,13 @@ def build_transcript_sections_artifact(
         "job_id": job_id,
         "source_transcript_path": source_transcript_path,
         "created_at": created_at or now_iso(),
+        "presentation": {
+            "strategy": MK1_PRESENTATION_STRATEGY,
+            "section_count": len(sections),
+            "source_segment_count": _source_segment_count_from_sections(sections),
+            "partition_target_sec": resolved_config.target_section_duration_sec,
+            "overlap_sec": resolved_config.overlap_sec,
+        },
         "sectioning_config": resolved_config.as_dict(),
         "sections": list(sections),
     }
@@ -409,6 +431,21 @@ def _normalize_transcript_segments(transcript: dict[str, Any]) -> list[_Transcri
             "Transcript has no timestamped segments with usable text.",
         )
     return segments
+
+
+def _source_segment_count_from_sections(sections: list[dict[str, Any]]) -> int:
+    max_index = -1
+    for section in sections:
+        refs = section.get("source_segment_refs")
+        if not isinstance(refs, list):
+            continue
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            segment_index = ref.get("segment_index")
+            if isinstance(segment_index, int) and not isinstance(segment_index, bool):
+                max_index = max(max_index, segment_index)
+    return max_index + 1 if max_index >= 0 else 0
 
 
 def _build_sections(

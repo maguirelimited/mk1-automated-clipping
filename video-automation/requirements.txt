@@ -3,7 +3,11 @@
 # Legacy Whisper CLI is still available when TRANSCRIBE_ENGINE is unset or
 # ``whisper``; it must be on PATH for that fallback path.
 # ffmpeg/ffprobe are also runtime PATH dependencies (no python wrapper used).
+#
+# Optional face-detection stack (MediaPipe) lives in requirements-reframing-optional.txt.
+# Refraining/detector.py is import-guarded and does not require MediaPipe at runtime.
 
 flask>=3.0,<4.0
 openai>=2.0,<3.0
+PyYAML>=6.0,<7.0
 whisperx>=3.1,<4.0

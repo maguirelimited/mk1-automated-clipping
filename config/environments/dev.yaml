@@ -1,0 +1,87 @@
+# config/environments/dev.yaml
+#
+# Development environment configuration.
+#
+# Rules:
+#   - Dev state must be completely separate from production state.
+#   - Dev must never write to production paths.
+#   - Uploads must be disabled. Dev runs must not post real content.
+#   - An emergency runtime kill switch (data/dev/control_state.json) overrides
+#     the uploading.enabled value below regardless of what this file says.
+#
+# Secrets (API keys, tokens, credentials) must not appear here.
+# They belong in deploy/env/dev/env.example (filled locally, never committed).
+
+environment:
+  name: development
+
+paths:
+  data_root: data/dev
+  # Repo-local defaults for tests/CI. When MK04_RUNTIME_ROOT is set (deployed dev),
+  # ConfigManager resolves jobs/output under $MK04_RUNTIME_ROOT/video-automation/.
+  jobs_root: jobs/dev
+  outputs_root: outputs/dev
+  logs_root: logs/dev
+  reports_root: reports/dev
+  database_path: database/dev.db
+
+uploading:
+  enabled: false
+
+runtime:
+  require_production_secrets: false
+
+# Storage retention overrides (merged after system.yaml).
+# Development may be more aggressive than production. Policy only — no engine.
+storage:
+  retention:
+    enabled: false
+    source_videos_days: 3
+    transcripts_days: 7
+    raw_candidate_pools_days: 7
+    processing_reports_days: 14
+    selection_results_days: 14
+    post_processing_reports_days: 14
+    clip_metadata_days: 30
+    intermediate_renders_days: 3
+    temporary_files_days: 1
+    logs_days: 7
+    run_records_days: 14
+    config_snapshots_days: 30
+    database_backups_days: 7
+    successful_job_artifacts_days: 3
+    failed_job_artifacts_days: 14
+  disk_pressure:
+    warning_percent: 85
+    urgent_percent: 92
+    critical_percent: 96
+    reject_new_jobs_percent: 99
+  # Dev scheduling is off by default; use manual retention CLI.
+  schedule:
+    enabled: false
+    mode: disabled
+    frequency: daily
+  log_rotation:
+    enabled: true
+    max_bytes: 52428800  # 50 MiB
+    backup_count: 4
+    compress: true
+    journal:
+      system_max_use: 200M
+      runtime_max_use: 50M
+      max_file_sec: 1week
+  database_backup:
+    enabled: true
+    verify_integrity: true
+    location: backups/{env}/database
+  allowed_delete_roots:
+    - jobs
+    - logs
+    - reports
+    - data
+    - backups
+  protected_artifact_types:
+    - final_clip
+    - database
+  auto_delete_final_clips_prod: false
+  allow_final_clip_auto_deletion_opt_in: false

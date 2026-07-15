@@ -1,0 +1,45 @@
+<article class="card overview-card console-section console-last-run">
+  <h3>Last run</h3>
+  {% if overview_runs_error %}
+  <p class="muted">Runs unavailable ({{ overview_runs_error }}).</p>
+  {% elif not overview_connected %}
+  <p class="muted">Last run unavailable while disconnected.</p>
+  {% elif console_run_cards %}
+  {% for card in console_run_cards %}
+  <section class="console-run-card{% if not loop.first %} console-run-card-secondary{% endif %}">
+    <h4 class="console-run-title">{{ card.title }}</h4>
+    <p class="overview-metric status-{{ card.status_tone }}">{{ card.status_label }}</p>
+    <dl class="overview-dl">
+      {% if card.finished_at %}
+      <div><dt>Finished</dt><dd>{{ card.finished_at }}</dd></div>
+      {% elif card.started_at %}
+      <div><dt>Started</dt><dd>{{ card.started_at }}</dd></div>
+      {% endif %}
+      {% if card.duration_seconds is not none %}
+      <div><dt>Duration</dt><dd>{{ card.duration_seconds }}s</dd></div>
+      {% endif %}
+      {% if card.jobs_completed is not none or card.jobs_failed is not none %}
+      <div>
+        <dt>Jobs</dt>
+        <dd>{{ card.jobs_completed|default(0) }} completed, {{ card.jobs_failed|default(0) }} failed</dd>
+      </div>
+      {% endif %}
+    </dl>
+    {% if card.failure_reason %}
+    <p class="console-run-failure muted">{{ card.failure_reason }}</p>
+    {% endif %}
+    {% if card.links %}
+    <div class="console-run-links">
+      {% for link in card.links %}
+      <a href="{{ link.href }}">{{ link.label }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </section>
+  {% endfor %}
+  {% elif console_runs_empty %}
+  <p class="muted">No runs recorded yet.</p>
+  {% else %}
+  <p class="muted">No run data available.</p>
+  {% endif %}
+</article>

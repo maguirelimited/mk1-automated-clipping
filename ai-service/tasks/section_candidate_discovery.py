@@ -4,27 +4,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+from funnel_rule_registry import get_funnel_rule_aliases, resolve_rules_version
 from task_router import AITaskError
 
 BASE_PROMPT_VERSION = "section_candidate_discovery_base_v1"
 DEFAULT_FUNNEL_ID = "business"
-
-FUNNEL_RULE_ALIASES = {
-    "business": "business",
-    "business_ai": "business",
-    "mfm_business_ai_001": "business",
-    "finance": "finance",
-    "sport": "sport",
-    "sports": "sport",
-    "comedy": "comedy",
-}
-
-FUNNEL_RULE_VERSIONS = {
-    "business": "business_v1",
-    "finance": "finance_v1",
-    "sport": "sport_v1",
-    "comedy": "comedy_v1",
-}
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
 FUNNEL_RULES_DIR = PROMPTS_DIR / "funnel_rules"
@@ -108,7 +92,17 @@ def run_section_candidate_discovery(
             validation.error_message or "Model output did not match section discovery schema.",
             status_code=502,
         )
-    result = dict(validation.parsed_output)
+
+    from section_discovery_semantics import normalize_section_discovery_result
+
+    config = task_input.get("config") if isinstance(task_input.get("config"), dict) else {}
+    result = normalize_section_discovery_result(
+        parsed=dict(validation.parsed_output),
+        section=section,
+        config=config,
+        job_id=str(payload.get("job_id") or ""),
+        schema=schema,
+    )
     result["prompt_metadata"] = prompt_metadata
     return result
 
@@ -148,7 +142,7 @@ def resolve_prompt_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         config.get("funnel_id"),
     )
     resolved = resolve_funnel_id(requested)
-    rules_version = FUNNEL_RULE_VERSIONS[resolved]
+    rules_version = resolve_rules_version(resolved)
     return {
         "base_prompt_version": str(payload.get("prompt_version") or BASE_PROMPT_VERSION),
         "requested_funnel_id": requested,
@@ -161,11 +155,12 @@ def resolve_funnel_id(funnel_id: Any) -> str:
     if funnel_id is None or (isinstance(funnel_id, str) and not funnel_id.strip()):
         return DEFAULT_FUNNEL_ID
     raw = str(funnel_id).strip().lower()
-    resolved = FUNNEL_RULE_ALIASES.get(raw)
+    aliases = get_funnel_rule_aliases()
+    resolved = aliases.get(raw)
     if resolved is None:
         raise AITaskError(
             "UNKNOWN_FUNNEL_ID",
-            f"Unknown funnel_id {funnel_id!r}. Supported funnel IDs: {', '.join(sorted(FUNNEL_RULE_ALIASES))}.",
+            f"Unknown funnel_id {funnel_id!r}. Supported funnel IDs: {', '.join(sorted(aliases))}.",
             status_code=400,
         )
     return resolved

@@ -161,7 +161,9 @@ def detect_stuck_video_jobs(
     for job in jobs:
         status = str(job.get("status") or "").lower()
         if status == "running":
-            age = _age_seconds(job.get("started_at") or job.get("created_at"))
+            age = _age_seconds(
+                job.get("heartbeat_at") or job.get("started_at") or job.get("created_at")
+            )
             threshold = running_threshold_sec
         elif status == "queued":
             age = _age_seconds(job.get("created_at"))
@@ -177,8 +179,11 @@ def detect_stuck_video_jobs(
                 "status": status,
                 "stage": job.get("current_stage"),
                 "age_seconds": int(age),
-                "since": job.get("started_at") or job.get("created_at"),
+                "since": job.get("heartbeat_at")
+                or job.get("started_at")
+                or job.get("created_at"),
                 "detail": f"possibly stuck — no status change for {int(age // 60)}+ min (heuristic)",
+                "can_cancel": True,
             }
         )
     return stuck

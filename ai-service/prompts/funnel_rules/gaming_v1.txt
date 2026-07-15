@@ -1,0 +1,24 @@
+You are selecting short-form GTA / gaming clips for vertical video.
+
+Prioritise moments that work as complete short-form clips:
+- funny reactions and genuine surprise
+- arguments, rage moments, and heated exchanges
+- chaotic gameplay and unexpected mayhem
+- surprising fails and embarrassing mistakes
+- impressive plays and skill highlights
+- unexpected NPC or player interactions
+- short self-contained moments understandable without long context
+- strong hook in the first 1–3 seconds
+- clean clip boundaries with a clear start and payoff
+- moments that feel finished, not mid-setup
+
+Avoid:
+- generic gameplay with no clear moment or punchline
+- long setup with weak payoff
+- purely visual moments that cannot be understood from transcript alone,
+  unless the transcript clearly signals the event
+- business or podcast framing, interview tone, or corporate language
+- arbitrary weighted scoring commentary
+- boring filler conversation or low-energy rambling
+
+Prefer fewer, stronger candidates over many weak ones.

@@ -1,6 +1,6 @@
 # mk0.4 systemd units
 
-Drop-in unit files for the mk0.4 services. They assume:
+Drop-in unit files for the always-running production services. They assume:
 
 - PROD deployed copy at `/opt/mk04/prod/current`
 - Service user `mk04:mk04`
@@ -8,9 +8,34 @@ Drop-in unit files for the mk0.4 services. They assume:
 - environment config in `/etc/mk04/prod/env`
 - optional service-specific overrides in `/etc/mk04/prod/services/*.env`
 
-Do not point these units at the active development checkout. DEV runs directly
-from `/Users/anthonymaguire/VAmk0.4` with `MK04_ENV=dev`; PROD runs from the
-deployed copy with `MK04_ENV=prod`.
+Do not point these units at the active development checkout. DEV runs from the
+repo checkout with `MK04_ENV=dev`; PROD runs from the deployed copy with
+`MK04_ENV=prod`.
+
+Service inventory (required vs optional, health checks, categories):
+see [`docs/operations/PRODUCTION_SERVICES.md`](../../docs/operations/PRODUCTION_SERVICES.md).
+
+## Units
+
+| Unit | Role | Enable on prod? |
+| --- | --- | --- |
+| `mk04-source-input.service` | API / ingestion | **Required** |
+| `mk04-video-automation.service` | Worker / clipping pipeline | **Required** |
+| `mk04-output-funnel.service` | Upload / publish queue | **Required** for autonomous publish |
+| `mk04-ai-service.service` | Local LLM selection | Optional (enable when using local models) |
+| `mk04-ops-ui.service` | Operations UI | Optional for pipeline; enable for operator UI |
+
+All units use:
+
+- `Restart=always`
+- `RestartSec=5`
+- `StandardOutput=journal` / `StandardError=journal`
+- `WantedBy=multi-user.target` (start on boot when enabled)
+- mandatory `EnvironmentFile=/etc/mk04/prod/env` plus optional per-service
+  `EnvironmentFile=-/etc/mk04/prod/services/<service>.env`
+
+There are no pipeline timer units here. Scheduled pipeline runs use **cron** →
+`scripts/ops/run-scheduled.sh` (see `docs/operations/SCHEDULER.md`).
 
 ## Install
 
@@ -25,11 +50,10 @@ sudo systemctl enable --now \
   mk04-ops-ui.service
 ```
 
-`mk04-ai-service` and `mk04-ops-ui` are optional. The pipeline services call
-the local LLM over HTTP only when configured to; enable `mk04-ai-service` only
-on hosts that run a local model backend (e.g. Ollama). It listens on
-`127.0.0.1:5075` in prod and is independent — start, stop, or omit it without
-affecting the other units.
+Omit `mk04-ai-service` and/or `mk04-ops-ui` on hosts that do not need them.
+The pipeline services call the local LLM over HTTP only when configured to;
+`mk04-ai-service` listens on `127.0.0.1:5075` in prod and is independent —
+start, stop, or omit it without affecting the other units.
 
 ### Ollama (local model backend)
 
@@ -46,16 +70,53 @@ missing/unreachable backend fail ai-service startup. Model pulling is gated by
 ## Verify
 
 ```bash
-systemctl status mk04-source-input mk04-video-automation mk04-output-funnel mk04-ai-service mk04-ops-ui
+# Syntax check (from repo, before install)
+systemd-analyze verify deploy/systemd/mk04-*.service
+
+# After install
+systemctl status \
+  mk04-source-input \
+  mk04-video-automation \
+  mk04-output-funnel \
+  mk04-ai-service \
+  mk04-ops-ui
+systemctl is-enabled \
+  mk04-source-input \
+  mk04-video-automation \
+  mk04-output-funnel \
+  mk04-ai-service \
+  mk04-ops-ui
 journalctl -u mk04-output-funnel -n 100 --no-pager
 ```
 
-## Why ordering matters
+Restart recovery (policy-only, then live kill/recover on a host with units):
 
-`After=` declarations are best-effort: video-automation depends on source-input
-only for the n8n-style auto-enqueue handoff, and output-funnel depends on
-video-automation only for the `/registrations/from-job` handoff. The services
-are crash-safe and idempotent, so out-of-order restarts heal automatically.
+```bash
+python scripts/smoke/smoke_restart_recovery.py --env dev
+python scripts/smoke/smoke_restart_recovery.py --env dev --execute
+```
+
+See [`docs/operations/RESTART_RECOVERY.md`](../../docs/operations/RESTART_RECOVERY.md).
+
+## Peer ordering and readiness (Phase 3)
+
+Units use **soft** peer dependencies only (`After=` + `Wants=`, never
+`Requires=`), so a slow or missing peer does not permanently fail a unit:
+
+| Unit | Soft peers |
+| --- | --- |
+| `mk04-source-input` | network only |
+| `mk04-video-automation` | `mk04-source-input` |
+| `mk04-output-funnel` | `mk04-video-automation` |
+| `mk04-ai-service` | `ollama.service` (vendor; optional) |
+| `mk04-ops-ui` | network only (starts independently) |
+
+Process start order is not the same as operational readiness. Scheduled and
+manual production runs use `scripts/ops/run-pipeline.sh`, which validates
+config and boot readiness before `POST /run-funnel`. AI and Operations UI may
+be down without blocking readiness (optional components).
+
+Services remain crash-safe and idempotent if peers start late.
 
 ## Logging
 

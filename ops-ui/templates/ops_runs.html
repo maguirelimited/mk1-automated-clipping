@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="overview-page">
+  <header class="overview-intro">
+    <p class="muted"><a href="{{ url_for('ops_overview') }}">← Operator Console</a></p>
+    <h2>Runs</h2>
+    <p class="muted">
+      Which pipeline runs happened, and which one should you inspect?
+      {% if list_connected %}
+        Showing {{ runs_filtered_count }} of {{ runs_total }}.
+      {% endif %}
+    </p>
+    {% set links = [
+      {"label": "Operator Console", "href": url_for('ops_overview'), "primary": true},
+      {"label": "Jobs", "href": url_for('ops_jobs')},
+      {"label": "Outputs", "href": url_for('ops_outputs')},
+      {"label": "Failures", "href": url_for('ops_failures')},
+    ] %}
+    {% include "partials/_ops_loop_nav.html" %}
+  </header>
+
+  {% if not list_connected %}
+  <div class="flash bad">
+    Runs unavailable — observability backend disconnected. Run data is not fabricated.
+  </div>
+  <p class="console-section-link">
+    <a href="{{ url_for('ops_overview') }}">Return to Operator Console</a>
+  </p>
+  {% else %}
+
+  {% with fields=filter_fields, action=filter_action, clear_url=filter_clear_url %}
+    {% include "partials/_filter_bar.html" %}
+  {% endwith %}
+
+  {% with runs=runs, runs_empty=runs_empty, runs_error=runs_error, title='Pipeline runs', show_view_all=false %}
+    {% include "partials/_recent_runs.html" %}
+  {% endwith %}
+  {% endif %}
+</section>
+{% endblock %}

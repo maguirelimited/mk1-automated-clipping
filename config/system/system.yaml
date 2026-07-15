@@ -1,0 +1,97 @@
+# config/system/system.yaml
+#
+# Global operational settings. Version-controlled.
+# Controls automation behaviour, not environment identity or secrets.
+#
+# Storage retention policy lives here as the conservative baseline.
+# Environment files (dev.yaml / prod.yaml) may override storage.* after this
+# layer is merged — never hardcode retention or disk thresholds in code.
+#
+# Storage policy and schedule defaults live here. Environment files may override.
+# Deletion only occurs through the retention apply path (manual or scheduled
+# with explicit mode: apply).
+
+system:
+  max_concurrent_jobs: 1
+  retry_count: 0
+  health_check_interval_seconds: 60
+
+ai:
+  # Placeholder until a specific local model is confirmed for production.
+  # The Ops UI (Settings -> Local AI) can override this via controls.json.
+  processing_model: placeholder-local-model
+
+storage:
+  retention:
+    # Policy flag for a future retention engine. false = policy defined only.
+    enabled: false
+    source_videos_days: 7
+    transcripts_days: 30
+    raw_candidate_pools_days: 30
+    processing_reports_days: 90
+    selection_results_days: 90
+    post_processing_reports_days: 90
+    clip_metadata_days: 180
+    intermediate_renders_days: 14
+    temporary_files_days: 3
+    logs_days: 30
+    run_records_days: 90
+    config_snapshots_days: 180
+    database_backups_days: 30
+    # Failed-job artifacts must be retained longer than successful-job artifacts.
+    successful_job_artifacts_days: 14
+    failed_job_artifacts_days: 90
+
+  disk_pressure:
+    warning_percent: 80
+    urgent_percent: 90
+    critical_percent: 95
+    reject_new_jobs_percent: 98
+
+  # Scheduled retention (Phase 8). Cron triggers the entrypoint; this block
+  # decides whether the run proceeds and in which mode. Production defaults
+  # are set in environments/prod.yaml (dry_run). Apply requires explicit mode.
+  schedule:
+    enabled: false
+    mode: disabled
+    frequency: daily
+
+  # Active log bounding (Phase 9). Rotation only; expiry uses retention.logs_days.
+  log_rotation:
+    enabled: true
+    max_bytes: 104857600  # 100 MiB
+    backup_count: 8
+    compress: true
+    journal:
+      system_max_use: 500M
+      runtime_max_use: 100M
+      max_file_sec: 1month
+
+  # SQLite database backups (Phase 10). Expiry uses retention.database_backups_days.
+  database_backup:
+    enabled: true
+    verify_integrity: true
+    location: backups/{env}/database
+
+  # Path-key style roots under the environment's state tree.
+  # backups/ holds database_backup artifacts only (never the live database).
+  allowed_delete_roots:
+    - jobs
+    - logs
+    - reports
+    - data
+    - backups
+
+  # Active databases and final clips are protected by default.
+  protected_artifact_types:
+    - final_clip
+    - database
+
+  # Final clips are business outputs. Auto-deletion of production final clips
+  # requires both flags below. Defaults keep finals protected.
+  auto_delete_final_clips_prod: false
+  allow_final_clip_auto_deletion_opt_in: false
+
+services:
+  restart_policy: on-failure
+  restart_delay_seconds: 5

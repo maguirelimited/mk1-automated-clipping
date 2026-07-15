@@ -148,23 +148,42 @@ def run_fixed_mk1_universal_conveyor(
         )
 
     # ------------------------------------------------------------------
-    # 3. Validate module registry — all five required modules must be present
+    # 3. Resolve ordered module name list
+    #    Prefer conveyor_module_list from job_metadata (config-driven, Prompt 6A).
+    #    Fall back to FIXED_MK1_CONVEYOR_MODULES for legacy jobs.
     # ------------------------------------------------------------------
-    missing_modules = _find_missing_modules(registry)
-    if missing_modules:
-        return _conveyor_failed_result(
-            job_id=job_id,
-            error_code="missing_required_conveyor_module",
-            error_message=(
-                f"missing required conveyor modules: {missing_modules}"
-            ),
-            extra={"missing_modules": missing_modules},
-        )
+    _cfg_module_list = job_metadata.get("conveyor_module_list")
+    if isinstance(_cfg_module_list, list) and _cfg_module_list:
+        resolved_module_names: list[str] = [str(m) for m in _cfg_module_list]
+        # Unknown module names fail clearly for config-driven jobs.
+        _unknown = [n for n in resolved_module_names if n not in registry]
+        if _unknown:
+            return _conveyor_failed_result(
+                job_id=job_id,
+                error_code="unknown_conveyor_module",
+                error_message=(
+                    f"config-specified conveyor module(s) not in registry: {_unknown}"
+                ),
+                extra={"unknown_modules": _unknown},
+            )
+    else:
+        resolved_module_names = list(FIXED_MK1_CONVEYOR_MODULES)
+        # Validate registry against fixed list for legacy jobs.
+        missing_modules = [n for n in resolved_module_names if n not in registry]
+        if missing_modules:
+            return _conveyor_failed_result(
+                job_id=job_id,
+                error_code="missing_required_conveyor_module",
+                error_message=(
+                    f"missing required conveyor modules: {missing_modules}"
+                ),
+                extra={"missing_modules": missing_modules},
+            )
 
     # ------------------------------------------------------------------
     # 4. Resolve ordered module list from registry
     # ------------------------------------------------------------------
-    ordered_modules = [registry[name] for name in FIXED_MK1_CONVEYOR_MODULES]
+    ordered_modules = [registry[name] for name in resolved_module_names]
 
     # ------------------------------------------------------------------
     # 5. Iterate over selected candidates
@@ -217,6 +236,11 @@ def run_fixed_mk1_universal_conveyor(
             candidate.get("source_candidate") or candidate
         )
         context["post_processing_dirs"] = copy.deepcopy(directories)
+        # Propagate execution provenance to each clip's module context so the
+        # metadata writer can include it in per-clip metadata JSON.
+        execution_context = job_metadata.get("execution_context")
+        if execution_context is not None:
+            context["execution_context"] = dict(execution_context)
 
         chain_result = run_module_chain(
             ordered_modules,

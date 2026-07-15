@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <div>
+      <p class="eyebrow">Funnel Management</p>
+      <h2>Sync Config</h2>
+      <p class="muted mono">{{ funnel_id }}</p>
+      <p>{{ display_name }}</p>
+    </div>
+    {% if environment_is_prod %}
+      <span class="pill bad">PRODUCTION — high risk</span>
+    {% else %}
+      <span class="pill muted">DEVELOPMENT</span>
+    {% endif %}
+  </div>
+  <p class="hint muted">
+    Sync writes the runtime files this funnel needs to run a dev/test job. You do not need to
+    understand the individual files — apply sync, then return to the funnel and click Run test.
+  </p>
+  <div class="actions">
+    <a class="button-link" href="{{ url_for('funnel_detail_page', funnel_id=funnel_id) }}">← Funnel detail</a>
+    <a class="button-link" href="{{ url_for('funnels_page') }}">All funnels</a>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Sync preview</h2>
+    <span class="pill {{ 'ok' if report.ok else 'bad' }}">{{ 'ready to apply' if report.ok and report.changed else ('blocked' if not report.ok else 'no changes') }}</span>
+  </div>
+  {% if readiness %}
+    <dl class="grid grid-2">
+      <div><dt>Processing now</dt><dd><span class="pill {{ readiness.processing_state|status_class }}">{{ readiness.processing_label }}</span></dd></div>
+      <div><dt>After sync</dt><dd><span class="pill {{ readiness.processing_after_apply_state|status_class }}">{{ readiness.processing_after_apply_label }}</span></dd></div>
+    </dl>
+    {% if readiness.processing_after_apply_state == 'ready' %}
+      <p class="hint ok">Applying sync should make a processing test runnable.</p>
+    {% elif report.ok and report.changed %}
+      <p class="hint muted">Sync will update runtime files. Check blockers on the funnel detail page if a test still cannot run.</p>
+    {% endif %}
+  {% endif %}
+</section>
+
+<details>
+  <summary class="card-head"><h2>Advanced sync details</h2></summary>
+
+<section class="card nested">
+  <div class="card-head"><h2>Environment</h2></div>
+  <form method="get" action="{{ url_for('funnel_sync_page', funnel_id=funnel_id) }}" class="actions">
+    <label>
+      Target environment
+      <select name="environment" onchange="this.form.submit()">
+        <option value="dev" {{ 'selected' if environment == 'dev' else '' }}>dev</option>
+        <option value="prod" {{ 'selected' if environment == 'prod' else '' }}>prod (high risk)</option>
+      </select>
+    </label>
+  </form>
+  <p class="muted">Path source: {{ path_kind }}</p>
+</section>
+
+<section class="card nested">
+  <div class="card-head"><h2>Resolved target paths</h2></div>
+  <dl class="grid grid-1">
+    {% for label, path in path_rows %}
+      <div>
+        <dt>{{ label }}</dt>
+        <dd class="mono">{{ path if path else '— not resolved —' }}</dd>
+      </div>
+    {% endfor %}
+  </dl>
+  {% if env_warnings %}
+    <ul class="check-list">
+      {% for warning in env_warnings %}
+        <li>{{ warning }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</section>
+
+<section class="card nested">
+  <div class="card-head"><h2>Planned file changes</h2></div>
+  <ul class="check-list">
+    {% for change, summary in change_summaries %}
+      <li>
+        <span class="pill muted">{{ change.action }}</span>
+        {{ summary }}
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+</details>
+
+{% if form_errors %}
+<section class="card">
+  <h3>Please fix the following</h3>
+  <ul class="check-list">
+    {% for error in form_errors %}
+      <li>{{ error }}</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% if apply_allowed and not applied %}
+<section class="card">
+  <div class="card-head"><h2>Apply sync</h2></div>
+  <form method="post" action="{{ url_for('funnel_sync_submit', funnel_id=funnel_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="environment" value="{{ environment }}">
+
+    <label>
+      <input type="checkbox" name="confirm_understand" value="on" required>
+      I understand this will write runtime config files for the selected environment.
+    </label>
+
+    {% if environment_is_prod %}
+      <label>
+        Type funnel ID to confirm production sync
+        <input type="text" name="prod_confirm" autocomplete="off" class="mono" required>
+      </label>
+      <p class="hint muted">Production apply creates backups by default.</p>
+    {% else %}
+      <label>
+        <input type="checkbox" name="request_backup" value="on">
+        Create backup files before writing
+      </label>
+    {% endif %}
+
+    <div class="actions">
+      <button type="submit">Sync runtime config</button>
+      <a class="button-link" href="{{ url_for('funnel_detail_page', funnel_id=funnel_id) }}">Cancel</a>
+    </div>
+  </form>
+</section>
+{% elif not report.changed and report.ok %}
+<section class="card">
+  <p class="muted">Runtime config already matches the canonical funnel for the selected paths.</p>
+</section>
+{% endif %}
+{% endblock %}

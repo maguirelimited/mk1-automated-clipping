@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+
+{% set disable_auto_refresh = true %}
+
+{% block content %}
+<section class="overview-page outputs-page outputs-run-review">
+  <header class="overview-intro">
+    <p class="muted">
+      <a href="{{ url_for('ops_overview') }}">← Operator Console</a>
+    </p>
+    <h2>Outputs</h2>
+    <p class="muted">Review clips from pipeline runs or recent completed jobs.</p>
+  </header>
+
+  {% if not outputs_connected %}
+  <div class="flash bad">
+    Outputs unavailable — observability backend disconnected. Clip data is not fabricated.
+  </div>
+  <p class="console-section-link">
+    <a href="{{ url_for('ops_overview') }}">Return to Operator Console</a>
+  </p>
+  {% elif outputs_error %}
+  <article class="card overview-card outputs-empty-state">
+    <h3>Outputs unavailable</h3>
+    <p class="muted">Could not load run clips ({{ outputs_error }}).</p>
+    <nav class="console-links">
+      <a class="console-link console-link-primary" href="{{ url_for('ops_overview') }}">Operator Console</a>
+    </nav>
+  </article>
+  {% elif outputs_empty_kind == 'no_funnel_jobs' %}
+  <article class="card overview-card outputs-empty-state">
+    <h3>No jobs found for funnel <code>{{ outputs_filter_funnel_id }}</code></h3>
+    <p class="muted">Run a test from the funnel detail page. Outputs from that funnel's jobs appear here.</p>
+    <nav class="console-links">
+      <a class="console-link" href="{{ url_for('funnel_detail_page', funnel_id=outputs_filter_funnel_id) }}">Funnel detail</a>
+      <a class="console-link console-link-primary" href="{{ url_for('ops_overview') }}">Operator Console</a>
+    </nav>
+  </article>
+  {% elif outputs_empty_kind == 'no_funnel_clips' %}
+  <article class="card overview-card outputs-empty-state">
+    <h3>No clips produced for funnel <code>{{ outputs_filter_funnel_id }}</code></h3>
+    <p class="muted">
+      {% if outputs_funnel_latest_job_id %}
+      The latest job <code>{{ outputs_funnel_latest_job_id }}</code> completed without recorded clips.
+      {% else %}
+      Recent jobs for this funnel completed without recorded clips.
+      {% endif %}
+    </p>
+    <nav class="console-links">
+      {% if outputs_funnel_latest_job_id %}
+      <a class="console-link" href="{{ url_for('ops_job_detail', job_id=outputs_funnel_latest_job_id) }}">Latest job</a>
+      {% endif %}
+      <a class="console-link" href="{{ url_for('ops_jobs', funnel=outputs_filter_funnel_id) }}">Jobs for funnel</a>
+      <a class="console-link" href="{{ url_for('funnel_detail_page', funnel_id=outputs_filter_funnel_id) }}">Funnel detail</a>
+      <a class="console-link console-link-primary" href="{{ url_for('ops_overview') }}">Operator Console</a>
+    </nav>
+  </article>
+  {% elif outputs_empty_kind == 'no_successful_runs' %}
+  <article class="card overview-card outputs-empty-state">
+    <h3>No successful runs found yet</h3>
+    <p class="muted">Run a pipeline from the Operator Console. Clips from successful runs appear here for review.</p>
+    <nav class="console-links">
+      <a class="console-link console-link-primary" href="{{ url_for('ops_overview') }}">Operator Console</a>
+    </nav>
+  </article>
+  {% else %}
+  {% if outputs_run_selector %}
+  <form class="filter-bar outputs-run-selector" method="get" action="{{ url_for('ops_outputs') }}">
+    <label>
+      Run
+      <select name="run_id">
+        {% for option in outputs_run_selector %}
+        <option value="{{ option.run_id }}" {{ 'selected' if option.selected else '' }}>{{ option.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% if outputs_filter_job_id %}
+    <input type="hidden" name="job_id" value="{{ outputs_filter_job_id }}">
+    {% endif %}
+    {% if outputs_filter_funnel_id %}
+    <input type="hidden" name="funnel_id" value="{{ outputs_filter_funnel_id }}">
+    {% endif %}
+    <button type="submit">Show run</button>
+  </form>
+  {% endif %}
+
+  {% if outputs_filter_funnel_id %}
+  <p class="outputs-filter-banner muted">
+    Showing outputs for funnel <code>{{ outputs_filter_funnel_id }}</code>.
+    <a href="{{ url_for('funnel_detail_page', funnel_id=outputs_filter_funnel_id) }}">Funnel detail</a>
+    ·
+    <a href="{{ url_for('ops_jobs', funnel=outputs_filter_funnel_id) }}">Jobs</a>
+    ·
+    <a href="{{ url_for('ops_outputs') }}">All outputs</a>
+  </p>
+  {% endif %}
+
+  {% if outputs_filter_job_id %}
+  <p class="outputs-filter-banner muted">
+    Showing clips for job <code>{{ outputs_filter_job_id }}</code>{% if outputs_run_id %} in run <code>{{ outputs_run_id }}</code>{% endif %}.
+    {% if outputs_run_id %}
+    <a href="{{ url_for('ops_outputs', run_id=outputs_run_id) }}">View full run</a>
+    {% else %}
+    <a href="{{ url_for('ops_outputs') }}">View all recent outputs</a>
+    {% endif %}
+  </p>
+  {% endif %}
+
+  {% if outputs_run_id %}
+  <article class="card overview-card outputs-run-summary">
+    <h3>Run <code>{{ outputs_run_id }}</code></h3>
+    <dl class="overview-dl">
+      {% if outputs_run and (outputs_run.finished_at or outputs_run.started_at) %}
+      <div>
+        <dt>{% if outputs_run.finished_at %}Completed{% else %}Started{% endif %}</dt>
+        <dd>{{ outputs_run.finished_at or outputs_run.started_at }}</dd>
+      </div>
+      {% endif %}
+      {% if outputs_run and outputs_run.status %}
+      <div><dt>Status</dt><dd>{{ outputs_run.status }}</dd></div>
+      {% endif %}
+      {% if outputs_run and outputs_run.funnel_id %}
+      <div><dt>Funnel</dt><dd>{{ outputs_run.funnel_id }}</dd></div>
+      {% elif outputs and outputs[0].funnel %}
+      <div><dt>Funnel</dt><dd>{{ outputs[0].funnel }}</dd></div>
+      {% endif %}
+      <div>
+        <dt>Clips generated</dt>
+        <dd>{{ outputs_count }}</dd>
+      </div>
+    </dl>
+  </article>
+  {% elif outputs_filter_funnel_id %}
+  <article class="card overview-card outputs-run-summary">
+    <h3>Funnel <code>{{ outputs_filter_funnel_id }}</code></h3>
+    <dl class="overview-dl">
+      <div>
+        <dt>Clips generated</dt>
+        <dd>{{ outputs_count }}</dd>
+      </div>
+      {% if outputs_funnel_latest_job_id %}
+      <div>
+        <dt>Latest job</dt>
+        <dd><a href="{{ url_for('ops_job_detail', job_id=outputs_funnel_latest_job_id) }}"><code>{{ outputs_funnel_latest_job_id }}</code></a></dd>
+      </div>
+      {% endif %}
+    </dl>
+  </article>
+  {% endif %}
+
+  {% if outputs %}
+  <div class="outputs-review-list">
+    {% for clip in outputs %}
+    <article class="card overview-card outputs-review-card">
+      {% if clip.preview_available %}
+      <video
+        class="outputs-review-player"
+        controls
+        preload="metadata"
+        src="{{ url_for('ops_output_media', job_id=clip.job_id, clip_id=clip.clip_id) }}"
+      >
+        Preview unavailable in this browser.
+      </video>
+      {% else %}
+      <p class="muted outputs-review-preview-missing">Preview unavailable.</p>
+      {% endif %}
+
+      {% if clip.title_or_hook %}
+      <h3 class="outputs-review-title">{{ clip.title_or_hook }}</h3>
+      {% else %}
+      <h3 class="outputs-review-title muted">Untitled clip</h3>
+      {% endif %}
+
+      <dl class="overview-dl outputs-review-meta">
+        {% if clip.duration_seconds is not none %}
+        <div><dt>Duration</dt><dd>{{ clip.duration_seconds }}s</dd></div>
+        {% endif %}
+        {% if clip.get('score') is not none %}
+        <div><dt>Score</dt><dd>{{ clip.score }}</dd></div>
+        {% endif %}
+        <div>
+          <dt>Job</dt>
+          <dd><a href="{{ url_for('ops_job_detail', job_id=clip.job_id) }}"><code>{{ clip.job_id }}</code></a></dd>
+        </div>
+      </dl>
+    </article>
+    {% endfor %}
+  </div>
+  {% elif outputs_empty %}
+  <article class="card overview-card outputs-empty-state">
+    <h3>No clips produced{% if outputs_filter_funnel_id %} for funnel <code>{{ outputs_filter_funnel_id }}</code>{% elif outputs_run_id %} for this run{% endif %}</h3>
+    <p class="muted">
+      {% if outputs_filter_funnel_id and outputs_funnel_latest_job_id %}
+      Latest job <code>{{ outputs_funnel_latest_job_id }}</code> completed without recorded clips.
+      {% elif outputs_run_id %}
+      Run <code>{{ outputs_run_id }}</code> completed without recorded clips.
+      Inspect the run or jobs if that is unexpected.
+      {% else %}
+      No clips were recorded for this view.
+      {% endif %}
+    </p>
+    <nav class="console-links">
+      {% if outputs_funnel_latest_job_id %}
+      <a class="console-link" href="{{ url_for('ops_job_detail', job_id=outputs_funnel_latest_job_id) }}">Latest job</a>
+      {% endif %}
+      {% if outputs_run_id %}
+      <a class="console-link" href="{{ url_for('ops_run_detail', run_id=outputs_run_id) }}">Run detail</a>
+      {% endif %}
+      {% if outputs_filter_funnel_id %}
+      <a class="console-link" href="{{ url_for('ops_jobs', funnel=outputs_filter_funnel_id) }}">Jobs for funnel</a>
+      {% endif %}
+      <a class="console-link console-link-primary" href="{{ url_for('ops_overview') }}">Operator Console</a>
+    </nav>
+  </article>
+  {% endif %}
+  {% endif %}
+</section>
+{% endblock %}

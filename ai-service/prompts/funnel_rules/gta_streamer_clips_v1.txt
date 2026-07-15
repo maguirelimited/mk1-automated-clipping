@@ -1,0 +1,125 @@
+FUNNEL: GTA streamer clips
+FUNNEL RULES VERSION: gta_streamer_clips_v1
+
+This funnel discovers raw short-form candidate moments from GTA livestreams and recorded GTA gameplay.
+
+The goal is to identify moments with genuine standalone entertainment value for an audience interested in GTA, streamer personalities, chaotic gameplay, roleplay interactions and unexpected situations.
+
+This is recall-oriented candidate discovery, not final selection. Pass forward every credible moment with meaningful potential, up to the configured candidate limit. Do not restrict the output to only the single strongest moment, and do not fill the output with weak material merely to reach the limit.
+
+Prioritise raw candidates involving:
+
+* funny mistakes, accidents, failures or unintended consequences
+* genuine laughter, shock, panic, frustration, rage or disbelief
+* arguments, confrontations, threats, betrayals or tense negotiations
+* GTA roleplay interactions with a clear conflict, misunderstanding, reversal or payoff
+* unexpected player, NPC, police or environmental behaviour
+* escalating chaos where an ordinary situation quickly becomes unusual
+* police chases, escapes, crashes, ambushes or plans going wrong
+* impressive plays, narrow escapes, clever decisions or unlikely recoveries
+* social embarrassment, deception, manipulation or someone being exposed
+* memorable dialogue, insults, threats, excuses, one-liners or character exchanges
+* sudden reversals where control, status or advantage changes unexpectedly
+* short stories or sequences with a clear setup, development and payoff
+* unusual situations that would make a viewer want to understand what happens next
+* streamer personality moments that remain entertaining without requiring knowledge of the creator
+* strong opinions or observations about GTA, roleplay, other players or the game when the point is clear and entertaining
+
+Do not treat shouting, swearing, laughter or high energy as sufficient evidence by themselves.
+
+Strong emotion is valuable when it is connected to a clear event, conflict, mistake, surprise, decision or payoff. Repeated yelling with no understandable cause is weak.
+
+Prefer candidates where a viewer can quickly understand:
+
+* who is involved
+* what is happening
+* what the immediate goal or conflict is
+* why the reaction or outcome matters
+* what changes or resolves by the end of the moment
+
+The viewer does not need to know every player, character or server reference. A candidate can still work when unfamiliar names are used, provided the relationship, conflict or situation becomes understandable from the excerpt.
+
+GTA roleplay candidates may include dialogue-heavy moments. Do not reject a candidate merely because it contains limited action if the conversation itself has tension, humour, conflict, deception, escalation or a strong payoff.
+
+Gameplay candidates may depend partly on visuals. Because discovery is transcript-based:
+
+* pass forward a candidate when the transcript provides clear evidence that a meaningful visual event is occurring
+* valid evidence can include explicit descriptions, immediate consequences, specific reactions or dialogue that makes the event understandable
+* do not invent crashes, kills, escapes, reactions, facial expressions or gameplay events that the transcript does not support
+* vague exclamations such as “oh my God” or “what just happened” are not enough on their own
+* when a candidate appears promising but likely requires the video to confirm the event, state that uncertainty clearly in the candidate warning or explanation
+* do not reject every visually dependent moment, because many strong GTA moments will be signalled through dialogue and reactions rather than fully described
+
+Strong candidate structures commonly include:
+
+* immediate problem → escalation → outcome
+* setup → mistake → consequence
+* accusation → argument → reveal or reversal
+* plan → unexpected interruption → reaction
+* pursuit → apparent failure → escape or capture
+* confidence → sudden loss of control
+* ordinary conversation → absurd or threatening turn
+* misunderstanding → increasing tension → clarification or payoff
+* boast or prediction → immediate contradiction
+* player action → surprising NPC, police or player response
+
+Weak GTA content includes:
+
+* routine driving with no incident, conversation or tension
+* travelling between locations while discussing nothing meaningful
+* menus, inventory management, loading, equipment selection or routine setup
+* grinding, repetitive tasks or ordinary mission progress
+* low-energy commentary that only describes basic gameplay
+* long planning discussions without execution, interruption or payoff
+* generic streamer-to-chat conversation unrelated to a clear moment
+* repeated insults, swearing or shouting without an understandable conflict
+* inside jokes that require extensive prior knowledge
+* extended roleplay administration, rule discussion or server logistics
+* ordinary police stops or criminal activity where nothing unusual happens
+* generic gameplay that would only be interesting because of visuals not supported by the transcript
+* moments that begin after the important event has already happened
+* reactions where the cause remains impossible to understand
+* long sequences whose value depends on context from outside the bounded section
+
+Do not assume a moment is strong merely because it contains:
+
+* a famous streamer
+* a known GTA character
+* violence, police or criminal activity
+* loud audio
+* profanity
+* laughter
+* a high-speed chase
+* a kill or death
+* roleplay dialogue
+
+These are useful only when the candidate contains a distinct event, interaction, progression, reveal, reaction or payoff.
+
+Seek variety across credible candidate types. Do not reduce the funnel to rage clips or comedy alone. Valuable GTA candidates can be funny, tense, impressive, embarrassing, surprising, emotional, confrontational or narratively satisfying.
+
+Use the shared allowed archetypes accurately:
+
+* use `funny_moment` for clear comedy, absurdity, embarrassment or a setup with a humorous payoff
+* use `emotional_moment` for genuine anger, panic, shock, excitement or distress driven by a clear event
+* use `story` for a short roleplay or gameplay sequence with meaningful progression
+* use `strong_quote` for memorable dialogue that works as the central value of the candidate
+* use `controversial_opinion` for a clear, debatable GTA or streamer-related opinion
+* use `explanation` or `tactical_advice` only when the candidate genuinely provides useful game, roleplay or strategy information
+* use `other` for strong gameplay-driven moments that do not honestly fit another shared archetype
+
+Do not misclassify a gameplay highlight as `valuable_insight`, `business_lesson` or `tactical_advice` merely because those archetypes appear more specific.
+
+When scoring raw potential:
+
+* reward an immediate understandable situation or rapidly emerging setup
+* reward clear escalation, stakes, reversal, consequence or payoff
+* reward genuine streamer personality when it strengthens the moment
+* reward moments that remain understandable outside the full stream
+* reward endings that resolve the immediate event or leave a deliberate, compelling question
+* reduce scores when the candidate requires extensive missing context
+* reduce scores when the event is mostly inferred from unsupported visual assumptions
+* reduce scores when emotion is present but its cause is unclear
+* reduce scores when the candidate contains energy but no meaningful progression
+* reduce scores when the likely payoff occurs outside the candidate or outside the section
+
+Do not predict that a candidate will go viral. Judge whether the raw transcript evidence shows a credible GTA short-form opportunity worth passing to downstream evaluation.

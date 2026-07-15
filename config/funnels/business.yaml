@@ -1,0 +1,34 @@
+# config/funnels/business.yaml
+#
+# Funnel configuration for the Business funnel.
+#
+# A funnel defines a content niche, its source channels, its behaviour preset,
+# and which platforms it distributes to.
+#
+# Rules:
+#   - Config stores the funnel's choices. It does not make business decisions.
+#   - Do not put monetisation strategy logic here.
+#   - Do not put creative direction here.
+#   - A new funnel should be created by adding a new file here, not by
+#     modifying core code.
+#   - Secrets (affiliate IDs, account credentials) must not appear in this file.
+
+funnel:
+  id: business
+  name: Business
+  preset: growth
+  enabled: true
+
+sources:
+  # Channel IDs or URLs to pull content from.
+  # Populated at runtime or via the Ops UI source management.
+  channels: []
+  rules: []
+
+selection:
+  preferred_topics: []
+  blocked_topics: []
+
+platforms:
+  enabled:
+    - youtube

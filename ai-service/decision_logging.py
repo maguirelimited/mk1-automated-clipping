@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,7 +9,20 @@ from typing import Any
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_LOG_DIR = BASE_DIR / "logs"
+
+
+def _resolve_log_dir() -> Path:
+    """Environment-scoped AI decision log directory when deployed."""
+    raw = os.environ.get("AI_SERVICE_LOG_DIR", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    log_root = os.environ.get("MK04_LOG_ROOT", "").strip()
+    if log_root:
+        return Path(log_root).expanduser() / "ai-service"
+    return BASE_DIR / "logs"
+
+
+DEFAULT_LOG_DIR = _resolve_log_dir()
 DEFAULT_LOG_PATH = DEFAULT_LOG_DIR / "ai_decisions.jsonl"
 DEFAULT_ARTIFACT_DIR = DEFAULT_LOG_DIR / "artifacts"
 DEFAULT_PREVIEW_STRING_LIMIT = 180

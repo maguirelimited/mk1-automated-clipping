@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="overview-page">
+  <header class="overview-intro">
+    <p class="muted"><a href="{{ url_for('ops_overview') }}">← Operator Console</a></p>
+    <h2>Configuration</h2>
+    <p class="muted">
+      Is configuration valid, and what settings or state should you verify?
+      Read-only view — secrets are redacted and nothing can be edited here.
+    </p>
+    <p class="muted config-canonical-hint">
+      To edit transcription, AI, or processing settings, use
+      <a href="{{ url_for('settings_page') }}">Legacy settings</a> (advanced).
+    </p>
+    {% set links = [
+      {"label": "Operator Console", "href": url_for('ops_overview'), "primary": true},
+      {"label": "Failures", "href": url_for('ops_failures')},
+      {"label": "Storage", "href": url_for('ops_storage')},
+    ] %}
+    {% include "partials/_ops_loop_nav.html" %}
+  </header>
+
+  {% if config_error %}
+  <div class="flash bad">Configuration unavailable ({{ config_error }}).</div>
+  {% elif not config_view %}
+  <div class="flash bad">Configuration unavailable.</div>
+  {% else %}
+
+  <div class="overview-grid">
+    <article class="card overview-card">
+      <h3>Environment</h3>
+      <p class="overview-metric">{{ config_view.environment_label }}</p>
+      <dl class="overview-dl">
+        <div><dt>Token</dt><dd><code>{{ config_view.environment }}</code></dd></div>
+        <div><dt>Config root</dt><dd><code>{{ config_view.paths.config_root }}</code></dd></div>
+      </dl>
+    </article>
+
+    <article class="card overview-card">
+      <h3>Configuration validation</h3>
+      <p class="overview-metric status-{{ 'ok' if config_view.validation.state == 'PASS' else 'bad' }}">
+        {{ config_view.validation.state }}
+      </p>
+      <p class="muted">{{ config_view.validation.message }}</p>
+      {% if config_view.validation.errors %}
+      <ul class="plain-list">
+        {% for err in config_view.validation.errors %}
+        <li>{{ err }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      <p class="muted">Validation reuses ConfigManager / validate_config_tree on every load.</p>
+    </article>
+
+    <article class="card overview-card">
+      <h3>Runtime state</h3>
+      <dl class="overview-dl">
+        <div>
+          <dt>Uploads</dt>
+          <dd class="status-text-{{ 'ok' if config_view.upload.enabled else ('warn' if config_view.upload.enabled is sameas false else 'muted') }}">
+            {{ config_view.upload.status|upper }}
+          </dd>
+        </div>
+        <div><dt>Upload detail</dt><dd class="muted">{{ config_view.upload.detail }}</dd></div>
+        <div>
+          <dt>Scheduler</dt>
+          <dd>{{ config_view.scheduler.effective|upper }}</dd>
+        </div>
+        <div><dt>Scheduler detail</dt><dd class="muted">{{ config_view.scheduler.detail }}</dd></div>
+      </dl>
+    </article>
+
+    <article class="card overview-card">
+      <h3>Active selection</h3>
+      <dl class="overview-dl">
+        <div><dt>Funnel</dt><dd><code>{{ config_view.summary.funnel_id }}</code></dd></div>
+        <div><dt>Platform</dt><dd><code>{{ config_view.summary.platform_id }}</code></dd></div>
+        <div><dt>Preset</dt><dd><code>{{ config_view.summary.preset_id }}</code></dd></div>
+        <div>
+          <dt>Uploading enabled (config)</dt>
+          <dd>{{ config_view.summary.uploading_enabled }}</dd>
+        </div>
+      </dl>
+    </article>
+  </div>
+
+  <div class="overview-grid overview-grid-wide">
+    <article class="card overview-card">
+      <h3>System configuration</h3>
+      {% if config_view.system %}
+      <dl class="overview-dl">
+        {% for key, value in config_view.system.items() %}
+        <div><dt>{{ key }}</dt><dd><code>{{ value }}</code></dd></div>
+        {% endfor %}
+      </dl>
+      {% else %}
+      <p class="muted">Not available</p>
+      {% endif %}
+    </article>
+
+    <article class="card overview-card">
+      <h3>AI / model configuration</h3>
+      {% if config_view.ai %}
+      <dl class="overview-dl">
+        {% for key, value in config_view.ai.items() %}
+        <div><dt>{{ key }}</dt><dd><code>{{ value }}</code></dd></div>
+        {% endfor %}
+      </dl>
+      {% else %}
+      <p class="muted">Not available</p>
+      {% endif %}
+    </article>
+  </div>
+
+  <article class="card overview-card">
+    <h3>Retention</h3>
+    {% if config_view.retention %}
+    <table class="overview-table">
+      <thead><tr><th>Key</th><th>Days</th></tr></thead>
+      <tbody>
+        {% for key, value in config_view.retention.items() %}
+        <tr><td>{{ key }}</td><td>{{ value }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">Not available</p>
+    {% endif %}
+  </article>
+
+  <div class="overview-grid overview-grid-wide">
+    <article class="card overview-card">
+      <h3>Funnel configuration</h3>
+      <pre class="config-pre">{{ config_view.funnel | tojson(indent=2) }}</pre>
+    </article>
+    <article class="card overview-card">
+      <h3>Platform configuration</h3>
+      <pre class="config-pre">{{ config_view.platform | tojson(indent=2) }}</pre>
+    </article>
+  </div>
+
+  <article class="card overview-card">
+    <h3>Preset configuration</h3>
+    <pre class="config-pre">{{ config_view.preset | tojson(indent=2) }}</pre>
+  </article>
+
+  <article class="card overview-card">
+    <h3>Paths</h3>
+    <dl class="overview-dl">
+      {% for key, value in config_view.paths.items() %}
+      <div><dt>{{ key }}</dt><dd><code>{{ value }}</code></dd></div>
+      {% endfor %}
+    </dl>
+  </article>
+
+  <article class="card overview-card">
+    <h3>Resolved configuration</h3>
+    {% if config_view.resolved_config_available %}
+    <p class="muted">
+      Secret-safe snapshot from ConfigManager (backend-redacted).
+      Job-level snapshots remain under <code>jobs/&lt;env&gt;/&lt;job_id&gt;/resolved_config.yaml</code>
+      when present.
+    </p>
+    <details>
+      <summary>View resolved configuration</summary>
+      <pre class="config-pre">{{ config_resolved_json }}</pre>
+    </details>
+    {% else %}
+    <p class="muted">Not available</p>
+    {% endif %}
+  </article>
+
+  {% endif %}
+</section>
+{% endblock %}

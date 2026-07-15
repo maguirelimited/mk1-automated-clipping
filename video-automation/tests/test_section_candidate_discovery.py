@@ -12,7 +12,10 @@ if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
 import processing_contracts as contracts  # noqa: E402
+import candidate_processing as processing  # noqa: E402
+import processing_integration as integration  # noqa: E402
 import section_candidate_discovery as discovery  # noqa: E402
+import selection_gate_v1 as selection_gate  # noqa: E402
 
 
 class FakeModelResponse:
@@ -21,29 +24,35 @@ class FakeModelResponse:
         self.error = error
 
 
-class FakeModelClient:
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.prompts: list[str] = []
-
-    def generate(self, prompt: str) -> FakeModelResponse:
-        self.prompts.append(prompt)
-        if not self.responses:
-            return FakeModelResponse(error="no response queued")
-        response = self.responses.pop(0)
-        if isinstance(response, Exception):
-            raise response
-        return response
-
-
 class FakeDiscoveryClient:
-    def __init__(self, result: dict):
-        self.result = result
-        self.configs = []
+    """Simulates ai-service discover_section responses for orchestration tests."""
+
+    def __init__(self, result: dict | None = None, *, results: list | None = None):
+        if results is not None:
+            self._responses = list(results)
+        elif result is not None:
+            self._responses = [result]
+        else:
+            raise TypeError("provide result= or results=")
+        self.configs: list = []
+        self.calls: list[dict] = []
 
     def discover_section(self, section: dict, *, config):
         self.configs.append(config)
-        return self.result
+        self.calls.append({"section_id": section.get("section_id"), "config": config})
+        if not self._responses:
+            raise discovery.SectionCandidateDiscoveryError(
+                "NO_RESPONSE", "no discovery response queued"
+            )
+        item = self._responses.pop(0)
+        if isinstance(item, discovery.SectionCandidateDiscoveryError):
+            raise item
+        if isinstance(item, Exception):
+            raise item
+        out = dict(item)
+        if section.get("section_id"):
+            out["section_id"] = section["section_id"]
+        return out
 
 
 def _section(section_id: str = "section_0001") -> dict:
@@ -117,10 +126,6 @@ def _result(*, usable: bool = True, candidates: list[dict] | None = None) -> dic
     }
 
 
-def _response(payload: dict) -> FakeModelResponse:
-    return FakeModelResponse(json.dumps(payload))
-
-
 def _config(**overrides) -> discovery.CandidateDiscoveryConfig:
     base = {
         "fail_fast": False,
@@ -130,6 +135,19 @@ def _config(**overrides) -> discovery.CandidateDiscoveryConfig:
     }
     base.update(overrides)
     return discovery.CandidateDiscoveryConfig(**base)
+
+
+def _discover_and_process(sections, *, ai_client, config=None):
+    discovery_batch = discovery.discover_candidates_for_sections(
+        sections,
+        ai_client=ai_client,
+        config=config or _config(),
+    )
+    return processing.run_candidate_processing(
+        discovery_batch,
+        sections,
+        config=config or _config(),
+    )
 
 
 def test_valid_usable_true_section_result_with_one_candidate_validates():
@@ -710,14 +728,28 @@ def test_free_text_transcript_quality_flag_value_fails_validation():
 
 
 def test_malformed_model_json_fails_cleanly():
-    client = FakeModelClient([FakeModelResponse("not json")])
+    with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
+        discovery.parse_section_discovery_model_response(FakeModelResponse("not json"))
+
+    assert exc.value.code == "MODEL_JSON_INVALID"
+
+
+def test_discover_candidates_for_section_propagates_ai_service_errors():
+    client = FakeDiscoveryClient(
+        results=[
+            discovery.SectionCandidateDiscoveryError(
+                "MODEL_JSON_INVALID",
+                "Model output was not strict JSON: Expecting value.",
+                raw_text="not json",
+            )
+        ]
+    )
 
     with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
         discovery.discover_candidates_for_section(
             _section(),
             ai_client=client,
             config=_config(),
-            prompt_template="PROMPT",
         )
 
     assert exc.value.code == "MODEL_JSON_INVALID"
@@ -727,13 +759,12 @@ def test_batch_discovery_continues_after_failed_section_when_fail_fast_false():
     sections = [_section("section_0001"), _section("section_0002")]
     second = _result(usable=False, candidates=[])
     second["section_id"] = "section_0002"
-    client = FakeModelClient([FakeModelResponse("not json"), _response(second)])
+    client = FakeDiscoveryClient(results=[discovery.SectionCandidateDiscoveryError("MODEL_JSON_INVALID", "Model output was not strict JSON: Expecting value.", raw_text="not json"), second])
 
     batch = discovery.discover_candidates_for_sections(
         sections,
         ai_client=client,
         config=_config(fail_fast=False),
-        prompt_template="PROMPT",
     )
 
     assert batch["sections_received"] == 2
@@ -744,29 +775,27 @@ def test_batch_discovery_continues_after_failed_section_when_fail_fast_false():
 
 def test_batch_discovery_stops_after_failed_section_when_fail_fast_true():
     sections = [_section("section_0001"), _section("section_0002")]
-    client = FakeModelClient([FakeModelResponse("not json"), _response(_result())])
+    client = FakeDiscoveryClient(results=[discovery.SectionCandidateDiscoveryError("MODEL_JSON_INVALID", "Model output was not strict JSON: Expecting value.", raw_text="not json"), _result()])
 
     batch = discovery.discover_candidates_for_sections(
         sections,
         ai_client=client,
         config=_config(fail_fast=True),
-        prompt_template="PROMPT",
     )
 
     assert batch["sections_processed"] == 0
     assert len(batch["failed_sections"]) == 1
     assert batch["warnings"] == ["fail_fast_stopped_after_section_failure"]
-    assert len(client.prompts) == 1
+    assert len(client.calls) == 1
 
 
 def test_candidate_discovery_does_not_force_candidates_for_weak_sections():
-    client = FakeModelClient([_response(_result(usable=False, candidates=[]))])
+    client = FakeDiscoveryClient(results=[_result(usable=False, candidates=[])])
 
     result = discovery.discover_candidates_for_section(
         _section(),
         ai_client=client,
         config=_config(),
-        prompt_template="PROMPT",
     )
 
     assert result["usable"] is False
@@ -790,27 +819,52 @@ def test_max_candidates_per_section_is_respected():
         _candidate(2, start_sec=117.0, end_sec=132.0, duration_sec=15.0),
         _candidate(3, start_sec=133.0, end_sec=148.0, duration_sec=15.0),
     ]
-    client = FakeModelClient([_response(_result(candidates=many))])
+    client = FakeDiscoveryClient(results=[_result(candidates=many)])
 
     result = discovery.discover_candidates_for_section(
         _section(),
         ai_client=client,
         config=_config(max_candidates_per_section=2),
-        prompt_template="PROMPT",
     )
 
     assert len(result["candidates"]) == 2
     assert result["warnings"] == ["max_candidates_per_section_applied"]
 
 
+def test_default_discovery_config_uses_recall_oriented_cap():
+    cfg = discovery.default_discovery_config()
+
+    assert cfg.max_candidates_per_section == discovery.DEFAULT_MAX_CANDIDATES_PER_SECTION
+    assert cfg.max_candidates_per_section == 5
+
+
+def test_discovery_artifact_includes_strategy_metadata():
+    client = FakeDiscoveryClient(results=[_result()])
+    batch = discovery.discover_candidates_for_sections(
+        [_section()],
+        ai_client=client,
+        config=_config(),
+    )
+    artifact = discovery.build_section_candidate_discovery_artifact(
+        job_id="job_123",
+        source_transcript_sections_path="/tmp/transcript_sections.json",
+        batch_result=batch,
+        config=_config(),
+        created_at="2026-06-30T12:00:00+00:00",
+    )
+
+    assert artifact["discovery"]["strategy"] == discovery.MK1_DISCOVERY_STRATEGY
+    assert artifact["discovery"]["max_candidates_per_section"] == 3
+    discovery.validate_section_candidate_discovery_artifact(artifact)
+
+
 def test_discovered_candidates_preserve_source_section_id():
-    client = FakeModelClient([_response(_result())])
+    client = FakeDiscoveryClient(results=[_result()])
 
     result = discovery.discover_candidates_for_section(
         _section(),
         ai_client=client,
         config=_config(),
-        prompt_template="PROMPT",
     )
 
     assert result["candidates"][0]["source_section_id"] == "section_0001"
@@ -819,13 +873,12 @@ def test_discovered_candidates_preserve_source_section_id():
 def test_missing_source_section_id_is_attached_deterministically():
     candidate = _candidate()
     del candidate["source_section_id"]
-    client = FakeModelClient([_response(_result(candidates=[candidate]))])
+    client = FakeDiscoveryClient(results=[_result(candidates=[candidate])])
 
     result = discovery.discover_candidates_for_section(
         _section(),
         ai_client=client,
         config=_config(),
-        prompt_template="PROMPT",
     )
 
     assert result["candidates"][0]["source_section_id"] == "section_0001"
@@ -833,27 +886,25 @@ def test_missing_source_section_id_is_attached_deterministically():
 
 def test_mismatched_source_section_id_fails_validation():
     candidate = _candidate(section_id="section_9999")
-    client = FakeModelClient([_response(_result(candidates=[candidate]))])
+    client = FakeDiscoveryClient(results=[_result(candidates=[candidate])])
 
     with pytest.raises(discovery.SectionCandidateDiscoveryError) as exc:
         discovery.discover_candidates_for_section(
             _section(),
             ai_client=client,
             config=_config(),
-            prompt_template="PROMPT",
         )
 
     assert "source_section_id must match input section_id" in str(exc.value)
 
 
 def test_batch_discovery_preserves_scores_on_candidates():
-    client = FakeModelClient([_response(_result())])
+    client = FakeDiscoveryClient(results=[_result()])
 
     batch = discovery.discover_candidates_for_sections(
         [_section()],
         ai_client=client,
         config=_config(),
-        prompt_template="PROMPT",
     )
 
     scores = batch["section_results"][0]["candidates"][0]["scores"]
@@ -862,13 +913,12 @@ def test_batch_discovery_preserves_scores_on_candidates():
 
 
 def test_batch_discovery_preserves_evidence_fields():
-    client = FakeModelClient([_response(_result())])
+    client = FakeDiscoveryClient(results=[_result()])
 
     batch = discovery.discover_candidates_for_sections(
         [_section()],
         ai_client=client,
         config=_config(),
-        prompt_template="PROMPT",
     )
 
     candidate = batch["section_results"][0]["candidates"][0]
@@ -879,13 +929,12 @@ def test_batch_discovery_preserves_evidence_fields():
 
 
 def test_batch_discovery_preserves_archetype_values():
-    client = FakeModelClient([_response(_result())])
+    client = FakeDiscoveryClient(results=[_result()])
 
     batch = discovery.discover_candidates_for_sections(
         [_section()],
         ai_client=client,
         config=_config(),
-        prompt_template="PROMPT",
     )
 
     assert batch["section_results"][0]["candidates"][0]["archetype"] == "business_lesson"
@@ -894,13 +943,12 @@ def test_batch_discovery_preserves_archetype_values():
 def test_candidate_with_allowed_transcript_quality_flags_is_preserved_and_not_rejected():
     candidate = _candidate()
     candidate["transcript_quality_flags"] = ["speaker_confusion", "poor_punctuation"]
-    client = FakeModelClient([_response(_result(candidates=[candidate]))])
+    client = FakeDiscoveryClient(results=[_result(candidates=[candidate])])
 
     result = discovery.discover_candidates_for_section(
         _section(),
         ai_client=client,
         config=_config(),
-        prompt_template="PROMPT",
     )
 
     assert result["usable"] is True
@@ -913,13 +961,12 @@ def test_candidate_with_allowed_transcript_quality_flags_is_preserved_and_not_re
 def test_batch_discovery_preserves_candidate_transcript_quality_flags():
     candidate = _candidate()
     candidate["transcript_quality_flags"] = ["missing_words"]
-    client = FakeModelClient([_response(_result(candidates=[candidate]))])
+    client = FakeDiscoveryClient(results=[_result(candidates=[candidate])])
 
     batch = discovery.discover_candidates_for_sections(
         [_section()],
         ai_client=client,
         config=_config(),
-        prompt_template="PROMPT",
     )
 
     assert batch["section_results"][0]["candidates"][0]["transcript_quality_flags"] == [
@@ -930,13 +977,12 @@ def test_batch_discovery_preserves_candidate_transcript_quality_flags():
 def test_batch_discovery_preserves_section_level_transcript_quality_flags():
     result = _result()
     result["transcript_quality_flags"] = ["unclear_audio"]
-    client = FakeModelClient([_response(result)])
+    client = FakeDiscoveryClient(results=[result])
 
     batch = discovery.discover_candidates_for_sections(
         [_section()],
         ai_client=client,
         config=_config(),
-        prompt_template="PROMPT",
     )
 
     assert batch["section_results"][0]["transcript_quality_flags"] == ["unclear_audio"]
@@ -951,13 +997,12 @@ def test_aggregate_counts_are_correct():
     )
     second = _result(usable=False, candidates=[])
     second["section_id"] = "section_0002"
-    client = FakeModelClient([_response(first), _response(second)])
+    client = FakeDiscoveryClient(results=[first, second])
 
     batch = discovery.discover_candidates_for_sections(
         [_section("section_0001"), _section("section_0002")],
         ai_client=client,
         config=_config(),
-        prompt_template="PROMPT",
     )
 
     assert batch["sections_received"] == 2
@@ -973,13 +1018,12 @@ def test_malformed_score_output_records_failed_section_when_fail_fast_false():
     del bad["scores"]["natural_ending"]
     good = _result(usable=False, candidates=[])
     good["section_id"] = "section_0002"
-    client = FakeModelClient([_response(_result(candidates=[bad])), _response(good)])
+    client = FakeDiscoveryClient(results=[_result(candidates=[bad]), good])
 
     batch = discovery.discover_candidates_for_sections(
         [_section("section_0001"), _section("section_0002")],
         ai_client=client,
         config=_config(fail_fast=False),
-        prompt_template="PROMPT",
     )
 
     assert batch["sections_processed"] == 1
@@ -991,19 +1035,18 @@ def test_malformed_score_output_records_failed_section_when_fail_fast_false():
 def test_malformed_score_output_stops_batch_when_fail_fast_true():
     bad = _candidate()
     bad["scores"]["retention_potential"] = 12
-    client = FakeModelClient([_response(_result(candidates=[bad])), _response(_result())])
+    client = FakeDiscoveryClient(results=[_result(candidates=[bad]), _result()])
 
     batch = discovery.discover_candidates_for_sections(
         [_section("section_0001"), _section("section_0002")],
         ai_client=client,
         config=_config(fail_fast=True),
-        prompt_template="PROMPT",
     )
 
     assert batch["sections_processed"] == 0
     assert len(batch["failed_sections"]) == 1
     assert batch["warnings"] == ["fail_fast_stopped_after_section_failure"]
-    assert len(client.prompts) == 1
+    assert len(client.calls) == 1
 
 
 def test_malformed_evidence_output_records_failed_section_when_fail_fast_false():
@@ -1011,13 +1054,12 @@ def test_malformed_evidence_output_records_failed_section_when_fail_fast_false()
     bad["hook_text"] = " "
     good = _result(usable=False, candidates=[])
     good["section_id"] = "section_0002"
-    client = FakeModelClient([_response(_result(candidates=[bad])), _response(good)])
+    client = FakeDiscoveryClient(results=[_result(candidates=[bad]), good])
 
     batch = discovery.discover_candidates_for_sections(
         [_section("section_0001"), _section("section_0002")],
         ai_client=client,
         config=_config(fail_fast=False),
-        prompt_template="PROMPT",
     )
 
     assert batch["sections_processed"] == 1
@@ -1029,19 +1071,18 @@ def test_malformed_evidence_output_records_failed_section_when_fail_fast_false()
 def test_malformed_evidence_output_stops_batch_when_fail_fast_true():
     bad = _candidate()
     bad["why_candidate_has_potential"] = ""
-    client = FakeModelClient([_response(_result(candidates=[bad])), _response(_result())])
+    client = FakeDiscoveryClient(results=[_result(candidates=[bad]), _result()])
 
     batch = discovery.discover_candidates_for_sections(
         [_section("section_0001"), _section("section_0002")],
         ai_client=client,
         config=_config(fail_fast=True),
-        prompt_template="PROMPT",
     )
 
     assert batch["sections_processed"] == 0
     assert len(batch["failed_sections"]) == 1
     assert batch["warnings"] == ["fail_fast_stopped_after_section_failure"]
-    assert len(client.prompts) == 1
+    assert len(client.calls) == 1
 
 
 def test_malformed_archetype_output_records_failed_section_when_fail_fast_false():
@@ -1049,13 +1090,12 @@ def test_malformed_archetype_output_records_failed_section_when_fail_fast_false(
     bad["archetype"] = "Business Lesson"
     good = _result(usable=False, candidates=[])
     good["section_id"] = "section_0002"
-    client = FakeModelClient([_response(_result(candidates=[bad])), _response(good)])
+    client = FakeDiscoveryClient(results=[_result(candidates=[bad]), good])
 
     batch = discovery.discover_candidates_for_sections(
         [_section("section_0001"), _section("section_0002")],
         ai_client=client,
         config=_config(fail_fast=False),
-        prompt_template="PROMPT",
     )
 
     assert batch["sections_processed"] == 1
@@ -1067,19 +1107,18 @@ def test_malformed_archetype_output_records_failed_section_when_fail_fast_false(
 def test_malformed_archetype_output_stops_batch_when_fail_fast_true():
     bad = _candidate()
     bad["archetype"] = "story,explanation"
-    client = FakeModelClient([_response(_result(candidates=[bad])), _response(_result())])
+    client = FakeDiscoveryClient(results=[_result(candidates=[bad]), _result()])
 
     batch = discovery.discover_candidates_for_sections(
         [_section("section_0001"), _section("section_0002")],
         ai_client=client,
         config=_config(fail_fast=True),
-        prompt_template="PROMPT",
     )
 
     assert batch["sections_processed"] == 0
     assert len(batch["failed_sections"]) == 1
     assert batch["warnings"] == ["fail_fast_stopped_after_section_failure"]
-    assert len(client.prompts) == 1
+    assert len(client.calls) == 1
 
 
 def test_malformed_transcript_quality_output_records_failed_section_when_fail_fast_false():
@@ -1087,13 +1126,12 @@ def test_malformed_transcript_quality_output_records_failed_section_when_fail_fa
     bad["transcript_quality_flags"] = ["Poor Punctuation"]
     good = _result(usable=False, candidates=[])
     good["section_id"] = "section_0002"
-    client = FakeModelClient([_response(_result(candidates=[bad])), _response(good)])
+    client = FakeDiscoveryClient(results=[_result(candidates=[bad]), good])
 
     batch = discovery.discover_candidates_for_sections(
         [_section("section_0001"), _section("section_0002")],
         ai_client=client,
         config=_config(fail_fast=False),
-        prompt_template="PROMPT",
     )
 
     assert batch["sections_processed"] == 1
@@ -1105,32 +1143,26 @@ def test_malformed_transcript_quality_output_records_failed_section_when_fail_fa
 def test_malformed_transcript_quality_output_stops_batch_when_fail_fast_true():
     bad = _candidate()
     bad["transcript_quality_flags"] = ["audio sounds rough"]
-    client = FakeModelClient([_response(_result(candidates=[bad])), _response(_result())])
+    client = FakeDiscoveryClient(results=[_result(candidates=[bad]), _result()])
 
     batch = discovery.discover_candidates_for_sections(
         [_section("section_0001"), _section("section_0002")],
         ai_client=client,
         config=_config(fail_fast=True),
-        prompt_template="PROMPT",
     )
 
     assert batch["sections_processed"] == 0
     assert len(batch["failed_sections"]) == 1
     assert batch["warnings"] == ["fail_fast_stopped_after_section_failure"]
-    assert len(client.prompts) == 1
+    assert len(client.calls) == 1
 
 
 def test_batch_discovery_excludes_rejected_boundary_candidates_from_accepted_candidates():
     bad = _candidate(start_sec=90.0, end_sec=130.0, duration_sec=40.0)
     good = _candidate(index=2)
-    client = FakeModelClient([_response(_result(candidates=[bad, good]))])
+    client = FakeDiscoveryClient(results=[_result(candidates=[bad, good])])
 
-    batch = discovery.discover_candidates_for_sections(
-        [_section()],
-        ai_client=client,
-        config=_config(fail_fast=False),
-        prompt_template="PROMPT",
-    )
+    batch = _discover_and_process([_section()], ai_client=client, config=_config(fail_fast=False))
 
     section_result = batch["section_results"][0]
     assert len(section_result["candidates"]) == 1
@@ -1140,14 +1172,9 @@ def test_batch_discovery_excludes_rejected_boundary_candidates_from_accepted_can
 
 def test_batch_discovery_records_rejected_boundary_candidates():
     bad = _candidate(start_sec=90.0, end_sec=130.0, duration_sec=40.0)
-    client = FakeModelClient([_response(_result(candidates=[bad]))])
+    client = FakeDiscoveryClient(results=[_result(candidates=[bad])])
 
-    batch = discovery.discover_candidates_for_sections(
-        [_section()],
-        ai_client=client,
-        config=_config(fail_fast=False),
-        prompt_template="PROMPT",
-    )
+    batch = _discover_and_process([_section()], ai_client=client, config=_config(fail_fast=False))
 
     assert batch["sections_processed"] == 1
     assert batch["rejected_sections"] == 1
@@ -1161,13 +1188,12 @@ def test_malformed_boundary_candidate_continues_when_fail_fast_false():
     bad = _candidate(start_sec="soon", end_sec=130.0, duration_sec=40.0)
     good = _result(usable=False, candidates=[])
     good["section_id"] = "section_0002"
-    client = FakeModelClient([_response(_result(candidates=[bad])), _response(good)])
+    client = FakeDiscoveryClient(results=[_result(candidates=[bad]), good])
 
-    batch = discovery.discover_candidates_for_sections(
+    batch = _discover_and_process(
         [_section("section_0001"), _section("section_0002")],
         ai_client=client,
         config=_config(fail_fast=False),
-        prompt_template="PROMPT",
     )
 
     assert batch["sections_processed"] == 2
@@ -1179,28 +1205,33 @@ def test_malformed_boundary_candidate_continues_when_fail_fast_false():
 
 def test_malformed_boundary_candidate_stops_when_fail_fast_true():
     bad = _candidate(start_sec="soon", end_sec=130.0, duration_sec=40.0)
-    client = FakeModelClient([_response(_result(candidates=[bad])), _response(_result())])
+    good = _result(candidates=[_candidate(section_id="section_0002")])
+    good["section_id"] = "section_0002"
+    client = FakeDiscoveryClient(results=[_result(candidates=[bad]), good])
 
-    batch = discovery.discover_candidates_for_sections(
+    discovery_batch = discovery.discover_candidates_for_sections(
         [_section("section_0001"), _section("section_0002")],
         ai_client=client,
         config=_config(fail_fast=True),
-        prompt_template="PROMPT",
     )
+    assert discovery_batch["sections_processed"] == 2
 
-    assert batch["sections_processed"] == 0
-    assert len(batch["failed_sections"]) == 1
-    assert batch["warnings"] == ["fail_fast_stopped_after_section_failure"]
-    assert len(client.prompts) == 1
+    with pytest.raises(processing.CandidateProcessingError) as exc:
+        processing.run_candidate_processing(
+            discovery_batch,
+            [_section("section_0001"), _section("section_0002")],
+            config=_config(fail_fast=True),
+        )
+
+    assert exc.value.code == "BOUNDARY_SANITY_FAILED"
 
 
 def test_artifact_write_read_works(tmp_path: Path):
-    client = FakeModelClient([_response(_result())])
+    client = FakeDiscoveryClient(results=[_result()])
     batch = discovery.discover_candidates_for_sections(
         [_section()],
         ai_client=client,
         config=_config(),
-        prompt_template="PROMPT",
     )
     artifact = discovery.build_section_candidate_discovery_artifact(
         job_id="job_123",
@@ -1357,18 +1388,27 @@ def test_ai_service_client_forwards_funnel_id_in_request():
     assert calls[0]["prompt_version"] == discovery.DEFAULT_PROMPT_VERSION
 
 
-def test_batch_discovery_forwards_funnel_id_to_fake_prompt_context():
-    client = FakeModelClient([_response(_result(usable=False, candidates=[]))])
+def test_batch_discovery_passes_funnel_id_to_default_ai_service_client(monkeypatch):
+    captured: list[str | None] = []
+
+    class RecordingClient:
+        def __init__(self, *args, funnel_id=None, **kwargs):
+            del args, kwargs
+            captured.append(funnel_id)
+
+        def discover_section(self, section, *, config):
+            del section, config
+            return _result(usable=False, candidates=[])
+
+    monkeypatch.setattr(discovery, "AiServiceSectionDiscoveryClient", RecordingClient)
 
     discovery.discover_candidates_for_sections(
         [_section()],
-        ai_client=client,
         config=_config(),
         funnel_id="comedy",
-        prompt_template="PROMPT",
     )
 
-    assert '"funnel_id": "comedy"' in client.prompts[0]
+    assert captured == ["comedy"]
 
 
 def test_batch_discovery_preserves_prompt_metadata_returned_by_ai_service():
@@ -1379,7 +1419,7 @@ def test_batch_discovery_preserves_prompt_metadata_returned_by_ai_service():
         "resolved_funnel_id": "business",
         "funnel_rules_version": "business_v1",
     }
-    client = FakeDiscoveryClient(result)
+    client = FakeDiscoveryClient(result=result)
 
     batch = discovery.discover_candidates_for_sections(
         [_section()],
@@ -1392,18 +1432,17 @@ def test_batch_discovery_preserves_prompt_metadata_returned_by_ai_service():
     assert batch["section_results"][0]["prompt_metadata"]["funnel_rules_version"] == "business_v1"
 
 
-def test_tests_use_fake_ai_client():
-    client = FakeModelClient([_response(_result())])
+def test_structured_fake_discovery_client_is_used_for_orchestration_tests():
+    client = FakeDiscoveryClient(results=[_result()])
 
     discovery.discover_candidates_for_section(
         _section(),
         ai_client=client,
         config=_config(),
-        prompt_template="PROMPT",
     )
 
-    assert client.prompts
-    assert "REQUEST CONTEXT - JSON" in client.prompts[0]
+    assert len(client.calls) == 1
+    assert client.calls[0]["section_id"] == "section_0001"
 
 
 def test_discovery_does_not_call_rendering_or_output_funnel(
@@ -1417,13 +1456,30 @@ def test_discovery_does_not_call_rendering_or_output_funnel(
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr("builtins.__import__", guarded_import)
-    client = FakeModelClient([_response(_result())])
+    client = FakeDiscoveryClient(results=[_result()])
 
     result = discovery.discover_candidates_for_section(
         _section(),
         ai_client=client,
         config=_config(),
-        prompt_template="PROMPT",
     )
 
     assert result["usable"] is True
+
+
+def test_discovery_output_remains_mk1_pool_and_selection_compatible():
+    client = FakeDiscoveryClient(results=[_result()])
+    batch = _discover_and_process([_section()], ai_client=client, config=_config())
+    pool_candidates = integration.collect_candidates_from_batch(batch, "job_123")
+    pool = contracts.build_raw_candidate_pool(
+        job_id="job_123",
+        source_video_path="/tmp/source.mp4",
+        transcript_path="/tmp/transcript.json",
+        funnel_id="business",
+        candidates=pool_candidates,
+        created_at="2026-06-30T12:00:00+00:00",
+    )
+    contracts.validate_raw_candidate_pool(pool)
+
+    gate_result = selection_gate.run_selection_gate_v1(pool)
+    assert gate_result["selected_candidates"] or gate_result["reserve_candidates"]

@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 
 {% block content %}
+{% set legacy_notice_extra %}Editable service settings. Read-only config view: <a href="{{ url_for('ops_configuration') }}">Configuration</a>.{% endset %}
+{% include "partials/_legacy_page_notice.html" %}
 <section class="card">
   <div class="card-head">
     <h2>Transcription</h2>

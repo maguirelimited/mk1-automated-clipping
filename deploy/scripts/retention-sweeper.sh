@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# LEGACY pre-Phase-8 ad-hoc cleaner.
+#
+# Cron no longer invokes this script. Prefer the config-driven retention engine:
+#   scripts/ops/run-scheduled-retention.sh <env>
+#   scripts/retention.py --dry-run|--apply <env>
+# See docs/storage/SCHEDULED_RETENTION.md.
+#
 # Tiered cleanup of clipping artefacts so disk does not fill on an unattended
 # mk1 run, while small metadata is kept long enough for debugging / analytics /
 # review / training.
@@ -33,11 +40,15 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_ARG="${MK04_ENV:-prod}"
-if [[ "${1:-}" == "dev" || "${1:-}" == "prod" ]]; then
-  ENV_ARG="$1"
-  shift
+
+if [[ $# -lt 1 || -z "${1:-}" ]]; then
+  echo "usage: retention-sweeper.sh <environment> [options]" >&2
+  echo "Environment required: dev | development | prod | production" >&2
+  exit 2
 fi
+
+ENV_ARG="$1"
+shift
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/env.sh" "$ENV_ARG"
 

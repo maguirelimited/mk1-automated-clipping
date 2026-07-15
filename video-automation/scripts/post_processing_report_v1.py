@@ -54,6 +54,7 @@ def build_post_processing_report(
     report_path: str | None = None,
     warnings: list[str] | None = None,
     diagnostics: dict[str, Any] | None = None,
+    execution_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the job-level post-processing report dict.
 
@@ -252,6 +253,9 @@ def build_post_processing_report(
         # Job-level metadata
         "warnings": extra_warnings,
         "diagnostics": diagnostics,
+        # Execution context: stable provenance record (environment, commit, config version).
+        # Populated from ExecutionContext.to_dict() when available; empty dict otherwise.
+        "execution_context": execution_context if isinstance(execution_context, dict) else {},
     }
 
 

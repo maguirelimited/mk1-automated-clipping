@@ -1,0 +1,15 @@
+# Example journald drop-in for mk04 service stdout/stderr.
+#
+# Install from config (preferred):
+#   sudo ./deploy/scripts/install-log-rotation.sh prod
+#
+# Manual install:
+#   sudo cp deploy/journald/mk04.conf.example /etc/systemd/journald.conf.d/mk04.conf
+#   sudo systemctl restart systemd-journald
+#
+# Values must match storage.log_rotation.journal in config.
+
+[Journal]
+SystemMaxUse=500M
+RuntimeMaxUse=100M
+MaxFileSec=1month

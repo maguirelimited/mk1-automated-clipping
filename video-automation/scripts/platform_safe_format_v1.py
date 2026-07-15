@@ -40,6 +40,31 @@ from post_processing_modules import (
     make_module_fail_result,
     make_module_pass_result,
 )
+from reframing.config import (
+    DEFAULT_REFRAME_MODE,
+    FAIL_REASON_FACE_TRACK_NOT_ELIGIBLE,
+    FAIL_REASON_FACE_TRACK_PIPELINE_FAILED,
+    FAIL_REASON_FACE_TRACK_RENDER_FAILED,
+    FORMAT_STRATEGY_BLURRED_BACKGROUND,
+    FORMAT_STRATEGY_FACE_TRACK_CROP,
+    REFRAME_MODE_FACE_TRACK,
+    REFRAME_MODES,
+    resolve_reframe_plan,
+    validate_reframe_mode,
+)
+from reframing.fallback import build_blur_background_command
+from reframing.eligibility import (
+    evaluate_face_track_eligibility,
+    face_track_eligibility_metadata,
+    write_eligibility_report,
+)
+from reframing.tracker import face_pipeline_metadata
+from reframing.crop_path_planner import crop_path_metadata
+from reframing.renderer import face_track_render_metadata, render_face_track_crop
+from reframing.smoother import (
+    build_smoothed_face_crop_path_for_clip,
+    smoothed_crop_path_metadata,
+)
 
 # ---------------------------------------------------------------------------
 # Module constants
@@ -48,7 +73,10 @@ from post_processing_modules import (
 MODULE_NAME = "platform_safe_format_v1"
 MODULE_VERSION = "1.0"
 
-FORMAT_STRATEGY = "blurred_background_fit_foreground"
+# Backward-compatible aliases for tests and downstream metadata consumers.
+FORMAT_STRATEGY_BLUR = FORMAT_STRATEGY_BLURRED_BACKGROUND
+FORMAT_STRATEGY_FACE_TRACK = FORMAT_STRATEGY_FACE_TRACK_CROP
+FORMAT_STRATEGY = FORMAT_STRATEGY_BLURRED_BACKGROUND
 
 FFMPEG_TIMEOUT_SEC = 180
 FFPROBE_TIMEOUT_SEC = 30
@@ -72,6 +100,8 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "safe_zone_left_px": 80,
     "safe_zone_right_px": 80,
     "overwrite": True,
+    "reframe_mode": DEFAULT_REFRAME_MODE,
+    "face_track_test_enabled": False,
 }
 
 # ---------------------------------------------------------------------------
@@ -123,6 +153,26 @@ class PlatformSafeFormatV1Module(PostProcessingModule):
 
         target_w: int = int(merged_config["target_width"])
         target_h: int = int(merged_config["target_height"])
+
+        reframe_plan = resolve_reframe_plan(merged_config)
+        if reframe_plan.get("fail_reason"):
+            return _fail(
+                "reframe_not_implemented",
+                reframe_plan["fail_reason"],
+                candidate_id=candidate_id,
+                input_path=input_path,
+            )
+
+        face_pipeline_meta: dict[str, Any] = {}
+        face_render_meta: dict[str, Any] = {}
+        pipeline_warnings: list[str] = list(reframe_plan.get("warnings") or [])
+        face_track_test_enabled = bool(reframe_plan.get("face_track_test_enabled", False))
+        face_track_skip_reason = reframe_plan.get("face_track_skip_reason")
+        if face_track_skip_reason == "face_track_test_disabled":
+            pipeline_warnings.append("face_track_test_disabled_using_blur_fallback")
+        use_face_track_render = False
+        smoothed_crop_report = None
+        eligibility_report = None
 
         # ------------------------------------------------------------------
         # 2. Validate input file
@@ -227,58 +277,189 @@ class PlatformSafeFormatV1Module(PostProcessingModule):
             )
 
         # ------------------------------------------------------------------
-        # 5. Build and run ffmpeg
+        # 4b. Optional face pipeline: detect → track → crop plan → smooth
         # ------------------------------------------------------------------
-        ffmpeg_cmd = _build_format_command(
-            input_path=input_path,
-            output_path=output_path,
-            target_w=target_w,
-            target_h=target_h,
-            config=merged_config,
-            input_has_audio=input_has_audio,
-        )
-        cmd_summary = " ".join(str(a) for a in ffmpeg_cmd)
+        if reframe_plan.get("attempt_face_pipeline"):
+            tmp_dir = str(context.get("tmp_dir") or clip_dir)
+            detection_report, track_report, crop_report, smoothed_crop_report = (
+                build_smoothed_face_crop_path_for_clip(
+                    input_path,
+                    source_width=input_w,
+                    source_height=input_h,
+                    tmp_dir=tmp_dir,
+                    config=merged_config,
+                )
+            )
+            face_pipeline_meta = {
+                **face_pipeline_metadata(
+                    detection_report=detection_report,
+                    track_report=track_report,
+                    reframe_attempted=True,
+                ),
+                **crop_path_metadata(crop_report=crop_report),
+                **smoothed_crop_path_metadata(smoothed_report=smoothed_crop_report),
+            }
+            reframe_plan["reframe_attempted"] = True
 
-        try:
-            proc = subprocess.run(
-                ffmpeg_cmd,
-                capture_output=True,
-                text=True,
-                timeout=FFMPEG_TIMEOUT_SEC,
+            eligibility_report = evaluate_face_track_eligibility(
+                detection_report,
+                track_report,
+                crop_path_report=crop_report,
+                smoothed_crop_path_report=smoothed_crop_report,
+                clip_duration_sec=input_duration,
+                config=merged_config,
             )
-        except subprocess.TimeoutExpired:
-            return _fail(
-                "ffmpeg_failed",
-                f"ffmpeg timed out after {FFMPEG_TIMEOUT_SEC}s",
-                candidate_id=candidate_id,
-                input_path=input_path,
-                ffmpeg_returncode=None,
-                ffmpeg_stderr_tail="timeout",
-                ffmpeg_command_summary=cmd_summary,
+            face_pipeline_meta.update(
+                face_track_eligibility_metadata(
+                    eligibility_report,
+                    reframe_mode=reframe_plan["reframe_mode"],
+                    use_blur_fallback=bool(reframe_plan.get("use_blur_fallback")),
+                )
             )
-        except Exception as exc:
-            return _fail(
-                "unexpected_format_error",
-                f"unexpected error launching ffmpeg: {exc}",
-                candidate_id=candidate_id,
-                input_path=input_path,
-                ffmpeg_command_summary=cmd_summary,
+            eligibility_report_path = context.get("eligibility_report_path") or os.path.join(
+                clip_dir,
+                "face_track_eligibility_report.json",
+            )
+            write_eligibility_report(str(eligibility_report_path), eligibility_report)
+
+            if not detection_report.ok:
+                pipeline_warnings.append("face_detection_failed_using_blur_fallback")
+            elif not track_report.ok:
+                pipeline_warnings.append("face_tracking_failed_using_blur_fallback")
+            elif not eligibility_report.eligible:
+                if reframe_plan.get("use_blur_fallback"):
+                    pipeline_warnings.append("face_track_not_eligible_using_blur_fallback")
+                elif not track_report.usable:
+                    pipeline_warnings.append("face_track_not_usable_using_blur_fallback")
+            elif not track_report.usable:
+                pipeline_warnings.append("face_track_not_usable_using_blur_fallback")
+            elif not crop_report.ok or not crop_report.usable:
+                pipeline_warnings.append("crop_path_not_usable_using_blur_fallback")
+            elif not smoothed_crop_report.ok or not smoothed_crop_report.usable:
+                pipeline_warnings.append("smoothed_crop_path_not_usable_using_blur_fallback")
+
+            pipeline_usable = _face_pipeline_usable(
+                detection_report=detection_report,
+                track_report=track_report,
+                crop_report=crop_report,
+                smoothed_crop_report=smoothed_crop_report,
             )
 
-        if proc.returncode != 0:
-            stderr_tail = ((proc.stderr or "") + (proc.stdout or "")).strip()[-800:]
-            return _fail(
-                "ffmpeg_failed",
-                f"ffmpeg exited with code {proc.returncode}",
-                candidate_id=candidate_id,
-                input_path=input_path,
-                ffmpeg_returncode=proc.returncode,
-                ffmpeg_stderr_tail=stderr_tail or "(no output)",
-                ffmpeg_command_summary=cmd_summary,
-            )
+            if (
+                reframe_plan["reframe_mode"] == REFRAME_MODE_FACE_TRACK
+                and not eligibility_report.eligible
+            ):
+                return _fail(
+                    "face_track_not_eligible",
+                    eligibility_report.message or FAIL_REASON_FACE_TRACK_NOT_ELIGIBLE,
+                    candidate_id=candidate_id,
+                    input_path=input_path,
+                    extra_metadata=face_pipeline_meta,
+                )
+
+            if (
+                reframe_plan["reframe_mode"] == REFRAME_MODE_FACE_TRACK
+                and not pipeline_usable
+            ):
+                return _fail(
+                    "face_track_pipeline_failed",
+                    FAIL_REASON_FACE_TRACK_PIPELINE_FAILED,
+                    candidate_id=candidate_id,
+                    input_path=input_path,
+                    extra_metadata=face_pipeline_meta,
+                )
+
+            if eligibility_report.eligible and pipeline_usable:
+                use_face_track_render = True
+                reframe_plan["format_strategy"] = FORMAT_STRATEGY_FACE_TRACK_CROP
 
         # ------------------------------------------------------------------
-        # 6. Verify output
+        # 5. Build and run ffmpeg / face-track renderer
+        # ------------------------------------------------------------------
+        cmd_summary = ""
+        render_result = None
+
+        if use_face_track_render and smoothed_crop_report is not None:
+            render_result = render_face_track_crop(
+                input_path=input_path,
+                output_path=output_path,
+                smoothed_crop_report=smoothed_crop_report,
+                config=merged_config,
+                tmp_dir=str(context.get("tmp_dir") or clip_dir),
+                input_has_audio=input_has_audio,
+                clip_duration_sec=input_duration,
+                render_id=f"{job_id}_{candidate_id or 'unknown'}",
+            )
+            face_render_meta = face_track_render_metadata(render_result=render_result)
+            cmd_summary = render_result.ffmpeg_command_summary or ""
+
+            if not render_result.ok:
+                if reframe_plan.get("use_blur_fallback"):
+                    pipeline_warnings.append("face_track_render_failed_using_blur_fallback")
+                    use_face_track_render = False
+                    reframe_plan["format_strategy"] = FORMAT_STRATEGY_BLURRED_BACKGROUND
+                else:
+                    return _fail(
+                        "face_track_render_failed",
+                        render_result.message or FAIL_REASON_FACE_TRACK_RENDER_FAILED,
+                        candidate_id=candidate_id,
+                        input_path=input_path,
+                        extra_metadata={**face_pipeline_meta, **face_render_meta},
+                        ffmpeg_command_summary=cmd_summary or None,
+                    )
+
+        if not use_face_track_render:
+            ffmpeg_cmd = _build_format_command(
+                plan=reframe_plan,
+                input_path=input_path,
+                output_path=output_path,
+                target_w=target_w,
+                target_h=target_h,
+                config=merged_config,
+                input_has_audio=input_has_audio,
+            )
+            cmd_summary = " ".join(str(a) for a in ffmpeg_cmd)
+
+            try:
+                proc = subprocess.run(
+                    ffmpeg_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=FFMPEG_TIMEOUT_SEC,
+                )
+            except subprocess.TimeoutExpired:
+                return _fail(
+                    "ffmpeg_failed",
+                    f"ffmpeg timed out after {FFMPEG_TIMEOUT_SEC}s",
+                    candidate_id=candidate_id,
+                    input_path=input_path,
+                    ffmpeg_returncode=None,
+                    ffmpeg_stderr_tail="timeout",
+                    ffmpeg_command_summary=cmd_summary,
+                )
+            except Exception as exc:
+                return _fail(
+                    "unexpected_format_error",
+                    f"unexpected error launching ffmpeg: {exc}",
+                    candidate_id=candidate_id,
+                    input_path=input_path,
+                    ffmpeg_command_summary=cmd_summary,
+                )
+
+            if proc.returncode != 0:
+                stderr_tail = ((proc.stderr or "") + (proc.stdout or "")).strip()[-800:]
+                return _fail(
+                    "ffmpeg_failed",
+                    f"ffmpeg exited with code {proc.returncode}",
+                    candidate_id=candidate_id,
+                    input_path=input_path,
+                    ffmpeg_returncode=proc.returncode,
+                    ffmpeg_stderr_tail=stderr_tail or "(no output)",
+                    ffmpeg_command_summary=cmd_summary,
+                )
+
+        # ------------------------------------------------------------------
+        # 7. Verify output
         # ------------------------------------------------------------------
         if not os.path.isfile(output_path):
             return _fail(
@@ -381,12 +562,12 @@ class PlatformSafeFormatV1Module(PostProcessingModule):
                 )
 
         # ------------------------------------------------------------------
-        # 7. Compute safe-zone metadata
+        # 8. Compute safe-zone metadata
         # ------------------------------------------------------------------
         safe_zones = _compute_safe_zones(merged_config, target_w=target_w, target_h=target_h)
 
         # ------------------------------------------------------------------
-        # 8. Return PASS result
+        # 9. Return PASS result
         # ------------------------------------------------------------------
         return make_module_pass_result(
             MODULE_NAME,
@@ -394,6 +575,7 @@ class PlatformSafeFormatV1Module(PostProcessingModule):
             input_path=input_path,
             output_path=output_path,
             config=merged_config,
+            warnings=list(pipeline_warnings),
             metadata={
                 "candidate_id": candidate_id,
                 "input_width": input_w,
@@ -407,7 +589,15 @@ class PlatformSafeFormatV1Module(PostProcessingModule):
                 "output_duration_sec": round(out_info["duration_sec"], 3) if out_info["duration_sec"] is not None else None,
                 "duration_delta_sec": round(duration_delta, 3),
                 "aspect_ratio": "9:16",
-                "format_strategy": FORMAT_STRATEGY,
+                "format_strategy": reframe_plan["format_strategy"],
+                "reframe_mode": reframe_plan["reframe_mode"],
+                "reframe_attempted": reframe_plan["reframe_attempted"],
+                "face_track_test_enabled": face_track_test_enabled,
+                "face_track_attempted": reframe_plan["reframe_attempted"],
+                "face_track_used": use_face_track_render,
+                "face_track_skip_reason": face_track_skip_reason,
+                **face_pipeline_meta,
+                **face_render_meta,
                 "safe_zones": safe_zones,
                 "ffmpeg_command_summary": cmd_summary,
                 "output_file_size_bytes": output_size,
@@ -428,12 +618,36 @@ def get_platform_safe_format_v1_module() -> PlatformSafeFormatV1Module:
 
 
 # ---------------------------------------------------------------------------
-# ffmpeg filter + command builder
+# Face pipeline helpers
+# ---------------------------------------------------------------------------
+
+
+def _face_pipeline_usable(
+    *,
+    detection_report: Any,
+    track_report: Any,
+    crop_report: Any,
+    smoothed_crop_report: Any,
+) -> bool:
+    return bool(
+        detection_report.ok
+        and track_report.ok
+        and track_report.usable
+        and crop_report.ok
+        and crop_report.usable
+        and smoothed_crop_report.ok
+        and smoothed_crop_report.usable
+    )
+
+
+# ---------------------------------------------------------------------------
+# Format command dispatch
 # ---------------------------------------------------------------------------
 
 
 def _build_format_command(
     *,
+    plan: dict[str, Any] | None = None,
     input_path: str,
     output_path: str,
     target_w: int,
@@ -441,63 +655,25 @@ def _build_format_command(
     config: dict[str, Any],
     input_has_audio: bool,
 ) -> list[str]:
-    """Build the ffmpeg args list for the blurred-background format pass.
+    """Build the ffmpeg command for the active reframe strategy."""
+    effective_plan = plan or resolve_reframe_plan(config)
+    strategy = effective_plan["format_strategy"]
 
-    Filter graph:
-        [0:v] → scale to fill target canvas, crop to exact size, boxblur → [bg]
-        [0:v] → scale to fit inside target canvas (no stretch)            → [fg]
-        [bg][fg] → overlay centred                                         → output video
-    """
-    blur = str(config.get("background_blur", "20:1"))
-    video_codec = str(config.get("video_codec", "libx264"))
-    audio_codec = str(config.get("audio_codec", "aac"))
-    preset = str(config.get("ffmpeg_preset", "veryfast"))
+    if strategy == FORMAT_STRATEGY_BLURRED_BACKGROUND:
+        return build_blur_background_command(
+            input_path=input_path,
+            output_path=output_path,
+            target_w=target_w,
+            target_h=target_h,
+            config=config,
+            input_has_audio=input_has_audio,
+        )
 
-    # Background: scale to fill canvas then crop, then blur
-    bg_filter = (
-        f"[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
-        f"crop={target_w}:{target_h},"
-        f"boxblur={blur}[bg]"
-    )
-    # Foreground: scale to fit inside canvas (preserves aspect ratio)
-    fg_filter = (
-        f"[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease[fg]"
-    )
-    # Overlay centred
-    overlay_filter = "[bg][fg]overlay=(W-w)/2:(H-h)/2"
+    raise ValueError(f"unsupported format strategy for ffmpeg render: {strategy!r}")
 
-    filter_complex = f"{bg_filter};{fg_filter};{overlay_filter}"
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", input_path,
-        "-filter_complex", filter_complex,
-        "-map", "[0]",          # video from overlay output (last unnamed output)
-        "-c:v", video_codec,
-        "-preset", preset,
-    ]
-
-    # Remap the overlay output properly — use named output
-    # Rebuild with proper named output:
-    overlay_filter_named = "[bg][fg]overlay=(W-w)/2:(H-h)/2[vout]"
-    filter_complex = f"{bg_filter};{fg_filter};{overlay_filter_named}"
-
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", input_path,
-        "-filter_complex", filter_complex,
-        "-map", "[vout]",
-        "-c:v", video_codec,
-        "-preset", preset,
-    ]
-
-    if input_has_audio:
-        cmd += ["-map", "0:a?", "-c:a", audio_codec]
-    else:
-        cmd += ["-an"]
-
-    cmd.append(output_path)
-    return cmd
+# Backward-compatible alias used by tests and internal callers.
+_resolve_reframe_plan = resolve_reframe_plan
 
 
 # ---------------------------------------------------------------------------
@@ -643,6 +819,11 @@ def _validate_format_config(config: dict[str, Any]) -> str | None:
     if not isinstance(output_ext, str) or not output_ext.startswith("."):
         return f"invalid output_ext: {output_ext!r}"
 
+    reframe_mode = config.get("reframe_mode", DEFAULT_REFRAME_MODE)
+    reframe_mode_error = validate_reframe_mode(reframe_mode)
+    if reframe_mode_error:
+        return reframe_mode_error
+
     return None
 
 
@@ -668,11 +849,14 @@ def _fail(
     ffmpeg_returncode: int | None = None,
     ffmpeg_stderr_tail: str | None = None,
     ffmpeg_command_summary: str | None = None,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "candidate_id": candidate_id,
         "failure_code": failure_code,
     }
+    if extra_metadata:
+        metadata.update(extra_metadata)
     if ffmpeg_returncode is not None:
         metadata["ffmpeg_returncode"] = ffmpeg_returncode
     if ffmpeg_stderr_tail is not None:

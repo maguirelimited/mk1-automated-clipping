@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .env_names import resolve_mk04_env
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_DIR = BASE_DIR / "config"
 VALID_UPLOAD_MODES = {"dry_run", "real"}
@@ -80,7 +82,8 @@ def database_path(settings: dict[str, Any] | None = None) -> str:
 
 
 def runtime_environment() -> str:
-    return os.environ.get("MK04_ENV", "dev").strip().lower() or "dev"
+    """Return canonical runtime token: 'dev' | 'prod'."""
+    return resolve_mk04_env(environ_value=os.environ.get("MK04_ENV"), default="dev")
 
 
 def upload_mode() -> str:

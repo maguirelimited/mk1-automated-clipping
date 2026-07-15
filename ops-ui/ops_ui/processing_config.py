@@ -73,12 +73,15 @@ PROCESSING_CONFIG_FIELDS: tuple[ConfigField, ...] = (
         name="section_overlap_sec",
         label="Section overlap (s)",
         kind="float",
-        default=30.0,
+        default=60.0,
         env_var="PROCESSING_SECTION_OVERLAP_SEC",
         minimum=0.0,
         maximum=600.0,
         group="Transcript sectioning",
-        help="Overlap between neighbouring sections so candidates near a boundary are not lost.",
+        help=(
+            "Overlap between neighbouring sections so candidates near a boundary "
+            "are not lost. MK1 default is 60s (tunable, not benchmarked)."
+        ),
     ),
     ConfigField(
         name="section_min_duration_sec",
@@ -95,12 +98,15 @@ PROCESSING_CONFIG_FIELDS: tuple[ConfigField, ...] = (
         name="max_candidates_per_section",
         label="Max candidates per section",
         kind="int",
-        default=3,
+        default=5,
         env_var="PROCESSING_MAX_CANDIDATES_PER_SECTION",
         minimum=1.0,
         maximum=10.0,
         group="Candidate discovery",
-        help="Upper bound on raw candidates the model may surface from one section.",
+        help=(
+            "Upper bound on raw candidates the model may surface from one section. "
+            "MK1 recall-oriented default is 5 (safety bound, not a selection limit)."
+        ),
     ),
     ConfigField(
         name="min_candidate_duration_sec",

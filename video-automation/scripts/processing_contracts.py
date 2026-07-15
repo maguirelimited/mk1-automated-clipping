@@ -1,8 +1,17 @@
 """Versioned processing handoff contracts for post-processing.
 
 This module intentionally does not discover candidates or change the current
-render flow. It only defines, validates, and writes the processing artifacts
-that later post-processing stages can consume.
+render flow. It defines, validates, and writes the processing artifacts that
+later post-processing stages consume.
+
+Canonical MK1 candidate schema
+------------------------------
+The canonical MK1 candidate object is the ``candidates[]`` entry inside
+``raw_candidate_pool.json`` (schema ``raw_candidate_pool_v1``). There is one
+MK1 candidate shape from pool assembly through Evaluation; see
+``video-automation/context/mk1_candidate_schema.md``.
+
+Use :func:`validate_mk1_candidate` to validate a single candidate dict.
 """
 
 from __future__ import annotations
@@ -19,6 +28,10 @@ from mk04_utils import write_json
 RAW_CANDIDATE_POOL_SCHEMA_VERSION = "raw_candidate_pool_v1"
 PROCESSING_REPORT_SCHEMA_VERSION = "processing_report_v1"
 PROCESSING_VERSION = "processing_mk1_v1"
+
+# Canonical MK1 candidate schema identifier. The candidate object shape is the
+# raw_candidate_pool_v1 candidates[] entry — not a separate competing schema.
+CANONICAL_MK1_CANDIDATE_SCHEMA_VERSION = "mk1_candidate_v1"
 
 RAW_CANDIDATE_POOL_FILENAME = "raw_candidate_pool.json"
 PROCESSING_REPORT_FILENAME = "processing_report.json"
@@ -101,6 +114,19 @@ CANDIDATE_REQUIRED_FIELDS = (
     "transcript_quality_flags",
 )
 
+# Alias: canonical MK1 candidate required fields match pool candidate fields.
+CANONICAL_MK1_CANDIDATE_REQUIRED_FIELDS = CANDIDATE_REQUIRED_FIELDS
+
+# Fields required by render_clip_v1 from a selected candidate entry.
+MK1_CANDIDATE_RENDER_REQUIRED_FIELDS = (
+    "candidate_id",
+    "start_sec",
+    "end_sec",
+)
+
+# Score components on the canonical candidate (model-provided attributes, 0-10).
+MK1_CANDIDATE_SCORE_FIELDS = REQUIRED_SCORE_FIELDS
+
 PROCESSING_REPORT_COUNT_FIELDS = (
     "sections_analysed",
     "usable_sections",
@@ -174,6 +200,7 @@ def build_raw_candidate_pool(
     diagnostics: dict[str, Any] | None = None,
     processing_version: str = PROCESSING_VERSION,
     created_at: str | None = None,
+    execution_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a raw candidate pool payload with no discovery side effects."""
 
@@ -189,6 +216,10 @@ def build_raw_candidate_pool(
         "diagnostics": dict(diagnostics or {}),
     }
     validate_raw_candidate_pool(payload)
+    # Add execution_context after validation — validators do not reject unknown fields.
+    # Legacy jobs without context omit this field rather than including null.
+    if execution_context is not None:
+        payload["execution_context"] = dict(execution_context)
     return payload
 
 
@@ -210,6 +241,7 @@ def build_processing_report(
     failed_sections: list[Any] | None = None,
     prompt_metadata: dict[str, Any] | None = None,
     created_at: str | None = None,
+    execution_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a processing report payload with default zero counts."""
 
@@ -233,6 +265,9 @@ def build_processing_report(
         "created_at": created_at or _now_iso(),
     }
     validate_processing_report(payload)
+    # Add execution_context after validation — validators do not reject unknown fields.
+    if execution_context is not None:
+        payload["execution_context"] = dict(execution_context)
     return payload
 
 
@@ -323,6 +358,18 @@ def write_processing_report(job_dir: str, payload: dict[str, Any]) -> str:
     path = processing_report_path(job_dir)
     write_json(path, payload)
     return path
+
+
+def validate_mk1_candidate(candidate: Any, *, path: str = "candidate") -> None:
+    """Validate one canonical MK1 candidate object.
+
+    Raises :class:`ProcessingContractValidationError` when the candidate does
+    not match the ``raw_candidate_pool_v1`` candidate contract.
+    """
+    errors: list[str] = []
+    _validate_candidate(candidate, path, errors)
+    if errors:
+        raise ProcessingContractValidationError("mk1_candidate", errors)
 
 
 def _validate_candidate(candidate: Any, path: str, errors: list[str]) -> None:

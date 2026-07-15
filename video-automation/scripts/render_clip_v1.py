@@ -25,6 +25,7 @@ import re
 import subprocess
 from typing import Any
 
+from mk04_utils import ffprobe_duration_sec
 from post_processing_modules import (
     PostProcessingModule,
     make_module_fail_result,
@@ -273,7 +274,14 @@ class RenderClipV1Module(PostProcessingModule):
         # ------------------------------------------------------------------
         # 8. Probe output duration
         # ------------------------------------------------------------------
-        actual_duration = _probe_duration(output_path)
+        raw_duration = ffprobe_duration_sec(output_path, timeout_sec=FFPROBE_TIMEOUT_SEC)
+        actual_duration = (
+            raw_duration
+            if raw_duration is not None
+            and math.isfinite(raw_duration)
+            and raw_duration > 0
+            else None
+        )
         if actual_duration is None:
             return _fail(
                 "duration_probe_failed",
@@ -403,39 +411,6 @@ def _build_ffmpeg_command(
         ]
     cmd.append(output_path)
     return cmd
-
-
-def _probe_duration(path: str) -> float | None:
-    """Probe the output file duration using ffprobe.
-
-    Returns the duration in seconds, or ``None`` if the probe fails.
-    Uses a minimal subprocess call that avoids importing ffprobe
-    infrastructure from the legacy pipeline.
-    """
-    try:
-        proc = subprocess.run(
-            [
-                "ffprobe",
-                "-v", "error",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
-                path,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=FFPROBE_TIMEOUT_SEC,
-        )
-        if proc.returncode != 0:
-            return None
-        raw = (proc.stdout or "").strip()
-        if not raw:
-            return None
-        val = float(raw)
-        if not math.isfinite(val) or val <= 0:
-            return None
-        return val
-    except Exception:
-        return None
 
 
 def _validate_timestamps(

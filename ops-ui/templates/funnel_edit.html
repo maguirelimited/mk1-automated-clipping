@@ -1,0 +1,349 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <div>
+      <p class="eyebrow">Funnel Management</p>
+      <h2>Edit Funnel</h2>
+      <p class="muted mono">{{ form.funnel_id }}</p>
+    </div>
+  </div>
+  <p class="hint muted">
+    Edit canonical registry config only. Saving does not synchronise source-input, video-automation,
+    output-funnel, or ConfigManager runtime configs.
+  </p>
+  <div class="actions">
+    <a class="button-link" href="{{ url_for('funnel_detail_page', funnel_id=form.funnel_id) }}">← Funnel detail</a>
+    <a class="button-link" href="{{ url_for('funnels_page') }}">All funnels</a>
+  </div>
+</section>
+
+{% if errors %}
+<section class="card">
+  <h3>Please fix the following</h3>
+  <ul class="check-list">
+    {% for error in errors %}
+      <li>{{ error }}</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section class="card">
+  <form method="post" action="{{ url_for('funnel_edit_submit', funnel_id=form.funnel_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="funnel_id" value="{{ form.funnel_id }}">
+    <input type="hidden" name="created_at" value="{{ form.created_at }}">
+    <input type="hidden" name="template_source" value="{{ form.template_source }}">
+
+    <h3>Identity</h3>
+    <dl class="grid grid-2">
+      <div><dt>Funnel ID</dt><dd class="mono">{{ form.funnel_id }}</dd></div>
+      <div><dt>Created</dt><dd class="mono">{{ form.created_at }}</dd></div>
+      {% if form.template_source %}
+        <div><dt>Template source</dt><dd class="mono">{{ form.template_source }}</dd></div>
+      {% endif %}
+    </dl>
+
+    <label>
+      Display name
+      <input type="text" name="display_name" value="{{ form.display_name }}" required autocomplete="off">
+    </label>
+
+    <label>
+      Environment
+      <select name="environment">
+        <option value="dev" {{ 'selected' if form.environment == 'dev' else '' }}>dev</option>
+        <option value="prod" {{ 'selected' if form.environment == 'prod' else '' }}>prod</option>
+      </select>
+    </label>
+
+    <label>
+      Status
+      <select name="status">
+        {% for status in allowed_statuses %}
+          <option value="{{ status }}" {{ 'selected' if form.status == status else '' }}>{{ status }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label>
+      <input type="checkbox" name="enabled" value="on" {{ 'checked' if form.enabled else '' }}>
+      Enabled (canonical intent only)
+    </label>
+
+    <label>
+      Description
+      <textarea name="description" rows="2">{{ form.description }}</textarea>
+    </label>
+
+    <label>
+      Category
+      <input type="text" name="category" value="{{ form.category }}" autocomplete="off">
+    </label>
+
+    <label>
+      Operator note
+      <textarea name="operator_note" rows="2">{{ form.operator_note }}</textarea>
+    </label>
+
+    <h3>Acquisition</h3>
+    <label>
+      Source type
+      <select name="acquisition_source_type" required>
+        {% for option in acquisition_source_types %}
+          <option value="{{ option.value }}" {{ 'selected' if form.acquisition_source_type == option.value else '' }}>{{ option.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label>
+      Min duration (minutes)
+      <input type="number" name="min_duration_minutes" min="1" value="{{ form.min_duration_minutes }}" required>
+    </label>
+
+    <label>
+      Max duration (minutes)
+      <input type="number" name="max_duration_minutes" min="1" value="{{ form.max_duration_minutes }}" required>
+    </label>
+
+    <label>
+      Max downloads per run
+      <input type="number" name="max_downloads_per_run" min="1" value="{{ form.max_downloads_per_run }}" required>
+    </label>
+
+    <h4>Sources</h4>
+    <input type="hidden" name="source_count" value="{{ form.sources|length }}">
+    {% for source in form.sources %}
+      {% set idx = loop.index0 %}
+      <fieldset class="card nested">
+        <legend>Source {{ loop.index }}</legend>
+        <label>
+          Source ID
+          <input type="text" name="source_{{ idx }}_source_id" value="{{ source.source_id }}" autocomplete="off" class="mono">
+        </label>
+        <label>
+          Label
+          <input type="text" name="source_{{ idx }}_label" value="{{ source.label }}" autocomplete="off">
+        </label>
+        <label>
+          URL
+          <input type="url" name="source_{{ idx }}_url" value="{{ source.url }}" autocomplete="off" class="mono">
+        </label>
+        <label>
+          Source type
+          <select name="source_{{ idx }}_source_type">
+            {% for option in per_source_types %}
+              <option value="{{ option.value }}" {{ 'selected' if source.source_type == option.value else '' }}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <input type="checkbox" name="source_{{ idx }}_active" value="on" {{ 'checked' if source.active else '' }}>
+          Active
+        </label>
+        <label>
+          Max videos per source
+          <input type="number" name="source_{{ idx }}_max_videos_per_source" min="1" value="{{ source.max_videos_per_source or '5' }}">
+        </label>
+        <label>
+          <input type="checkbox" name="source_{{ idx }}_hydrate_missing_duration" value="on" {{ 'checked' if source.hydrate_missing_duration else '' }}>
+          Hydrate missing duration
+        </label>
+        <label>
+          Title allowlist
+          <textarea name="source_{{ idx }}_title_allowlist" rows="2" placeholder="One per line or comma-separated">{{ source.title_allowlist }}</textarea>
+        </label>
+        <label>
+          Title blocklist
+          <textarea name="source_{{ idx }}_title_blocklist" rows="2" placeholder="One per line or comma-separated">{{ source.title_blocklist }}</textarea>
+        </label>
+        <label>
+          <input type="checkbox" name="source_{{ idx }}_remove" value="on" {{ 'checked' if source.remove else '' }}>
+          Remove this source
+        </label>
+      </fieldset>
+    {% endfor %}
+
+    <fieldset class="card nested">
+      <legend>Add source</legend>
+      <label>
+        Source ID
+        <input type="text" name="new_source_source_id" value="{{ form.new_source.source_id }}" autocomplete="off" class="mono">
+      </label>
+      <label>
+        Label
+        <input type="text" name="new_source_label" value="{{ form.new_source.label }}" autocomplete="off">
+      </label>
+      <label>
+        URL
+        <input type="url" name="new_source_url" value="{{ form.new_source.url }}" autocomplete="off" class="mono">
+      </label>
+      <label>
+        Source type
+        <select name="new_source_source_type">
+          <option value="" {{ 'selected' if not form.new_source.source_type else '' }}>Choose type</option>
+          {% for option in per_source_types %}
+            <option value="{{ option.value }}" {{ 'selected' if form.new_source.source_type == option.value else '' }}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <input type="checkbox" name="new_source_active" value="on" {{ 'checked' if form.new_source.active else '' }}>
+        Active
+      </label>
+      <label>
+        Max videos per source
+        <input type="number" name="new_source_max_videos_per_source" min="1" value="{{ form.new_source.max_videos_per_source or '5' }}">
+      </label>
+      <label>
+        <input type="checkbox" name="new_source_hydrate_missing_duration" value="on" {{ 'checked' if form.new_source.hydrate_missing_duration else '' }}>
+        Hydrate missing duration
+      </label>
+      <label>
+        Title allowlist
+        <textarea name="new_source_title_allowlist" rows="2">{{ form.new_source.title_allowlist }}</textarea>
+      </label>
+      <label>
+        Title blocklist
+        <textarea name="new_source_title_blocklist" rows="2">{{ form.new_source.title_blocklist }}</textarea>
+      </label>
+    </fieldset>
+
+    <h3>Processing</h3>
+    <label>
+      Pipeline profile
+      <input type="text" name="pipeline_profile" value="{{ form.pipeline_profile }}" autocomplete="off" class="mono">
+    </label>
+    <p class="hint muted">Leave blank to default to the funnel ID.</p>
+
+    <label>
+      AI rule profile
+      <input type="text" name="ai_rule_profile" value="{{ form.ai_rule_profile }}" required autocomplete="off" class="mono">
+    </label>
+    <p class="hint muted">Profile reference only — prompt text is not edited here.</p>
+
+    <label>
+      Max clips
+      <input type="number" name="max_clips" min="1" value="{{ form.max_clips }}" required>
+    </label>
+    <label>
+      Min clip duration (sec)
+      <input type="number" name="min_clip_duration_sec" min="1" value="{{ form.min_clip_duration_sec }}" required>
+    </label>
+    <label>
+      Max clip duration (sec)
+      <input type="number" name="max_clip_duration_sec" min="1" value="{{ form.max_clip_duration_sec }}" required>
+    </label>
+    <label>
+      Max overlap (sec)
+      <input type="number" name="max_overlap_sec" min="0" value="{{ form.max_overlap_sec }}" required>
+    </label>
+    <label>
+      Filename prefix
+      <input type="text" name="filename_prefix" value="{{ form.filename_prefix }}" required autocomplete="off" class="mono">
+    </label>
+    <label>
+      Delivery mode
+      <select name="delivery_mode">
+        {% for mode in allowed_delivery_modes %}
+          <option value="{{ mode }}" {{ 'selected' if form.delivery_mode == mode else '' }}>{{ mode }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <h4>Output platforms</h4>
+    {% for platform in allowed_platforms %}
+      <label>
+        <input type="checkbox" name="platform_{{ platform }}" value="on" {{ 'checked' if form.platforms[platform] else '' }}>
+        {{ platform }}
+      </label>
+    {% endfor %}
+
+    <h3>Distribution</h3>
+    <label>
+      <input type="checkbox" name="posting_enabled" value="on" {{ 'checked' if form.posting_enabled else '' }}>
+      Posting enabled (canonical intent only)
+    </label>
+    <label>
+      Posting mode
+      <select name="posting_mode">
+        {% for mode in allowed_posting_modes %}
+          <option value="{{ mode }}" {{ 'selected' if form.posting_mode == mode else '' }}>{{ mode }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <h4>Target platforms</h4>
+    {% for platform in allowed_platforms %}
+      <label>
+        <input type="checkbox" name="target_platform_{{ platform }}" value="on" {{ 'checked' if form.target_platforms[platform] else '' }}>
+        {{ platform }}
+      </label>
+    {% endfor %}
+
+    <h4>Channel routes</h4>
+    <p class="muted">Route references only — output channel config is not edited here.</p>
+    <input type="hidden" name="route_count" value="{{ form.routes|length }}">
+    {% for route in form.routes %}
+      {% set idx = loop.index0 %}
+      <fieldset class="card nested">
+        <legend>Route {{ loop.index }}</legend>
+        <label>
+          Channel ID
+          <input type="text" name="route_{{ idx }}_channel_id" value="{{ route.channel_id }}" autocomplete="off" class="mono">
+        </label>
+        <label>
+          Platform
+          <select name="route_{{ idx }}_platform">
+            {% for platform in allowed_platforms %}
+              <option value="{{ platform }}" {{ 'selected' if route.platform == platform else '' }}>{{ platform }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <input type="checkbox" name="route_{{ idx }}_enabled" value="on" {{ 'checked' if route.enabled else '' }}>
+          Enabled
+        </label>
+        <label>
+          <input type="checkbox" name="route_{{ idx }}_remove" value="on" {{ 'checked' if route.remove else '' }}>
+          Remove this route
+        </label>
+      </fieldset>
+    {% endfor %}
+
+    <fieldset class="card nested">
+      <legend>Add route</legend>
+      <label>
+        Channel ID
+        <input type="text" name="new_route_channel_id" value="{{ form.new_route.channel_id }}" autocomplete="off" class="mono">
+      </label>
+      <label>
+        Platform
+        <select name="new_route_platform">
+          {% for platform in allowed_platforms %}
+            <option value="{{ platform }}" {{ 'selected' if form.new_route.platform == platform else '' }}>{{ platform }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <input type="checkbox" name="new_route_enabled" value="on" {{ 'checked' if form.new_route.enabled else '' }}>
+        Enabled
+      </label>
+    </fieldset>
+
+    <h3>Mappings</h3>
+    <label>
+      ConfigManager funnel ID
+      <input type="text" name="config_manager_funnel_id" value="{{ form.config_manager_funnel_id }}" autocomplete="off" class="mono">
+    </label>
+    <p class="hint muted">Leave blank for no mapping. ConfigManager YAML is not written here.</p>
+
+    <div class="actions">
+      <button type="submit">Save to registry</button>
+      <a class="button-link" href="{{ url_for('funnel_detail_page', funnel_id=form.funnel_id) }}">Cancel</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

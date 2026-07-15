@@ -1,0 +1,38 @@
+<article class="card overview-card console-section console-attention">
+  <h3>Needs attention</h3>
+  {% if console_attention %}
+  <ul class="attention-list console-attention-list">
+    {% for item in console_attention %}
+    <li class="attention-item attention-{{ item.severity }}">
+      <div class="attention-item-body">
+        <p class="attention-item-title">
+          {% if item.href %}
+          <a href="{{ item.href }}">{{ item.title }}</a>
+          {% else %}
+          {{ item.title }}
+          {% endif %}
+        </p>
+        {% if item.explanation %}
+        <p class="attention-item-explanation muted">{{ item.explanation }}</p>
+        {% endif %}
+        {% if item.detail %}
+        <p class="attention-item-detail muted">{{ item.detail }}</p>
+        {% endif %}
+        {% if item.href and item.action_label %}
+        <p class="attention-item-action">
+          <a href="{{ item.href }}">{{ item.action_label }} →</a>
+        </p>
+        {% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% if console_attention_overflow %}
+  <p class="console-section-link">
+    <a href="{{ url_for('ops_failures') }}">+ {{ console_attention_overflow }} more on Failures</a>
+  </p>
+  {% endif %}
+  {% else %}
+  <p class="console-attention-ok">Nothing needs attention right now.</p>
+  {% endif %}
+</article>

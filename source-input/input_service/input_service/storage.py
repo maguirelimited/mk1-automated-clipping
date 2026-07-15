@@ -21,6 +21,7 @@ import shutil
 from pathlib import Path
 
 from . import paths
+from .log_util import detail
 
 
 log = logging.getLogger(__name__)
@@ -66,7 +67,7 @@ def _atomic_store_ready(downloaded_file: Path, dest: Path) -> Path:
     if resolved.stat().st_size <= 0:
         raise StorageError(f"Ready file is empty: {resolved}")
 
-    log.info("Stored ready input at %s", resolved)
+    detail(log, "Stored ready input at %s", resolved)
     return resolved
 
 

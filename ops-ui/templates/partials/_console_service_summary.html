@@ -1,0 +1,11 @@
+<article class="card overview-card console-section console-services">
+  <h3>Automation</h3>
+  <p class="overview-metric status-{{ console_service_summary.tone }}">
+    {{ console_service_summary.text }}
+  </p>
+  {% if console_service_summary.href %}
+  <p class="console-section-link">
+    <a href="{{ console_service_summary.href }}">Service details</a>
+  </p>
+  {% endif %}
+</article>

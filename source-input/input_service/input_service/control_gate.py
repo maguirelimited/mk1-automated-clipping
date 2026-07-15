@@ -1,28 +1,28 @@
+"""Source-input operator pause gate (ingestion only).
+
+Canonical module: ``input_service.control_gate``. Do not add a sibling
+``control_gate.py`` beside ``app.py`` — imports resolve through this package.
+"""
+
 from __future__ import annotations
 
-import json
-import os
+import sys
 from pathlib import Path
 from typing import Any
 
+_SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from shared.controls_file import read_controls_json, resolve_controls_path  # noqa: E402
+
 
 def controls_file_path() -> Path:
-    raw = os.environ.get("MK04_CONTROLS_FILE", "").strip()
-    if raw:
-        return Path(raw).expanduser()
-    repo_root = Path(__file__).resolve().parents[3]
-    return repo_root / "ops-ui" / "data" / "controls.json"
+    return resolve_controls_path()
 
 
 def read_controls() -> dict[str, Any]:
-    path = controls_file_path()
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return read_controls_json()
 
 
 def ingestion_paused() -> bool:

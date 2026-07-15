@@ -5,7 +5,7 @@ import os
 from collections import Counter
 from typing import Any
 
-from flask import Flask, flash, redirect, render_template, request, url_for
+from flask import Flask, Response, abort, flash, g, jsonify, redirect, render_template, request, url_for
 
 from .ai_config import (
     AI_CONFIG_FIELDS,
@@ -21,6 +21,27 @@ from .processing_config import (
 from .post_processing_config import (
     fields_view as post_processing_fields_view,
     parse_form as parse_post_processing_form,
+)
+from .ai_config import (
+    AI_CONFIG_FIELDS,
+    effective_config,
+    parse_form,
+    source_for,
+)
+from .ai_status import ai_diagnostics, ai_health
+from .processing_config import (
+    fields_view as processing_fields_view,
+    parse_form as parse_processing_form,
+)
+from .post_processing_config import (
+    fields_view as post_processing_fields_view,
+    parse_form as parse_post_processing_form,
+)
+from .environment_summary import (
+    banner_text,
+    build_environment_summary,
+    load_job_execution_context,
+    redact_dict,
 )
 from .config import ServiceConfig, Settings, load_settings
 from .control_export import read_controls_file
@@ -47,7 +68,6 @@ from .recovery import (
 from .diagnostics import (
     artifact_views,
     clip_rows,
-    collect_health_reports,
     default_input_ledger_dir,
     ffmpeg_output_lines,
     filter_log_text,
@@ -57,22 +77,95 @@ from .diagnostics import (
     traceback_lines,
     transcript_view,
 )
-from .clip_review import (
-    REVIEW_APPROVED,
-    REVIEW_FLAGGED,
-    REVIEW_PENDING,
-    REVIEW_REJECTED,
-    load_clip_inspection,
-    load_review_queue,
-    submit_operator_feedback,
-)
+from .clip_review import REVIEW_PENDING, submit_operator_feedback
 from .control_export import HUMAN_APPROVAL_REQUIRED, PUBLISH_APPROVED_ONLY
+from .funnel_management.acquisition_sources import (
+    ACQUISITION_SOURCE_TYPE_LABELS,
+    CANONICAL_ACQUISITION_SOURCE_TYPES,
+    PER_SOURCE_TYPE_LABELS,
+    ALLOWED_PER_SOURCE_TYPES,
+    source_url_placeholder,
+)
+from .funnel_management.clone import (
+    FunnelCloneError,
+    clone_form_defaults,
+    form_values_from_request as clone_form_values_from_request,
+    parse_funnel_clone_form,
+    save_cloned_funnel_in_registry,
+    source_summary,
+)
+from .funnel_management.edit import (
+    FunnelEditError,
+    edit_form_from_funnel,
+    form_values_from_request as edit_form_values_from_request,
+    save_edited_funnel_in_registry,
+)
+from .funnel_management.create_defaults import BASELINE_TEMPLATE_ID
+from .funnel_management.readiness_summary import build_simple_funnel_status, sync_outcome_message
+from .funnel_management.create import (
+    FunnelCreateError,
+    create_funnel_in_registry,
+    form_values_from_request,
+    parse_funnel_create_form,
+)
+from .funnel_management.funnel_rule_registry_ops import list_registry_profile_ids
+from .funnel_management.funnel_templates import list_funnel_templates
+from .funnel_management.registry import FunnelNotFoundError, FunnelRegistry, FunnelRegistryError
+from .funnel_management.schema import (
+    ALLOWED_CONFIG_MANAGER_PRESETS,
+    ALLOWED_DELIVERY_MODES,
+    ALLOWED_PLATFORMS,
+    ALLOWED_POSTING_MODES,
+    ALLOWED_STATUSES,
+    DEFAULT_CONFIG_MANAGER_PRESET,
+    DEFAULT_MAX_VIDEOS_PER_SOURCE,
+)
+from .funnel_management.sync import FunnelSyncError, FunnelSynchronizer
+from .funnel_management.sync_workflow import (
+    FunnelSyncWorkflowError,
+    build_changed_files_flash,
+    build_sync_readiness_context,
+    default_sync_environment,
+    normalize_sync_environment,
+    parse_sync_apply_form,
+    resolve_sync_paths,
+    sync_page_context,
+)
+from .funnel_management.validation import FunnelValidator
 from .funnels import (
+    FunnelDetailNotFoundError,
+    ai_rule_registry_path,
+    build_funnel_validator,
     funnel_log_snippet,
     is_funnel_paused,
+    load_canonical_funnel_detail,
+    load_canonical_funnel_page,
     load_funnel_board,
     set_funnel_paused,
 )
+from .auth.audit import AuditLogger
+from .auth.routes import register_auth
+from .auth.session import validate_csrf
+from .controls import (
+    ALL_ACTIONS,
+    HIGH_RISK_ACTIONS,
+    action_label,
+    execute_control_action,
+)
+from .observability import register_observability_routes
+from .lists import (
+    build_job_detail_context,
+    build_jobs_list_context,
+    build_run_detail_context,
+    build_runs_list_context,
+)
+from .config_ui import build_configuration_context
+from .storage_ui import build_storage_context, resolve_storage_artifact
+from .failures_ui import build_failure_group_context, build_failures_list_context
+from .outputs_ui import build_output_detail_context, build_outputs_list_context, outputs_redirect_target
+from .overview import build_overview_context
+from .media import stream_clip_review_media, stream_output_clip
+from .shell import build_shell_context
 from .store import ControlStore
 from .system import (
     cleanup_preview,
@@ -90,21 +183,48 @@ CONTROL_INGESTION_PAUSED = "ingestion_paused"
 CONTROL_UPLOADS_PAUSED = "uploads_paused"
 
 
+def _ensure_runtime_env(settings: Settings) -> None:
+    """Align ConfigManager path resolution with this app's Settings.
+
+    Assign (do not setdefault) so an explicitly configured app always wins over
+    inherited process environment from a previous import or shell.
+    """
+    os.environ["MK04_RUNTIME_ROOT"] = str(settings.runtime_root)
+    os.environ["MK04_ENV"] = settings.environment
+
+
 def create_app(settings: Settings | None = None) -> Flask:
     settings = settings or load_settings()
+    _ensure_runtime_env(settings)
     app = Flask(
         __name__,
         template_folder="../templates",
         static_folder="../static",
     )
-    app.secret_key = "mk04-local-ops-ui"
     store = ControlStore(settings.control_db_path, controls_file=settings.controls_file)
     store.init_db()
     store._sync_controls_file()
+    register_auth(app, settings=settings, store=store)
+    register_observability_routes(app, settings)
 
     @app.context_processor
     def _runtime_context() -> dict[str, Any]:
-        return {"runtime": _runtime_summary(settings)}
+        env_summary = build_environment_summary(settings)
+        runtime = _runtime_summary(settings, env_summary)
+        # Single shared fetch of /health + /status for the shell and pages.
+        g.shell_context = build_shell_context(settings)
+        return {
+            "runtime": runtime,
+            "env_summary": env_summary,
+            "env_banner_text": banner_text(env_summary),
+            "default_max_videos_per_source": DEFAULT_MAX_VIDEOS_PER_SOURCE,
+            **g.shell_context,
+        }
+
+    @app.get("/api/environment")
+    @app.get("/api/config-summary")
+    def api_environment_summary():
+        return jsonify(build_environment_summary(settings))
 
     @app.template_filter("bytes")
     def _bytes(value: Any) -> str:
@@ -132,6 +252,8 @@ def create_app(settings: Settings | None = None) -> Flask:
             "ready",
             "input_ready",
             "approved",
+            "testing",
+            "runnable",
         }:
             return "ok"
         if status in {
@@ -146,6 +268,10 @@ def create_app(settings: Settings | None = None) -> Flask:
             "warn",
             "partial",
             "ingestion_paused",
+            "warning",
+            "incomplete",
+            "draft",
+            "pending_sync",
         }:
             return "warn"
         if "fail" in status or status in {
@@ -155,6 +281,10 @@ def create_app(settings: Settings | None = None) -> Flask:
             "missed_upload_window",
             "bad",
             "rejected",
+            "invalid",
+            "broken",
+            "archived",
+            "blocked",
         } or status.endswith("_paused"):
             return "bad"
         return "muted"
@@ -169,6 +299,186 @@ def create_app(settings: Settings | None = None) -> Flask:
         return url_for(default)
 
     @app.get("/")
+    def root():
+        return redirect(url_for("ops_overview"))
+
+    @app.get("/ops")
+    def ops_overview():
+        shell = getattr(g, "shell_context", None) or build_shell_context(settings)
+        overview = build_overview_context(settings, shell=shell)
+        return render_template("ops_overview.html", **overview)
+
+    @app.post("/ops/actions/<action>")
+    def ops_action(action: str):
+        """Authenticated control actions — invoke existing ops layer only."""
+        action = (action or "").strip()
+        if action not in ALL_ACTIONS:
+            flash("Unknown action.", "bad")
+            return redirect(url_for("ops_overview"))
+
+        if settings.auth_enabled and not validate_csrf(request.form.get("csrf_token")):
+            flash("Invalid security token.", "bad")
+            return redirect(url_for("ops_overview"))
+
+        restart_target = str(request.form.get("restart_target") or "").strip()
+        funnel_id = str(request.form.get("funnel_id") or "").strip()
+        confirmed = str(request.form.get("confirm") or "").strip().lower() == "yes"
+
+        if action in HIGH_RISK_ACTIONS and not confirmed:
+            return render_template(
+                "ops_action_confirm.html",
+                action=action,
+                action_label=action_label(action),
+                restart_target=restart_target,
+                funnel_id=funnel_id if action.startswith("run_pipeline") else "",
+            )
+
+        result = execute_control_action(
+            settings,
+            action,
+            confirmed=confirmed or action not in HIGH_RISK_ACTIONS,
+            restart_target=restart_target,
+            funnel_id=funnel_id,
+        )
+        audit = AuditLogger(store)
+        audit.record(
+            f"control.{action}",
+            target=restart_target or funnel_id or settings.environment,
+            ok=result.ok,
+            message=result.message,
+        )
+        flash(result.message, "ok" if result.ok else "bad")
+        return redirect(url_for("ops_overview"))
+
+    @app.get("/ops/runs")
+    def ops_runs():
+        shell = getattr(g, "shell_context", None) or build_shell_context(settings)
+        ctx = build_runs_list_context(
+            settings,
+            shell=shell,
+            status=str(request.args.get("status") or ""),
+            trigger=str(request.args.get("trigger") or ""),
+            funnel=str(request.args.get("funnel") or ""),
+        )
+        return render_template("ops_runs.html", **ctx)
+
+    @app.get("/ops/runs/<run_id>")
+    def ops_run_detail(run_id: str):
+        shell = getattr(g, "shell_context", None) or build_shell_context(settings)
+        ctx = build_run_detail_context(settings, run_id, shell=shell)
+        if ctx is None:
+            flash(f"Run not found: {run_id}", "bad")
+            return redirect(url_for("ops_runs"))
+        return render_template("ops_run_detail.html", **ctx)
+
+    @app.get("/ops/jobs")
+    def ops_jobs():
+        shell = getattr(g, "shell_context", None) or build_shell_context(settings)
+        ctx = build_jobs_list_context(
+            settings,
+            shell=shell,
+            state=str(request.args.get("state") or ""),
+            funnel=str(request.args.get("funnel") or ""),
+            platform=str(request.args.get("platform") or ""),
+            run_id=str(request.args.get("run_id") or ""),
+        )
+        return render_template("ops_jobs.html", **ctx)
+
+    @app.get("/ops/jobs/<job_id>")
+    def ops_job_detail(job_id: str):
+        shell = getattr(g, "shell_context", None) or build_shell_context(settings)
+        ctx = build_job_detail_context(settings, job_id, shell=shell)
+        if ctx is None:
+            flash(f"Job not found: {job_id}", "bad")
+            return redirect(url_for("ops_jobs"))
+        return render_template("ops_job_detail.html", **ctx)
+
+    @app.get("/ops/outputs")
+    def ops_outputs():
+        shell = getattr(g, "shell_context", None) or build_shell_context(settings)
+        ctx = build_outputs_list_context(
+            settings,
+            shell=shell,
+            run_id=str(request.args.get("run_id") or "") or None,
+            job_id=str(request.args.get("job_id") or "") or None,
+            funnel_id=str(request.args.get("funnel_id") or "") or None,
+        )
+        return render_template("ops_outputs.html", **ctx)
+
+    @app.get("/ops/outputs/<job_id>/<clip_id>")
+    def ops_output_detail(job_id: str, clip_id: str):
+        shell = getattr(g, "shell_context", None) or build_shell_context(settings)
+        ctx = build_output_detail_context(settings, job_id, clip_id, shell=shell)
+        if ctx is None:
+            flash(f"Output not found: {job_id}/{clip_id}", "bad")
+            return redirect(url_for("ops_outputs"))
+        return render_template("ops_output_detail.html", **ctx)
+
+    @app.get("/ops/outputs/<job_id>/<clip_id>/media")
+    def ops_output_media(job_id: str, clip_id: str):
+        shell = getattr(g, "shell_context", None) or build_shell_context(settings)
+        env_token = str(shell.get("shell_env_token") or settings.environment or "dev")
+        download = str(request.args.get("download") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        return stream_output_clip(
+            settings,
+            env_token=env_token,
+            job_id=job_id,
+            clip_id=clip_id,
+            download=download,
+        )
+
+    @app.get("/ops/failures")
+    def ops_failures():
+        shell = getattr(g, "shell_context", None) or build_shell_context(settings)
+        ctx = build_failures_list_context(settings, shell=shell)
+        return render_template("ops_failures.html", **ctx)
+
+    @app.get("/ops/failures/<path:group_key>")
+    def ops_failure_group(group_key: str):
+        shell = getattr(g, "shell_context", None) or build_shell_context(settings)
+        ctx = build_failure_group_context(settings, group_key, shell=shell)
+        if ctx is None:
+            flash(f"Failure group not found: {group_key}", "bad")
+            return redirect(url_for("ops_failures"))
+        return render_template("ops_failure_group.html", **ctx)
+
+    @app.get("/ops/configuration")
+    def ops_configuration():
+        shell = getattr(g, "shell_context", None) or build_shell_context(settings)
+        ctx = build_configuration_context(
+            settings,
+            shell=shell,
+            funnel_id=str(request.args.get("funnel_id") or "business"),
+            platform_id=str(request.args.get("platform_id") or "youtube"),
+        )
+        return render_template("ops_configuration.html", **ctx)
+
+    @app.get("/ops/storage")
+    def ops_storage():
+        shell = getattr(g, "shell_context", None) or build_shell_context(settings)
+        ctx = build_storage_context(settings, shell=shell)
+        return render_template("ops_storage.html", **ctx)
+
+    @app.get("/ops/storage/artifact/<kind>")
+    def ops_storage_artifact(kind: str):
+        """Serve allowlisted storage reports only (no filesystem browser)."""
+        from flask import abort, send_file
+
+        path = resolve_storage_artifact(settings, kind)
+        if path is None:
+            abort(404)
+        return send_file(
+            path,
+            mimetype="application/json",
+            as_attachment=True,
+            download_name=path.name,
+        )
+
+    @app.get("/dashboard")
     def dashboard():
         controls = _control_state(store)
         services = [_service_card(svc, settings) for svc in settings.services]
@@ -200,6 +510,12 @@ def create_app(settings: Settings | None = None) -> Flask:
             flash(str(debug.get("error") or "Job debug not available"), "bad")
             return redirect(url_for("failed_jobs"))
         job = debug.get("job") if isinstance(debug.get("job"), dict) else {}
+        env_summary = build_environment_summary(settings)
+        execution_context = load_job_execution_context(
+            job_id,
+            None if env_summary.get("jobs_root") == "not_available" else str(env_summary["jobs_root"]),
+            report_payload=debug,
+        )
         errors = debug.get("errors") if isinstance(debug.get("errors"), list) else []
         warnings = debug.get("warnings") if isinstance(debug.get("warnings"), list) else []
         clips = debug.get("clips") if isinstance(debug.get("clips"), list) else []
@@ -236,6 +552,7 @@ def create_app(settings: Settings | None = None) -> Flask:
             debug_json=json.dumps(debug, indent=2, default=str)[:12000],
             can_rerun=bool(input_id),
             can_retry_upload=False,
+            execution_context=execution_context,
         )
 
     @app.get("/jobs/upload/<int:upload_job_id>")
@@ -297,133 +614,445 @@ def create_app(settings: Settings | None = None) -> Flask:
             uploads_paused=_control_state(store)[CONTROL_UPLOADS_PAUSED],
         )
 
+    def _funnel_redirect(funnel_id: str) -> str:
+        next_page = str(request.form.get("next") or "").strip()
+        if next_page == "funnel_detail":
+            return url_for("funnel_detail_page", funnel_id=funnel_id)
+        return url_for("funnels_page")
+
     @app.get("/funnels")
     def funnels_page():
         controls = _control_state(store)
-        board = load_funnel_board(settings, store, ingestion_paused=controls[CONTROL_INGESTION_PAUSED])
+        page = load_canonical_funnel_page(
+            settings,
+            store,
+            ingestion_paused=controls[CONTROL_INGESTION_PAUSED],
+        )
         log_funnel_id = str(request.args.get("log") or "").strip()
         log_snippet = funnel_log_snippet(settings, log_funnel_id) if log_funnel_id else ""
         return render_template(
             "funnels.html",
             controls=controls,
-            rows=board["rows"],
-            trigger_history=board["trigger_history"],
-            feature_matrix=board["feature_matrix"],
-            channel_profiles_path=board["channel_profiles_path"],
+            rows=page["rows"],
+            empty_registry=page["empty_registry"],
+            registry_path=page["registry_path"],
+            ops_available=page["ops_available"],
+            trigger_history=page["trigger_history"],
             log_funnel_id=log_funnel_id,
             log_snippet=log_snippet,
         )
+
+    def _ai_profile_form_context() -> dict[str, Any]:
+        return {
+            "allowed_config_manager_presets": sorted(ALLOWED_CONFIG_MANAGER_PRESETS),
+            "default_config_manager_preset": DEFAULT_CONFIG_MANAGER_PRESET,
+            **_acquisition_form_context(),
+        }
+
+    def _acquisition_form_context() -> dict[str, Any]:
+        return {
+            "acquisition_source_types": [
+                {"value": value, "label": ACQUISITION_SOURCE_TYPE_LABELS[value]}
+                for value in CANONICAL_ACQUISITION_SOURCE_TYPES
+            ],
+            "per_source_types": [
+                {"value": value, "label": PER_SOURCE_TYPE_LABELS[value]}
+                for value in sorted(ALLOWED_PER_SOURCE_TYPES)
+            ],
+            "source_url_placeholder_channel": source_url_placeholder("youtube_channel"),
+            "source_url_placeholder_playlist": source_url_placeholder("youtube_playlist"),
+        }
+
+    @app.get("/funnels/new")
+    def funnel_create_page():
+        controls = _control_state(store)
+        templates = list_funnel_templates()
+        default_template = templates[0].template_id if templates else BASELINE_TEMPLATE_ID
+        return render_template(
+            "funnel_new.html",
+            controls=controls,
+            templates=templates,
+            form={
+                "template_id": default_template,
+                "funnel_id": "",
+                "display_name": "",
+                "description": "",
+                "category": "",
+                "source_type": "youtube_channel",
+                "source_urls": "",
+            },
+            errors=(),
+            **_ai_profile_form_context(),
+        )
+
+    @app.post("/funnels/new")
+    def funnel_create_submit():
+        controls = _control_state(store)
+        templates = list_funnel_templates()
+        form_values = form_values_from_request(request.form)
+
+        if settings.auth_enabled and not validate_csrf(request.form.get("csrf_token")):
+            flash("Invalid security token.", "bad")
+            return render_template(
+                "funnel_new.html",
+                controls=controls,
+                templates=templates,
+                form=form_values,
+                errors=("Invalid security token.",),
+                **_ai_profile_form_context(),
+            )
+
+        parsed, errors = parse_funnel_create_form(request.form)
+        if parsed is None or errors:
+            return render_template(
+                "funnel_new.html",
+                controls=controls,
+                templates=templates,
+                form=form_values,
+                errors=tuple(errors),
+                **_ai_profile_form_context(),
+            )
+
+        registry = FunnelRegistry()
+        try:
+            funnel = create_funnel_in_registry(parsed, registry)
+        except FunnelCreateError as exc:
+            return render_template(
+                "funnel_new.html",
+                controls=controls,
+                templates=templates,
+                form=form_values,
+                errors=(str(exc),),
+                **_ai_profile_form_context(),
+            )
+
+        flash(
+            f"Created funnel {funnel.identity.display_name!r}. Next: open the funnel and click "
+            f"Sync runtime config, then Run test.",
+            "ok",
+        )
+        return redirect(url_for("funnel_detail_page", funnel_id=funnel.identity.funnel_id))
+
+    @app.get("/funnels/<funnel_id>")
+    def funnel_detail_page(funnel_id: str):
+        controls = _control_state(store)
+        try:
+            detail = load_canonical_funnel_detail(
+                funnel_id,
+                settings,
+                store,
+                ingestion_paused=controls[CONTROL_INGESTION_PAUSED],
+            )
+        except FunnelDetailNotFoundError:
+            abort(404)
+        except FunnelRegistryError as exc:
+            return render_template(
+                "funnel_detail.html",
+                controls=controls,
+                load_error=str(exc),
+                funnel_id=funnel_id,
+            )
+        return render_template(
+            "funnel_detail.html",
+            controls=controls,
+            detail=detail,
+            load_error=None,
+            funnel_id=detail["funnel_id"],
+        )
+
+    def _load_registry_funnel(funnel_id: str):
+        try:
+            return FunnelRegistry().get_funnel(funnel_id)
+        except FunnelNotFoundError:
+            abort(404)
+        except FunnelRegistryError as exc:
+            flash(str(exc), "bad")
+            abort(404)
+
+    @app.get("/funnels/<funnel_id>/clone")
+    def funnel_clone_page(funnel_id: str):
+        controls = _control_state(store)
+        source = _load_registry_funnel(funnel_id)
+        return render_template(
+            "funnel_clone.html",
+            controls=controls,
+            source=source_summary(source),
+            form=clone_form_defaults(source),
+            errors=(),
+        )
+
+    @app.post("/funnels/<funnel_id>/clone")
+    def funnel_clone_submit(funnel_id: str):
+        controls = _control_state(store)
+        source = _load_registry_funnel(funnel_id)
+        summary = source_summary(source)
+        form_values = clone_form_values_from_request(request.form)
+
+        if settings.auth_enabled and not validate_csrf(request.form.get("csrf_token")):
+            flash("Invalid security token.", "bad")
+            return render_template(
+                "funnel_clone.html",
+                controls=controls,
+                source=summary,
+                form=form_values,
+                errors=("Invalid security token.",),
+            )
+
+        parsed, errors = parse_funnel_clone_form(request.form, source_funnel_id=funnel_id)
+        if parsed is None or errors:
+            return render_template(
+                "funnel_clone.html",
+                controls=controls,
+                source=summary,
+                form=form_values,
+                errors=tuple(errors),
+            )
+
+        registry = FunnelRegistry()
+        try:
+            cloned = save_cloned_funnel_in_registry(source, parsed, registry)
+        except FunnelCloneError as exc:
+            return render_template(
+                "funnel_clone.html",
+                controls=controls,
+                source=summary,
+                form=form_values,
+                errors=(str(exc),),
+            )
+
+        flash(
+            f"Cloned funnel {cloned.identity.display_name!r} saved as draft in the canonical registry.",
+            "ok",
+        )
+        return redirect(url_for("funnel_detail_page", funnel_id=cloned.identity.funnel_id))
+
+    def _edit_form_context(form: dict, errors: tuple[str, ...] = ()) -> dict:
+        config_manager_funnel_id = str(form.get("config_manager_funnel_id") or form.get("funnel_id") or "").strip()
+        return {
+            "form": form,
+            "errors": errors,
+            "allowed_statuses": sorted(ALLOWED_STATUSES),
+            "allowed_platforms": sorted(ALLOWED_PLATFORMS),
+            "allowed_posting_modes": sorted(ALLOWED_POSTING_MODES),
+            "allowed_delivery_modes": sorted(ALLOWED_DELIVERY_MODES),
+            "ai_profile_options": list_registry_profile_ids(ai_rule_registry_path()),
+            "allowed_config_manager_presets": sorted(ALLOWED_CONFIG_MANAGER_PRESETS),
+            "config_manager_yaml_hint": (
+                f"config/funnels/{config_manager_funnel_id}.yaml"
+                if config_manager_funnel_id
+                else "config/funnels/<funnel_id>.yaml"
+            ),
+            **_acquisition_form_context(),
+        }
+
+    @app.get("/funnels/<funnel_id>/edit")
+    def funnel_edit_page(funnel_id: str):
+        controls = _control_state(store)
+        existing = _load_registry_funnel(funnel_id)
+        return render_template(
+            "funnel_edit.html",
+            controls=controls,
+            **_edit_form_context(edit_form_from_funnel(existing)),
+        )
+
+    @app.post("/funnels/<funnel_id>/edit")
+    def funnel_edit_submit(funnel_id: str):
+        controls = _control_state(store)
+        existing = _load_registry_funnel(funnel_id)
+        form_values = edit_form_values_from_request(request.form)
+
+        if settings.auth_enabled and not validate_csrf(request.form.get("csrf_token")):
+            flash("Invalid security token.", "bad")
+            return render_template(
+                "funnel_edit.html",
+                controls=controls,
+                **_edit_form_context(form_values, ("Invalid security token.",)),
+            )
+
+        registry = FunnelRegistry()
+        try:
+            updated = save_edited_funnel_in_registry(existing, request.form, registry)
+        except FunnelEditError as exc:
+            return render_template(
+                "funnel_edit.html",
+                controls=controls,
+                **_edit_form_context(form_values, (str(exc),)),
+            )
+
+        report = FunnelValidator().validate_funnel(updated)
+        flash_message = "Funnel saved to registry. Runtime configs have not been synchronised yet."
+        if report.errors or report.warnings:
+            flash_message += (
+                f" Saved, but validation still reports {len(report.errors)} error(s)"
+                f" and {len(report.warnings)} warning(s)."
+            )
+        flash(flash_message, "ok")
+        return redirect(url_for("funnel_detail_page", funnel_id=updated.identity.funnel_id))
+
+    def _render_sync_page(
+        funnel,
+        *,
+        environment: str | None = None,
+        form_errors: tuple[str, ...] = (),
+        applied: bool = False,
+    ):
+        controls = _control_state(store)
+        env_errors: list[str] = list(form_errors)
+        selected = environment or default_sync_environment(settings)
+        try:
+            selected = normalize_sync_environment(selected)
+        except FunnelSyncWorkflowError as exc:
+            env_errors.append(str(exc))
+            selected = default_sync_environment(settings)
+
+        env_paths = resolve_sync_paths(selected)
+        report = FunnelSynchronizer(env_paths.to_target_paths()).build_plan(funnel)
+        validation_report = build_funnel_validator().validate_funnel(funnel)
+        return render_template(
+            "funnel_sync.html",
+            controls=controls,
+            **sync_page_context(
+                funnel_id=funnel.identity.funnel_id,
+                display_name=funnel.identity.display_name,
+                environment=selected,
+                env_paths=env_paths,
+                report=report,
+                validation_report=validation_report,
+                form_errors=tuple(env_errors),
+                applied=applied,
+            ),
+        )
+
+    @app.get("/funnels/<funnel_id>/sync")
+    def funnel_sync_page(funnel_id: str):
+        funnel = _load_registry_funnel(funnel_id)
+        environment = request.args.get("environment")
+        return _render_sync_page(funnel, environment=environment)
+
+    @app.post("/funnels/<funnel_id>/sync")
+    def funnel_sync_submit(funnel_id: str):
+        funnel = _load_registry_funnel(funnel_id)
+
+        if settings.auth_enabled and not validate_csrf(request.form.get("csrf_token")):
+            flash("Invalid security token.", "bad")
+            return _render_sync_page(
+                funnel,
+                environment=str(request.form.get("environment") or ""),
+                form_errors=("Invalid security token.",),
+            )
+
+        parsed, form_errors = parse_sync_apply_form(request.form, funnel_id=funnel_id)
+        if parsed is None:
+            return _render_sync_page(
+                funnel,
+                environment=str(request.form.get("environment") or ""),
+                form_errors=tuple(form_errors),
+            )
+
+        env_paths = resolve_sync_paths(parsed.environment)
+        synchronizer = FunnelSynchronizer(env_paths.to_target_paths())
+        preview = synchronizer.build_plan(funnel)
+        if not preview.ok:
+            return _render_sync_page(
+                funnel,
+                environment=parsed.environment,
+                form_errors=("Sync is blocked by plan errors. Fix issues before applying.",),
+            )
+
+        try:
+            report = synchronizer.apply(
+                funnel,
+                backup=parsed.backup_requested,
+            )
+        except FunnelSyncError as exc:
+            return _render_sync_page(
+                funnel,
+                environment=parsed.environment,
+                form_errors=(str(exc),),
+            )
+
+        validation_report = build_funnel_validator().validate_funnel(funnel)
+        readiness = build_sync_readiness_context(validation_report, report)
+        after_ready = readiness.get("processing_after_apply_state") == "ready"
+        flash(
+            sync_outcome_message(
+                applied=True,
+                sync_ok=report.ok,
+                report=validation_report,
+                after_apply_processing_ready=after_ready,
+            ),
+            "ok" if report.ok else "bad",
+        )
+        return redirect(url_for("funnel_detail_page", funnel_id=funnel.identity.funnel_id))
 
     @app.post("/funnels/<funnel_id>/pause")
     def pause_funnel(funnel_id: str):
         set_funnel_paused(store, funnel_id, True)
         store.log_action("funnel-pause", funnel_id, ok=True, message="paused")
         flash(f"Funnel {funnel_id} paused (manual runs blocked).", "ok")
-        return redirect(url_for("funnels_page"))
+        return redirect(_funnel_redirect(funnel_id))
 
     @app.post("/funnels/<funnel_id>/resume")
     def resume_funnel(funnel_id: str):
         set_funnel_paused(store, funnel_id, False)
         store.log_action("funnel-resume", funnel_id, ok=True, message="resumed")
         flash(f"Funnel {funnel_id} resumed.", "ok")
-        return redirect(url_for("funnels_page"))
+        return redirect(_funnel_redirect(funnel_id))
+
+    # Legacy Clip Review — GET redirects to Outputs. Fake approval POST routes return
+    # 410 Gone; feedback/requeue remain for now. See /ops/outputs for MK1 review.
+    _CLIP_REVIEW_APPROVAL_RETIRED = (
+        "Clip Review approve/reject/flag controls were retired; they did not gate "
+        "publishing. Use /ops/outputs for run-centric clip review."
+    )
+    _CLIP_REVIEW_POLICY_CONTROLS_RETIRED = (
+        "Clip Review human_approval_required and publish_approved_only toggles were "
+        "retired; they were not enforced by any service."
+    )
+
+    def _clip_review_retired_gone(message: str) -> Response:
+        return Response(message, status=410, mimetype="text/plain; charset=utf-8")
 
     @app.get("/clip-review")
     def clip_review():
-        status_filter = str(request.args.get("status") or "").strip().lower()
-        board = load_review_queue(settings, store, status_filter=status_filter)
-        controls = _control_state(store)
-        return render_template(
-            "clip_review.html",
-            controls=controls,
-            clips=board["clips"],
-            counts=board["counts"],
-            total_clips=board.get("total_clips", 0),
-            status_filter=status_filter or "all",
-            service_ok=board.get("ok"),
-            service_error=board.get("error"),
-        )
+        return redirect(url_for("ops_outputs"))
 
     @app.get("/clip-review/<job_id>/<clip_id>")
     def clip_review_detail(job_id: str, clip_id: str):
-        row = load_clip_inspection(settings, store, job_id=job_id, clip_id=clip_id)
-        if row is None:
-            flash("Clip not found or video-automation debug unavailable.", "bad")
-            return redirect(url_for("clip_review"))
-        controls = _control_state(store)
-        return render_template(
-            "clip_review_detail.html",
-            clip=row,
-            controls=controls,
-            job_detail_url=url_for("video_job_detail", job_id=job_id),
-        )
+        shell = getattr(g, "shell_context", None) or build_shell_context(settings)
+        return redirect(outputs_redirect_target(settings, shell=shell, job_id=job_id))
 
     @app.get("/clip-review/media/<job_id>/<path:clip_file>")
     def clip_review_media(job_id: str, clip_file: str):
-        from flask import Response
-        import os
-        from urllib import error, request as urlrequest
-
-        svc = service_by_key("video-automation")
-        if svc is None:
-            return Response("video-automation not configured", status=503)
-        safe_name = os.path.basename(str(clip_file or ""))
-        if not safe_name or safe_name != clip_file:
-            return Response("invalid clip file", status=400)
-        url = svc.base_url.rstrip("/") + f"/output/{safe_name}"
-        headers = {"Accept": "video/*,*/*"}
-        if svc.secret_env and svc.secret_header:
-            secret = os.environ.get(svc.secret_env, "").strip()
-            if secret:
-                headers[svc.secret_header] = secret
-        req = urlrequest.Request(url, headers=headers, method="GET")
-        try:
-            upstream = urlrequest.urlopen(req, timeout=max(settings.service_timeout_sec, 15.0))
-        except error.HTTPError as exc:
-            return Response(exc.read(), status=exc.code, content_type=exc.headers.get_content_type())
-        except Exception as exc:
-            return Response(str(exc), status=502)
-        data = upstream.read()
-        content_type = upstream.headers.get("Content-Type") or "video/mp4"
-        response = Response(data, mimetype=content_type)
-        if str(request.args.get("download") or "").strip() in {"1", "true", "yes"}:
-            response.headers["Content-Disposition"] = f'attachment; filename="{safe_name}"'
-        return response
+        shell = getattr(g, "shell_context", None) or build_shell_context(settings)
+        env_token = str(shell.get("shell_env_token") or settings.environment or "dev")
+        download = str(request.args.get("download") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        return stream_clip_review_media(
+            settings,
+            env_token=env_token,
+            job_id=job_id,
+            clip_file=clip_file,
+            download=download,
+        )
 
     @app.post("/clip-review/<job_id>/<clip_id>/approve")
     def clip_review_approve(job_id: str, clip_id: str):
-        store.set_clip_review(job_id, clip_id, status=REVIEW_APPROVED)
-        store.log_action("clip-approve", f"{job_id}/{clip_id}", ok=True)
-        flash(
-            f"Review metadata saved: {clip_id} marked approved. Publishing is not blocked.",
-            "ok",
-        )
-        return _clip_review_redirect(job_id, clip_id)
+        del job_id, clip_id
+        return _clip_review_retired_gone(_CLIP_REVIEW_APPROVAL_RETIRED)
 
     @app.post("/clip-review/<job_id>/<clip_id>/reject")
     def clip_review_reject(job_id: str, clip_id: str):
-        store.set_clip_review(job_id, clip_id, status=REVIEW_REJECTED)
-        store.log_action("clip-reject", f"{job_id}/{clip_id}", ok=True)
-        flash(
-            f"Review metadata saved: {clip_id} marked rejected. Publishing is not blocked.",
-            "ok",
-        )
-        return _clip_review_redirect(job_id, clip_id)
+        del job_id, clip_id
+        return _clip_review_retired_gone(_CLIP_REVIEW_APPROVAL_RETIRED)
 
     @app.post("/clip-review/<job_id>/<clip_id>/flag")
     def clip_review_flag(job_id: str, clip_id: str):
-        flagged = str(request.form.get("flagged") or "1").strip().lower() in {"1", "true", "on", "yes"}
-        review = store.get_clip_review(job_id, clip_id)
-        status = str((review or {}).get("status") or REVIEW_PENDING)
-        if flagged and status == REVIEW_PENDING:
-            status = REVIEW_FLAGGED
-        store.set_clip_review(job_id, clip_id, status=status, flagged_high_quality=flagged)
-        store.log_action("clip-flag", f"{job_id}/{clip_id}", ok=True, message="on" if flagged else "off")
-        flash(
-            f"Clip {clip_id}: {'flagged as high quality' if flagged else 'high-quality flag cleared'}.",
-            "ok",
-        )
-        return _clip_review_redirect(job_id, clip_id)
+        del job_id, clip_id
+        return _clip_review_retired_gone(_CLIP_REVIEW_APPROVAL_RETIRED)
 
     @app.post("/clip-review/<job_id>/<clip_id>/feedback")
     def clip_review_feedback(job_id: str, clip_id: str):
@@ -458,7 +1087,7 @@ def create_app(settings: Settings | None = None) -> Flask:
         svc = service_by_key("video-automation")
         if svc is None:
             flash("video-automation is not configured.", "bad")
-            return redirect(url_for("clip_review_detail", job_id=job_id, clip_id=clip_id))
+            return redirect(outputs_redirect_target(settings, shell=getattr(g, "shell_context", None) or build_shell_context(settings), job_id=job_id))
         ok, detail, _status = call_json(svc, f"/jobs/{job_id}/debug", timeout=settings.service_timeout_sec)
         input_id = ""
         if ok:
@@ -466,7 +1095,7 @@ def create_app(settings: Settings | None = None) -> Flask:
             input_id = str(job_block.get("input_id") or "").strip()
         if not input_id:
             flash(f"Cannot rerun source job {job_id}: no input_id on job report.", "bad")
-            return redirect(url_for("clip_review_detail", job_id=job_id, clip_id=clip_id))
+            return redirect(outputs_redirect_target(settings, shell=getattr(g, "shell_context", None) or build_shell_context(settings), job_id=job_id))
         ok, payload, status = call_json(
             svc,
             "/jobs",
@@ -487,28 +1116,13 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/clip-review/controls/<control>/<state>")
     def clip_review_control(control: str, state: str):
-        if control not in {HUMAN_APPROVAL_REQUIRED, PUBLISH_APPROVED_ONLY}:
-            flash(f"Unknown clip-review control: {control}", "bad")
-            return redirect(url_for("clip_review"))
-        enabled = state == "on"
-        store.set_control_bool(control, enabled)
-        label = (
-            "Human approval policy flag"
-            if control == HUMAN_APPROVAL_REQUIRED
-            else "Publish-approved-only policy flag"
-        )
-        store.log_action("clip-review-control", control, ok=True, message="on" if enabled else "off")
-        flash(
-            f"{label} set to {'on' if enabled else 'off'} in controls.json. Not enforced by services yet.",
-            "ok",
-        )
-        return redirect(url_for("clip_review"))
+        del control, state
+        return _clip_review_retired_gone(_CLIP_REVIEW_POLICY_CONTROLS_RETIRED)
 
     def _clip_review_redirect(job_id: str, clip_id: str):
-        target = str(request.form.get("next") or "").strip()
-        if target == "queue":
-            return redirect(url_for("clip_review"))
-        return redirect(url_for("clip_review_detail", job_id=job_id, clip_id=clip_id))
+        shell = getattr(g, "shell_context", None) or build_shell_context(settings)
+        target = outputs_redirect_target(settings, shell=shell, job_id=job_id)
+        return redirect(target)
 
     @app.get("/publishing")
     def publishing():
@@ -584,9 +1198,19 @@ def create_app(settings: Settings | None = None) -> Flask:
     def recovery():
         return render_template("recovery.html", **_recovery_context())
 
+    def _effective_ai_service_url(saved: dict[str, str] | None = None) -> str:
+        """URL for ai-service health/diagnostics probes (matches AI settings effective value)."""
+        if saved is None:
+            saved = store.get_ai_config()
+        source = source_for("ai_service_url", saved)
+        if source in {"ui", "env"}:
+            return str(effective_config(saved)["ai_service_url"])
+        return settings.ai_service_url
+
     def _ai_settings_context(diagnostics: dict[str, Any] | None = None) -> dict[str, Any]:
         saved = store.get_ai_config()
         effective = effective_config(saved)
+        probe_url = _effective_ai_service_url(saved)
         fields = [
             {
                 "name": field.name,
@@ -600,11 +1224,11 @@ def create_app(settings: Settings | None = None) -> Flask:
             }
             for field in AI_CONFIG_FIELDS
         ]
-        health = ai_health(settings.ai_service_url, timeout=settings.service_timeout_sec)
+        health = ai_health(probe_url, timeout=settings.service_timeout_sec)
         return {
             "ai_fields": fields,
             "ai_effective": effective,
-            "ai_service_url": settings.ai_service_url,
+            "ai_service_url": probe_url,
             "ai_backend": effective.get("clip_selection_backend"),
             "ai_health": health,
             "ai_diagnostics": diagnostics,
@@ -733,12 +1357,11 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/settings/ai/test")
     def test_ai_model():
-        diagnostics = ai_diagnostics(
-            settings.ai_service_url, timeout=settings.ai_diagnostics_timeout_sec
-        )
+        probe_url = _effective_ai_service_url()
+        diagnostics = ai_diagnostics(probe_url, timeout=settings.ai_diagnostics_timeout_sec)
         store.log_action(
             "ai-diagnostics",
-            settings.ai_service_url,
+            probe_url,
             ok=bool(diagnostics.get("ok")),
             message=str(diagnostics.get("error") or diagnostics.get("status") or ""),
         )
@@ -853,19 +1476,6 @@ def create_app(settings: Settings | None = None) -> Flask:
             flash(f"Cleanup failed: {result.message or ('rc=' + str(result.returncode))}", "bad")
         return redirect(url_for("recovery"))
 
-    @app.get("/health")
-    def health():
-        report = collect_health_reports(settings)
-        machine = machine_stats()
-        storage = storage_usage(settings)
-        return render_template(
-            "health.html",
-            report=report,
-            machine=machine,
-            storage=storage,
-            input_ledger_dir=default_input_ledger_dir(),
-        )
-
     @app.get("/logs")
     def logs():
         query = str(request.args.get("q") or "").strip()
@@ -952,21 +1562,27 @@ def create_app(settings: Settings | None = None) -> Flask:
         next_page = str(request.form.get("next") or "").strip()
         if is_funnel_paused(store, funnel_id):
             flash(f"Funnel {funnel_id} is paused; resume it on the Funnels page first.", "bad")
+            if next_page == "funnel_detail":
+                return redirect(url_for("funnel_detail_page", funnel_id=funnel_id))
             return redirect(url_for("funnels_page") if next_page == "funnels" else _redirect_back())
-        svc = service_by_key("source-input")
-        if svc is None:
-            flash("source-input service is not configured.", "bad")
-            return redirect(_redirect_back())
-        ok, payload, status = call_json(
-            svc,
-            "/run-funnel",
-            method="POST",
-            payload={"funnel_id": funnel_id},
-            timeout=settings.funnel_run_timeout_sec,
+        # Route through the canonical execution coordinator (admission + wait).
+        env = "prod" if settings.environment in {"prod", "production"} else "dev"
+        action = "run_pipeline_prod" if env == "prod" else "run_pipeline_dev"
+        result = execute_control_action(
+            settings,
+            action,
+            confirmed=(env == "prod"),
+            funnel_id=funnel_id,
         )
-        message = str(payload.get("status") or payload.get("error") or f"HTTP {status}")
-        store.log_action("run-funnel", funnel_id, ok=ok and bool(payload.get("success", ok)), message=message)
-        flash(f"Funnel {funnel_id}: {message}", "ok" if ok else "bad")
+        store.log_action(
+            "run-funnel",
+            funnel_id,
+            ok=result.ok,
+            message=result.message,
+        )
+        flash(f"Funnel {funnel_id}: {result.message}", "ok" if result.ok else "bad")
+        if next_page == "funnel_detail":
+            return redirect(url_for("funnel_detail_page", funnel_id=funnel_id))
         if next_page == "funnels":
             return redirect(url_for("funnels_page"))
         return redirect(_redirect_back())
@@ -1139,6 +1755,28 @@ def create_app(settings: Settings | None = None) -> Flask:
         flash(f"Bulk upload retry finished: {retried} re-queued, {skipped} skipped.", "ok" if retried else "bad")
         return redirect(url_for("failed_jobs"))
 
+    @app.post("/recovery/video/<job_id>/cancel")
+    def cancel_video_job(job_id: str):
+        svc = service_by_key("video-automation")
+        if svc is None:
+            flash("video-automation service is not configured.", "bad")
+            return redirect(url_for("recovery"))
+        ok, payload, status = call_json(
+            svc,
+            f"/jobs/{job_id}/cancel",
+            method="POST",
+            timeout=settings.service_timeout_sec,
+        )
+        message = str(payload.get("status") or payload.get("error") or payload.get("message") or f"HTTP {status}")
+        store.log_action("cancel-video", job_id, ok=ok, message=message)
+        flash(
+            f"Cancelled {job_id} — marked failed (operator_cancel)."
+            if ok
+            else f"Cancel failed for {job_id}: {message}",
+            "ok" if ok else "bad",
+        )
+        return redirect(url_for("recovery"))
+
     @app.post("/recovery/video/<job_id>/retry")
     def retry_video_job(job_id: str):
         svc = service_by_key("video-automation")
@@ -1201,6 +1839,31 @@ def _video_jobs_running(video_jobs: list[dict[str, Any]]) -> bool:
     return any(str(job.get("status") or "").lower() == "running" for job in video_jobs)
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = str(os.environ.get(name) or "").strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 1 else default
+
+
+def _parse_ttl(raw: Any, label: str) -> tuple[int, str | None]:
+    """Validate a TTL form field: must be an integer of at least 1 day."""
+    text = str(raw if raw is not None else "").strip()
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        return 0, f"Invalid {label} retention days: {text or 'empty'} (whole number >= 1 required)."
+    if value < 1:
+        return 0, f"Refusing non-positive {label} retention: {value} (must be >= 1)."
+    return value, None
+
+
+def _video_jobs_running(video_jobs: list[dict[str, Any]]) -> bool:
+    return any(str(job.get("status") or "").lower() == "running" for job in video_jobs)
+
+
 def _control_state(store: ControlStore) -> dict[str, bool]:
     return {
         CONTROL_INGESTION_PAUSED: store.get_control_bool(CONTROL_INGESTION_PAUSED),
@@ -1210,9 +1873,12 @@ def _control_state(store: ControlStore) -> dict[str, bool]:
     }
 
 
-def _runtime_summary(settings: Settings) -> dict[str, str]:
+def _runtime_summary(settings: Settings, env_summary: dict[str, Any] | None = None) -> dict[str, str]:
+    summary = env_summary or {}
     return {
         "environment": settings.environment,
+        "environment_label": str(summary.get("environment_label") or settings.environment.upper()),
+        "is_production": "true" if summary.get("is_production") else "false",
         "upload_mode": settings.upload_mode,
         "scheduler_mode": settings.scheduler_mode,
         "code_root": str(settings.code_root),
@@ -1221,6 +1887,17 @@ def _runtime_summary(settings: Settings) -> dict[str, str]:
         "log_root": str(settings.log_root),
         "controls_file": str(settings.controls_file),
         "control_db_path": str(settings.control_db_path),
+        "posting_config_label": str(summary.get("posting_config_label") or "Posting config: unknown"),
+        "runtime_upload_control_label": str(
+            summary.get("runtime_upload_control_label") or "Runtime upload kill switch: not implemented yet"
+        ),
+        "config_validation_state": str(summary.get("config_validation_state") or "unknown"),
+        "funnel_id": str(summary.get("funnel_id") or "not_available"),
+        "platform_id": str(summary.get("platform_id") or "not_available"),
+        "preset_id": str(summary.get("preset_id") or "not_available"),
+        "jobs_root": str(summary.get("jobs_root") or "not_available"),
+        "outputs_root": str(summary.get("outputs_root") or "not_available"),
+        "database_path": str(summary.get("database_path") or "not_available"),
     }
 
 
@@ -1386,9 +2063,8 @@ def _recent_failures(video_jobs: list[dict[str, Any]], upload_jobs: list[dict[st
     return failures[:12]
 
 
-app = create_app()
-
-
 if __name__ == "__main__":
+    # Prefer ``python -m ops_ui`` (ops_ui/__main__.py). This path remains for
+    # direct ``python -m ops_ui.app`` invocations and does not run at import.
     cfg = load_settings()
-    app.run(host=cfg.host, port=cfg.port, debug=False)
+    create_app(cfg).run(host=cfg.host, port=cfg.port, debug=False)

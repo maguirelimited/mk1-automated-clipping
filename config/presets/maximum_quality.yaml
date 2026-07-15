@@ -1,0 +1,31 @@
+# config/presets/maximum_quality.yaml
+#
+# Maximum Quality preset: strict thresholds, lower volume.
+# Only the highest-scoring candidates pass. Suitable for mature funnels
+# where brand quality is more important than posting frequency.
+#
+# Presets store behaviour choices. They do not make creative or business decisions.
+
+preset:
+  id: maximum_quality
+  name: Maximum Quality
+
+selection:
+  # Values aligned to selection_gate_v1.py maximum_quality mode preset (2026-07).
+  # max_clips=4, min_overall_potential=8.5 were initial estimates; corrected here.
+  mode: maximum_quality
+  max_clips: 3
+  min_overall_potential: 8.5
+  min_confidence: 0.75
+  exploration_ratio: 0.05
+
+posting:
+  uploads_per_day: 2
+
+post_processing:
+  conveyor:
+    - render_clip_v1
+    - platform_safe_format_v1
+    - intelligent_captions_v1
+    - validation_v1
+    - metadata_writer_v1

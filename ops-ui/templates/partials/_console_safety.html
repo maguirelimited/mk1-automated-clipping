@@ -1,0 +1,27 @@
+<article class="card overview-card console-section console-safety">
+  <h3>Environment &amp; safety</h3>
+  <dl class="overview-dl">
+    <div>
+      <dt>Environment</dt>
+      <dd>{{ overview_environment }}</dd>
+    </div>
+    <div>
+      <dt>Uploads</dt>
+      <dd class="status-text-{{ console_upload_tone }}">
+        {{ overview_upload|upper }}
+      </dd>
+    </div>
+    <div>
+      <dt>Scheduler</dt>
+      <dd class="status-text-{{ console_scheduler_tone }}">
+        {{ overview_scheduler|upper }}
+      </dd>
+    </div>
+  </dl>
+  {% if overview_upload_detail %}
+  <p class="muted">Upload: {{ overview_upload_detail }}</p>
+  {% endif %}
+  {% if overview_scheduler_detail %}
+  <p class="muted">Scheduler: {{ overview_scheduler_detail }}</p>
+  {% endif %}
+</article>

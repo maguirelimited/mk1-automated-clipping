@@ -52,6 +52,7 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         },
     )
     monkeypatch.setenv("PIPELINE_CONFIG_PATH", str(cfg_path))
+    monkeypatch.setenv("MK04_ALLOW_UNGATED_JOBS", "1")
     monkeypatch.delenv("VIDEO_AUTOMATION_SECRET", raising=False)
     for folder in paths.values():
         Path(folder).mkdir(parents=True, exist_ok=True)
@@ -366,6 +367,7 @@ def test_process_resolves_input_id_and_updates_ledger(
         *,
         input_id: str | None = None,
         job_id: str | None = None,
+        worker_job: dict[str, str] | None = None,
     ):
         report = {
             "job_id": job_id,
@@ -380,8 +382,11 @@ def test_process_resolves_input_id_and_updates_ledger(
             "stage_timings_ms": {},
             "clips": [{"clip_file": "clip_01.mp4"}],
         }
-        for path in jobs_root.glob(f"*_{job_id}/report.json"):
-            path.write_text(json.dumps(report), encoding="utf-8")
+        if worker_job and worker_job.get("report_path"):
+            Path(worker_job["report_path"]).write_text(json.dumps(report), encoding="utf-8")
+        else:
+            for path in jobs_root.glob(f"*_{job_id}/report.json"):
+                path.write_text(json.dumps(report), encoding="utf-8")
         return server_app.jsonify(
             {
                 "success": True,
@@ -547,3 +552,171 @@ def test_recover_pending_jobs_requeues_disk_task(client, monkeypatch: pytest.Mon
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["status"] == "queued"
     assert report["recovered_at"]
+
+
+def test_sweep_stale_jobs_fails_old_running(client, monkeypatch: pytest.MonkeyPatch):
+    c, jobs_root = client
+    monkeypatch.delenv("MK04_ENV", raising=False)
+    monkeypatch.setattr(server_app, "_jobs_root_readonly", lambda: str(jobs_root))
+    job_id = "job_20260522T130000Z_abc123ef"
+    job_dir = jobs_root / job_id
+    job_dir.mkdir(parents=True)
+    report_path = job_dir / "report.json"
+    _write_json(
+        report_path,
+        {
+            "job_id": job_id,
+            "status": "running",
+            "current_stage": "transcription",
+            "started_at": "2020-01-01T00:00:00+00:00",
+            "heartbeat_at": "2020-01-01T00:00:00+00:00",
+            "errors": [],
+            "warnings": [],
+            "clips": [],
+        },
+    )
+    monkeypatch.setenv("VIDEO_JOB_STALE_RUNNING_SEC", "60")
+
+    count = server_app._sweep_stale_jobs()
+
+    assert count == 1
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["status"] == "failed"
+    assert report["errors"][-1]["category"] == "stale_job"
+
+
+def test_pipeline_job_paths_reuses_worker_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    worker_job = {
+        "job_id": "job_worker123",
+        "job_dir": str(tmp_path / "jobs" / "dev" / "job_worker123"),
+        "report_path": str(tmp_path / "jobs" / "dev" / "job_worker123" / "report.json"),
+        "clips_dir": str(tmp_path / "jobs" / "dev" / "job_worker123" / "clips"),
+    }
+    create_calls: list[str] = []
+
+    def _fail_create(*_args, **_kwargs):
+        create_calls.append("create_job_paths")
+        raise AssertionError("create_job_paths must not run when worker_job is provided")
+
+    monkeypatch.setattr(server_app, "create_job_paths", _fail_create)
+    resolved = server_app._pipeline_job_paths(
+        {},
+        "/tmp/input_example_source.mp4",
+        job_id="job_worker123",
+        worker_job=worker_job,
+    )
+    assert resolved is worker_job
+    assert create_calls == []
+
+
+def test_touch_job_heartbeat_updates_running_report(tmp_path: Path) -> None:
+    job_id = "job_20260522T120000Z_abc123ef"
+    job_dir = tmp_path / job_id
+    job_dir.mkdir(parents=True)
+    report_path = job_dir / "report.json"
+    report = {
+        "job_id": job_id,
+        "status": "running",
+        "current_stage": "transcription",
+        "started_at": "2026-05-22T12:00:00+00:00",
+        "errors": [],
+        "warnings": [],
+        "clips": [],
+    }
+    _write_json(report_path, report)
+    job = {"job_id": job_id, "report_path": str(report_path)}
+
+    server_app._touch_job_heartbeat(job, report, current_stage="selection")
+
+    persisted = json.loads(report_path.read_text(encoding="utf-8"))
+    assert persisted["status"] == "running"
+    assert persisted["current_stage"] == "selection"
+    assert persisted.get("heartbeat_at")
+    assert report.get("heartbeat_at") == persisted["heartbeat_at"]
+
+
+def test_touch_job_heartbeat_skips_non_running(tmp_path: Path) -> None:
+    job_id = "job_20260522T120001Z_abc123ef"
+    job_dir = tmp_path / job_id
+    job_dir.mkdir(parents=True)
+    report_path = job_dir / "report.json"
+    report = {
+        "job_id": job_id,
+        "status": "success",
+        "current_stage": "success",
+        "errors": [],
+        "warnings": [],
+        "clips": [],
+    }
+    _write_json(report_path, report)
+    job = {"job_id": job_id, "report_path": str(report_path)}
+
+    server_app._touch_job_heartbeat(job, report, current_stage="clipping")
+
+    persisted = json.loads(report_path.read_text(encoding="utf-8"))
+    assert "heartbeat_at" not in persisted
+    assert persisted["current_stage"] == "success"
+
+
+def test_sweep_stale_jobs_respects_fresh_heartbeat(client, monkeypatch: pytest.MonkeyPatch):
+    c, jobs_root = client
+    monkeypatch.delenv("MK04_ENV", raising=False)
+    monkeypatch.setattr(server_app, "_jobs_root_readonly", lambda: str(jobs_root))
+    job_id = "job_20260522T131500Z_abc123ef"
+    job_dir = jobs_root / job_id
+    job_dir.mkdir(parents=True)
+    report_path = job_dir / "report.json"
+    _write_json(
+        report_path,
+        {
+            "job_id": job_id,
+            "status": "running",
+            "current_stage": "clipping",
+            "started_at": "2020-01-01T00:00:00+00:00",
+            "heartbeat_at": "2026-07-05T15:00:00+00:00",
+            "errors": [],
+            "warnings": [],
+            "clips": [],
+        },
+    )
+    monkeypatch.setenv("VIDEO_JOB_STALE_RUNNING_SEC", "60")
+    fixed_now = server_app._timestamp_epoch("2026-07-05T15:00:30+00:00")
+    assert fixed_now is not None
+    monkeypatch.setattr(server_app.time, "time", lambda: fixed_now)
+
+    count = server_app._sweep_stale_jobs()
+
+    assert count == 0
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["status"] == "running"
+
+
+def test_cancel_job_marks_running_failed(client, monkeypatch: pytest.MonkeyPatch):
+    c, jobs_root = client
+    monkeypatch.delenv("MK04_ENV", raising=False)
+    monkeypatch.setattr(server_app, "_jobs_root_readonly", lambda: str(jobs_root))
+    job_id = "job_20260522T140000Z_abc123ef"
+    job_dir = jobs_root / job_id
+    job_dir.mkdir(parents=True)
+    report_path = job_dir / "report.json"
+    _write_json(
+        report_path,
+        {
+            "job_id": job_id,
+            "status": "running",
+            "current_stage": "transcription",
+            "created_at": "2026-05-22T14:00:00+00:00",
+            "errors": [],
+            "warnings": [],
+            "clips": [],
+        },
+    )
+    (job_dir / "review.md").write_text("# review\n", encoding="utf-8")
+
+    response = c.post(f"/jobs/{job_id}/cancel")
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["status"] == "failed"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["status"] == "failed"
+    assert report["errors"][-1]["category"] == "operator_cancel"

@@ -1,0 +1,31 @@
+# config/presets/growth.yaml
+#
+# Growth preset: higher volume, slightly relaxed thresholds.
+# Favours finding more candidates and posting more frequently.
+# Suitable for early-stage funnels building audience volume.
+#
+# Presets store behaviour choices. They do not make creative or business decisions.
+
+preset:
+  id: growth
+  name: Growth
+
+selection:
+  # Values aligned to selection_gate_v1.py growth mode preset (2026-07).
+  # max_clips=6, min_confidence=0.55 were initial estimates; corrected here.
+  mode: growth
+  max_clips: 8
+  min_overall_potential: 6.0
+  min_confidence: 0.5
+  exploration_ratio: 0.2
+
+posting:
+  uploads_per_day: 4
+
+post_processing:
+  conveyor:
+    - render_clip_v1
+    - platform_safe_format_v1
+    - intelligent_captions_v1
+    - validation_v1
+    - metadata_writer_v1

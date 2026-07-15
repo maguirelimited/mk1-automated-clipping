@@ -1,0 +1,14 @@
+funnel:
+  id: gta_clips_002
+  name: GTA Clips 002
+  preset: balanced
+  enabled: true
+sources:
+  channels: []
+  rules: []
+selection:
+  preferred_topics: []
+  blocked_topics: []
+platforms:
+  enabled:
+  - youtube

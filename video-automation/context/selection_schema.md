@@ -1,5 +1,13 @@
 # `selection` schema
 
+**Selection upgrade guardrails:** MK1-first formalisation route, stage
+boundaries, and no-touch areas are documented in
+[`system-context/selection-upgrade/architecture-guardrails.md`](../../system-context/selection-upgrade/architecture-guardrails.md).
+
+**MK1 canonical candidate schema:** field definitions, stage ownership, and
+validation rules are documented in
+[`mk1_candidate_schema.md`](mk1_candidate_schema.md).
+
 The `selection` object on the `/jobs` request body is the per-run knob channel for the clipper. `pipeline_config.json` is the local default source of truth; request values override it for that job.
 
 This document lists every field that `_run_pipeline` (`server/app.py`) currently reads from `selection_policy`, including types, defaults, and downstream effect.
@@ -58,13 +66,13 @@ Minimal request body sent to `POST /jobs` after the source file has already been
 
 ## Clip-selection backend (`ai-service` integration)
 
-Clip selection has two judgement backends. The default is the existing inline
-OpenAI call in `scripts/select_clip.py`. The MK1 local backend routes the
-judgement call to the standalone `ai-service` instead.
+Clip selection has two judgement backends. The default is the local
+`ai-service` path (Ollama-backed clip judgement via `POST /ai/run`). The legacy
+`openai` backend uses the inline OpenAI call in `scripts/select_clip.py`.
 
 ```text
-selection_backend = "openai"      (default) -> inline OpenAI call
-selection_backend = "ai_service"            -> POST /ai/run task_type=clip_selection
+selection_backend = "ai_service"  (default) -> POST /ai/run task_type=clip_selection
+selection_backend = "openai"                  -> inline OpenAI call
 ```
 
 Resolution order (first definite value wins):
@@ -72,7 +80,7 @@ Resolution order (first definite value wins):
 1. `selection.selection_backend` on the request body (per-run override).
 2. Ops UI saved setting in the shared `controls.json` (`ai_config.clip_selection_backend`).
 3. `CLIP_SELECTION_BACKEND` environment variable.
-4. Default `openai`.
+4. Default `ai_service`.
 
 This is implemented in `scripts/ai_settings.py` (`resolve_clip_selection_backend`)
 and consumed by `scripts/select_clip.py`. The operator normally chooses the
@@ -87,7 +95,7 @@ resolves UI saved value → environment variable → built-in default.
 
 | Setting (UI) | Env var fallback | Default | Effect |
 |---|---|---|---|
-| `clip_selection_backend` | `CLIP_SELECTION_BACKEND` | `openai` | `ai_service` routes clip selection to the local `ai-service`. |
+| `clip_selection_backend` | `CLIP_SELECTION_BACKEND` | `ai_service` | `openai` uses the legacy inline OpenAI path; `ai_service` routes clip selection to the local `ai-service`. |
 | `ai_service_url` | `AI_SERVICE_URL` | `http://127.0.0.1:5075` | Base URL of the local `ai-service`. |
 | `ai_service_timeout_seconds` | `AI_SERVICE_TIMEOUT_SECONDS` | `180` | Per-request timeout for the `/ai/run` call. |
 
@@ -101,6 +109,32 @@ environment variable and then the default, so env-only setups keep working.
 MK1 has **no cloud fallback**: when `ai_service` is selected and the AI service
 fails, `video-automation` does not silently fall back to OpenAI and does not
 fabricate clip candidates.
+
+## MK1 section candidate discovery (processing pipeline)
+
+When `processing_pipeline_mode=mk1`, section-level raw candidate discovery is
+an AI-backed processing step separate from legacy clip selection above.
+
+**Prompt ownership:** `ai-service` builds the model prompt (base instructions,
+funnel-specific judgement rules, and request context) inside
+`POST /ai/run` for `task_type=section_candidate_discovery`. video-automation
+does not construct prompts in production.
+
+**video-automation responsibilities:** orchestration via
+`scripts/section_candidate_discovery.py` — HTTP client
+(`AiServiceSectionDiscoveryClient`), batching, candidate caps, boundary sanity,
+overlap deduplication, artifact writing, and local result validation.
+
+```text
+run_processing_pipeline()
+  -> AiServiceSectionDiscoveryClient.discover_section(section, config)
+  -> POST /ai/run  (structured input only; no prompt text from VA)
+  -> ai-service prompt builder + model + schema validation + semantic normalisation
+  -> video-automation post-processing on structured result
+```
+
+Tests should simulate ai-service responses with structured fake
+`discover_section()` clients, not local prompt builders.
 
 ### How `clip_selection` calls `ai-service`
 

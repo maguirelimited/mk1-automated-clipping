@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="overview-page run-monitor-page">
+  <header class="overview-intro">
+    <p class="muted">
+      <a href="{{ url_for('ops_overview') }}">← Operator Console</a>
+      ·
+      <a href="{{ url_for('ops_runs') }}">Runs</a>
+    </p>
+    <h2>Run <code>{{ run.run_id }}</code></h2>
+    <p class="muted">What happened during this run? Jump to related jobs, outputs, or failures.</p>
+  </header>
+
+  {% if run_next_steps %}
+  <article class="card overview-card">
+    <h3>Next steps</h3>
+    <nav class="console-links run-next-steps" aria-label="Run next steps">
+      {% for step in run_next_steps %}
+      <a class="console-link{% if loop.first %} console-link-primary{% endif %}" href="{{ step.href }}">{{ step.label }}</a>
+      {% endfor %}
+    </nav>
+  </article>
+  {% endif %}
+
+  <article class="card overview-card">
+    <h3>Run summary</h3>
+    <p class="overview-metric status-{{ 'ok' if run.status == 'SUCCESS' else ('bad' if run.status == 'FAIL' else ('warn' if run.status in ['SKIPPED', 'RUNNING'] else 'muted')) }}">
+      {{ run.status }}
+    </p>
+    <dl class="overview-dl">
+      <div><dt>Environment</dt><dd>{{ run.environment or "—" }}</dd></div>
+      <div><dt>Trigger</dt><dd>{{ run.trigger or "—" }}</dd></div>
+      <div><dt>Funnel</dt><dd>{{ run.funnel_id or "—" }}</dd></div>
+      <div><dt>Started</dt><dd>{{ run.started_at or "—" }}</dd></div>
+      <div><dt>Finished</dt><dd>{{ run.finished_at or "—" }}</dd></div>
+      <div>
+        <dt>Duration</dt>
+        <dd>
+          {% if run.duration_seconds is not none %}{{ run.duration_seconds }}s{% else %}—{% endif %}
+        </dd>
+      </div>
+      <div><dt>Jobs started</dt><dd>{{ run.jobs_started }}</dd></div>
+      <div><dt>Jobs completed</dt><dd>{{ run.jobs_completed }}</dd></div>
+      <div><dt>Jobs failed</dt><dd>{{ run.jobs_failed }}</dd></div>
+    </dl>
+  </article>
+
+  {% if run.failure_summary %}
+  <article class="card overview-card">
+    <h3>Failure</h3>
+    <p>{{ run.failure_summary.reason }}</p>
+    {% if run.failure_summary.suggested_next_inspection_target %}
+    <p class="muted">Suggested next: {{ run.failure_summary.suggested_next_inspection_target }}</p>
+    {% endif %}
+    <nav class="console-links">
+      <a class="console-link" href="{{ url_for('ops_failures') }}">Inspect failures</a>
+      <a class="console-link" href="{{ url_for('ops_jobs', state='failed') }}">View failed jobs</a>
+    </nav>
+  </article>
+  {% endif %}
+
+  <article class="card overview-card">
+    <h3>Related jobs</h3>
+    {% if run_jobs_load_error %}
+    <p class="muted">Jobs unavailable ({{ run_jobs_load_error }}).</p>
+    {% elif run_related_jobs %}
+    <table class="overview-table">
+      <thead>
+        <tr>
+          <th>Job</th>
+          <th>State</th>
+          <th>Stage</th>
+          <th>Funnel</th>
+          <th>Platform</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for job in run_related_jobs %}
+        <tr>
+          <td><a href="{{ job.inspector_href }}"><code>{{ job.job_id }}</code></a></td>
+          <td><span class="badge status-{{ job.state_tone }}">{{ job.state }}</span></td>
+          <td>{{ job.stage or "—" }}</td>
+          <td>{{ job.funnel or "—" }}</td>
+          <td>{{ job.platform or "—" }}</td>
+          <td class="console-run-links">
+            <a href="{{ job.inspector_href }}">Inspect</a>
+            {% if job.outputs_href %}
+            · <a href="{{ job.outputs_href }}">Outputs</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">
+      No jobs are linked to this run in the observability index.
+      Jobs appear here when their report includes this run ID.
+    </p>
+    <p class="console-section-link">
+      <a href="{{ run_related_jobs_fallback_href }}">Browse jobs</a>
+    </p>
+    {% endif %}
+  </article>
+
+  <article class="card overview-card">
+    <h3>Output shortcuts</h3>
+    <nav class="console-links">
+      {% for shortcut in run_output_shortcuts %}
+      <a class="console-link{% if loop.first %} console-link-primary{% endif %}" href="{{ shortcut.href }}">{{ shortcut.label }}</a>
+      {% endfor %}
+    </nav>
+  </article>
+</section>
+{% endblock %}

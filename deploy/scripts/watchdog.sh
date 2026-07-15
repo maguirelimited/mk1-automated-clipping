@@ -17,8 +17,16 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ $# -lt 1 || -z "${1:-}" ]]; then
+  echo "usage: watchdog.sh <environment>" >&2
+  echo "Environment required: dev | development | prod | production" >&2
+  exit 2
+fi
+
 # shellcheck disable=SC1091
-source "$SCRIPT_DIR/env.sh" "${1:-${MK04_ENV:-prod}}"
+source "$SCRIPT_DIR/env.sh" "$1"
+shift || true
 
 load_env_file "$MK04_SERVICE_ENV_DIR/output-funnel.env"
 if [[ "$MK04_ENV" == "dev" ]]; then

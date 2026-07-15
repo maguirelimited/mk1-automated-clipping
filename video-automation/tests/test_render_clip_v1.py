@@ -41,15 +41,16 @@ from post_processing_conveyor import (  # noqa: E402
     FIXED_MK1_CONVEYOR_MODULES,
     run_fixed_mk1_universal_conveyor,
 )
+from mk04_utils import ffprobe_duration_sec as mk04_ffprobe_duration_sec  # noqa: E402
 from render_clip_v1 import (  # noqa: E402
     MODULE_NAME,
     MODULE_VERSION,
     RenderClipV1Module,
     _make_output_path,
-    _probe_duration,
     _safe_filename_part,
     get_render_clip_v1_module,
 )
+import render_clip_v1  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +70,10 @@ requires_ffmpeg = pytest.mark.skipif(
     not FFTOOLS_AVAILABLE,
     reason="ffmpeg/ffprobe not installed — skipping real-render tests",
 )
+
+
+def test_render_clip_v1_uses_shared_mk04_ffprobe_duration_helper() -> None:
+    assert render_clip_v1.ffprobe_duration_sec is mk04_ffprobe_duration_sec
 
 
 # ---------------------------------------------------------------------------
@@ -192,9 +197,9 @@ def test_pass_result_is_prompt16_compatible(tmp_path):
     fake_video = _make_fake_video(str(tmp_path))
     ctx = _make_context(fake_video, clip_dir=str(tmp_path))
 
-    # Patch _probe_duration and subprocess.run so we don't need ffmpeg
+    # Patch ffprobe_duration_sec and subprocess.run so we don't need ffmpeg
     with patch("render_clip_v1.subprocess.run") as mock_run, \
-         patch("render_clip_v1._probe_duration") as mock_probe:
+         patch("render_clip_v1.ffprobe_duration_sec") as mock_probe:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         # Create an actual output file so the module finds it
         output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
@@ -228,7 +233,7 @@ def test_source_video_path_comes_from_input_path(tmp_path):
     ctx["source_video_path"] = "/wrong/path.mp4"
 
     with patch("render_clip_v1.subprocess.run") as mock_run, \
-         patch("render_clip_v1._probe_duration") as mock_probe:
+         patch("render_clip_v1.ffprobe_duration_sec") as mock_probe:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
         with open(output_path, "wb") as f:
@@ -247,7 +252,7 @@ def test_source_video_path_falls_back_to_context(tmp_path):
     ctx = _make_context(fake, clip_dir=str(tmp_path))
 
     with patch("render_clip_v1.subprocess.run") as mock_run, \
-         patch("render_clip_v1._probe_duration") as mock_probe:
+         patch("render_clip_v1.ffprobe_duration_sec") as mock_probe:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
         with open(output_path, "wb") as f:
@@ -406,7 +411,7 @@ def test_candidate_duration_sec_mismatch_creates_warning(tmp_path):
     cand["duration_sec"] = 99.0  # wildly wrong
 
     with patch("render_clip_v1.subprocess.run") as mock_run, \
-         patch("render_clip_v1._probe_duration") as mock_probe:
+         patch("render_clip_v1.ffprobe_duration_sec") as mock_probe:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
         with open(output_path, "wb") as f:
@@ -429,7 +434,7 @@ def test_output_clip_file_is_created(tmp_path):
     ctx = _make_context(fake, clip_dir=str(tmp_path))
 
     with patch("render_clip_v1.subprocess.run") as mock_run, \
-         patch("render_clip_v1._probe_duration") as mock_probe:
+         patch("render_clip_v1.ffprobe_duration_sec") as mock_probe:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
         with open(output_path, "wb") as f:
@@ -446,7 +451,7 @@ def test_output_clip_file_is_non_empty(tmp_path):
     ctx = _make_context(fake, clip_dir=str(tmp_path))
 
     with patch("render_clip_v1.subprocess.run") as mock_run, \
-         patch("render_clip_v1._probe_duration") as mock_probe:
+         patch("render_clip_v1.ffprobe_duration_sec") as mock_probe:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
         with open(output_path, "wb") as f:
@@ -461,7 +466,7 @@ def test_output_path_is_deterministic(tmp_path):
     fake = _make_fake_video(str(tmp_path))
 
     with patch("render_clip_v1.subprocess.run") as mock_run, \
-         patch("render_clip_v1._probe_duration") as mock_probe:
+         patch("render_clip_v1.ffprobe_duration_sec") as mock_probe:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
         with open(output_path, "wb") as f:
@@ -490,7 +495,7 @@ def test_clip_dir_is_created_if_missing(tmp_path):
     fake = _make_fake_video(str(tmp_path))
 
     with patch("render_clip_v1.subprocess.run") as mock_run, \
-         patch("render_clip_v1._probe_duration") as mock_probe:
+         patch("render_clip_v1.ffprobe_duration_sec") as mock_probe:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         output_path = _make_output_path(new_clip_dir, "job_test_001", "cand_001")
         os.makedirs(new_clip_dir, exist_ok=True)
@@ -512,7 +517,7 @@ def test_overwrite_true_replaces_existing(tmp_path):
         f.write(b"stale")
 
     with patch("render_clip_v1.subprocess.run") as mock_run, \
-         patch("render_clip_v1._probe_duration") as mock_probe:
+         patch("render_clip_v1.ffprobe_duration_sec") as mock_probe:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         with open(output_path, "wb") as f:
             f.write(b"\x00" * 512)
@@ -585,7 +590,7 @@ def test_duration_probe_failure_returns_fail(tmp_path):
     ctx = _make_context(fake, clip_dir=str(tmp_path))
 
     with patch("render_clip_v1.subprocess.run") as mock_run, \
-         patch("render_clip_v1._probe_duration") as mock_probe:
+         patch("render_clip_v1.ffprobe_duration_sec") as mock_probe:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
         with open(output_path, "wb") as f:
@@ -607,7 +612,7 @@ def test_pass_metadata_includes_timestamps(tmp_path):
     ctx = _make_context(fake, clip_dir=str(tmp_path))
 
     with patch("render_clip_v1.subprocess.run") as mock_run, \
-         patch("render_clip_v1._probe_duration") as mock_probe:
+         patch("render_clip_v1.ffprobe_duration_sec") as mock_probe:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
         with open(output_path, "wb") as f:
@@ -627,7 +632,7 @@ def test_pass_metadata_includes_output_file_size(tmp_path):
     ctx = _make_context(fake, clip_dir=str(tmp_path))
 
     with patch("render_clip_v1.subprocess.run") as mock_run, \
-         patch("render_clip_v1._probe_duration") as mock_probe:
+         patch("render_clip_v1.ffprobe_duration_sec") as mock_probe:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
         with open(output_path, "wb") as f:
@@ -654,7 +659,7 @@ def test_pass_result_is_json_serializable(tmp_path):
     ctx = _make_context(fake, clip_dir=str(tmp_path))
 
     with patch("render_clip_v1.subprocess.run") as mock_run, \
-         patch("render_clip_v1._probe_duration") as mock_probe:
+         patch("render_clip_v1.ffprobe_duration_sec") as mock_probe:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
         with open(output_path, "wb") as f:
@@ -681,7 +686,7 @@ def test_module_can_run_in_module_chain_as_first_module(tmp_path):
     ctx = _make_context(fake, clip_dir=str(tmp_path))
 
     with patch("render_clip_v1.subprocess.run") as mock_run, \
-         patch("render_clip_v1._probe_duration") as mock_probe:
+         patch("render_clip_v1.ffprobe_duration_sec") as mock_probe:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
         with open(output_path, "wb") as f:
@@ -732,7 +737,7 @@ def test_module_plugs_into_fixed_conveyor(tmp_path):
         registry[name] = _DummyDownstreamModule(name)
 
     with patch("render_clip_v1.subprocess.run") as mock_run, \
-         patch("render_clip_v1._probe_duration") as mock_probe:
+         patch("render_clip_v1.ffprobe_duration_sec") as mock_probe:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
         with open(output_path, "wb") as f:
@@ -781,7 +786,7 @@ def test_conveyor_passes_render_output_to_next_module(tmp_path):
         registry[name] = _DummyDownstreamModule(name)
 
     with patch("render_clip_v1.subprocess.run") as mock_run, \
-         patch("render_clip_v1._probe_duration") as mock_probe:
+         patch("render_clip_v1.ffprobe_duration_sec") as mock_probe:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
         with open(output_path, "wb") as f:

@@ -1,0 +1,291 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="overview-page inspector-page">
+  <header class="overview-intro">
+    <p class="muted">
+      <a href="{{ url_for('ops_overview') }}">← Operator Console</a>
+      ·
+      <a href="{{ url_for('ops_jobs') }}">Jobs</a>
+    </p>
+    <h2>Job Inspector <code>{{ job.job_id }}</code></h2>
+    <p class="muted">
+      What happened inside this job? Stages, artifacts, and failures from observability data.
+      Missing reports are shown explicitly — nothing is fabricated.
+    </p>
+    {% if job_loop_links %}
+    <nav class="console-links inspector-loop-links" aria-label="Daily loop navigation">
+      {% for link in job_loop_links %}
+      <a class="console-link{% if link.label == 'Operator Console' %} console-link-primary{% endif %}{% if 'Legacy' in link.label %} console-link-muted{% endif %}" href="{{ link.href }}">{{ link.label }}</a>
+      {% endfor %}
+    </nav>
+    {% endif %}
+  </header>
+
+  {# 1. Job summary #}
+  <article class="card overview-card">
+    <h3>Job summary</h3>
+    <dl class="overview-dl">
+      <div><dt>Job ID</dt><dd><code>{{ job.job_id }}</code></dd></div>
+      <div><dt>Run ID</dt><dd>
+        {% if job_run_id %}
+        <a href="{{ url_for('ops_run_detail', run_id=job_run_id) }}"><code>{{ job_run_id }}</code></a>
+        {% else %}
+        {{ job.summary.run_id or "Not available" }}
+        {% endif %}
+      </dd></div>
+      <div><dt>Environment</dt><dd>{{ job.summary.environment or "Not available" }}</dd></div>
+      <div><dt>Status</dt>
+        <dd>
+          <span class="badge status-{{ 'ok' if job.summary.state == 'completed' else ('bad' if job.summary.state == 'failed' else ('warn' if job.summary.state in ['running', 'queued'] else 'muted')) }}">
+            {{ job.summary.state }}
+          </span>
+        </dd>
+      </div>
+      <div><dt>Trigger</dt><dd>{{ job.trigger or "Not available" }}</dd></div>
+      <div><dt>Funnel</dt><dd>{{ job.summary.funnel or "Not available" }}</dd></div>
+      <div><dt>Platform</dt><dd>{{ job.summary.platform or "Not available" }}</dd></div>
+      <div><dt>Preset</dt><dd>{{ job.summary.preset or "Not available" }}</dd></div>
+      <div><dt>Current stage</dt><dd>{{ job.summary.stage or "Not available" }}</dd></div>
+      <div>
+        <dt>Runtime</dt>
+        <dd>
+          {% if job.summary.runtime_seconds is not none %}
+            {{ job.summary.runtime_seconds }}s
+          {% else %}
+            Not available
+          {% endif %}
+        </dd>
+      </div>
+      <div><dt>Created</dt><dd>{{ job.created_at or "Not available" }}</dd></div>
+      <div><dt>Started</dt><dd>{{ job.started_at or "Not available" }}</dd></div>
+      <div><dt>Finished</dt><dd>{{ job.finished_at or "Not available" }}</dd></div>
+    </dl>
+  </article>
+
+  {# 2. Pipeline timeline #}
+  <article class="card overview-card">
+    <h3>Pipeline timeline</h3>
+    {% if job.stage_timeline %}
+    <ol class="timeline-list">
+      {% for stage in job.stage_timeline %}
+      <li class="timeline-item timeline-{{ stage.result }}">
+        <div class="timeline-stage">{{ stage.stage.replace('_', ' ')|title }}</div>
+        <div class="timeline-result">
+          {% if stage.result == 'completed' %}✓{% elif stage.result == 'failed' %}✗{% elif stage.result == 'running' %}…{% elif stage.result == 'pending' %}○{% else %}?{% endif %}
+          {{ stage.result }}
+        </div>
+        <div class="timeline-detail muted">{{ stage.detail or "Not available" }}</div>
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="muted">Not available</p>
+    {% endif %}
+  </article>
+
+  {# 3. Artifacts #}
+  <article class="card overview-card">
+    <h3>Artifacts</h3>
+    {% if job.artifacts %}
+    <table class="overview-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Status</th>
+          <th>Location</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for artifact in job.artifacts %}
+        <tr>
+          <td>{{ artifact.artifact_type }}</td>
+          <td>
+            {% if artifact.exists %}
+            <span class="badge status-ok">exists</span>
+            {% else %}
+            <span class="badge status-muted">missing</span>
+            {% endif %}
+          </td>
+          <td class="muted"><code>{{ artifact.path or "Not available" }}</code></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">Not available</p>
+    {% endif %}
+
+    {% if job.logs %}
+    <h3 class="subheading">Logs</h3>
+    <ul class="plain-list">
+      {% for log in job.logs %}
+      <li>
+        {{ log.source }}
+        {% if log.path %}
+        — <code>{{ log.path }}</code>
+        <a href="{{ url_for('observability_job_logs', job_id=job.job_id) }}">view</a>
+        {% else %}
+        — Not available
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </article>
+
+  {# 4. Reports #}
+  <article class="card overview-card">
+    <h3>Reports</h3>
+    {% if job.report_summaries %}
+      {% for report in job.report_summaries %}
+      <section class="report-block">
+        <h4>
+          {{ report.report_type.replace('_', ' ')|title }}
+          {% if report.available %}
+          <span class="badge status-ok">available</span>
+          {% else %}
+          <span class="badge status-muted">missing</span>
+          {% endif %}
+        </h4>
+        {% if report.path %}
+        <p class="muted"><code>{{ report.path }}</code></p>
+        {% endif %}
+        {% if report.available and report.metrics %}
+        <dl class="overview-dl">
+          {% for key, value in report.metrics.items() %}
+          <div>
+            <dt>{{ key.replace('_', ' ') }}</dt>
+            <dd>
+              {% if value is sequence and value is not string %}
+                {{ value|join(', ') }}
+              {% else %}
+                {{ value }}
+              {% endif %}
+            </dd>
+          </div>
+          {% endfor %}
+        </dl>
+        {% else %}
+        <p class="muted">{{ report.detail or "Not available" }}</p>
+        {% endif %}
+      </section>
+      {% endfor %}
+    {% else %}
+    <p class="muted">Not available</p>
+    {% endif %}
+  </article>
+
+  {# 5. Failures / warnings #}
+  <article class="card overview-card">
+    <h3>Failures / warnings</h3>
+    {% if job.failures %}
+      {% for failure in job.failures %}
+      <section class="failure-block">
+        <h4>{{ (failure.stage or "Failure")|title }}</h4>
+        <dl class="overview-dl">
+          <div><dt>Module</dt><dd>{{ failure.component or "Not available" }}</dd></div>
+          <div><dt>Reason</dt><dd>{{ failure.reason or "Not available" }}</dd></div>
+          <div>
+            <dt>Suggested next</dt>
+            <dd>{{ failure.suggested_next_inspection_target or "Not available" }}</dd>
+          </div>
+        </dl>
+      </section>
+      {% endfor %}
+    {% else %}
+    <p>No failures recorded.</p>
+    {% endif %}
+
+    {% if job.warnings %}
+    <h3 class="subheading">Warnings</h3>
+    <ul class="plain-list">
+      {% for warning in job.warnings %}
+      <li>{{ warning.component }}: {{ warning.reason }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </article>
+
+  {# 6. Output summary #}
+  <article class="card overview-card">
+    <h3>Output summary</h3>
+    {% if job.output_summary %}
+    <dl class="overview-dl">
+      <div>
+        <dt>Outputs produced</dt>
+        <dd>
+          {% if job.output_summary.outputs_produced is not none %}
+            {{ job.output_summary.outputs_produced }}
+          {% else %}
+            Not available
+          {% endif %}
+        </dd>
+      </div>
+      <div>
+        <dt>Validation state</dt>
+        <dd>{{ job.output_summary.validation_state or "Not available" }}</dd>
+      </div>
+      <div>
+        <dt>Posting state</dt>
+        <dd>{{ job.output_summary.posting_state or "Not available" }}</dd>
+      </div>
+      <div>
+        <dt>Clips passed</dt>
+        <dd>
+          {% if job.output_summary.clips_passed is not none %}
+            {{ job.output_summary.clips_passed }}
+          {% else %}
+            Not available
+          {% endif %}
+        </dd>
+      </div>
+      <div>
+        <dt>Clips failed</dt>
+        <dd>
+          {% if job.output_summary.clips_failed is not none %}
+            {{ job.output_summary.clips_failed }}
+          {% else %}
+            Not available
+          {% endif %}
+        </dd>
+      </div>
+      {% if job_reframe_summary %}
+      <div>
+        <dt>Reframing</dt>
+        <dd>{{ job_reframe_summary }}</dd>
+      </div>
+      {% endif %}
+    </dl>
+    {% if job.clips %}
+    <h3 class="subheading">Output clips</h3>
+    <ul class="plain-list">
+      {% for clip in job.clips %}
+      <li>
+        <a href="{{ url_for('ops_output_detail', job_id=job.job_id, clip_id=clip.clip_id) }}">
+          <code>{{ clip.clip_id }}</code>
+        </a>
+        {% if clip.reframe and clip.reframe.badge %}
+        <span class="badge status-{{ clip.reframe.tone or 'muted' }}">{{ clip.reframe.badge }}</span>
+        {% if clip.reframe.reason %}
+        <span class="muted"> — {{ clip.reframe.reason }}</span>
+        {% endif %}
+        {% endif %}
+        — {{ clip.output_path or "Not available" }}
+      </li>
+      {% endfor %}
+    </ul>
+    <p class="muted">
+      <a href="{{ job_outputs_href }}">Browse outputs for this job</a>
+    </p>
+    {% else %}
+    <p class="muted">
+      <a href="{{ job_outputs_href }}">Browse outputs for this job</a>
+    </p>
+    {% endif %}
+    {% else %}
+    <p class="muted">Not available</p>
+    {% endif %}
+  </article>
+</section>
+{% endblock %}

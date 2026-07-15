@@ -10,7 +10,7 @@
     <span class="pill {{ status|status_class }}">{{ status }}</span>
   </div>
   <div class="actions">
-    <a class="button-link" href="{{ url_for('failed_jobs') }}">← Failed jobs</a>
+    <a class="button-link" href="{{ url_for('failed_jobs') }}">← Legacy failed jobs</a>
     <a class="button-link" href="{{ url_for('logs', job=job_id) }}">Filter service logs</a>
     {% if can_rerun %}
       <form method="post" action="{{ url_for('retry_video_job', job_id=job_id) }}">
@@ -39,6 +39,21 @@
     {% endif %}
   </div>
 </section>
+
+{% if execution_context %}
+<section class="card">
+  <div class="card-head"><h2>Execution context</h2><span class="muted">job provenance</span></div>
+  <dl>
+    <div><dt>Environment</dt><dd>{{ execution_context.environment or '—' }}</dd></div>
+    <div><dt>Job ID</dt><dd class="mono">{{ execution_context.job_id or '—' }}</dd></div>
+    <div><dt>Funnel</dt><dd>{{ execution_context.funnel_id or '—' }}</dd></div>
+    <div><dt>Platform</dt><dd>{{ execution_context.platform_id or '—' }}</dd></div>
+    <div><dt>Preset</dt><dd>{{ execution_context.preset_id or '—' }}</dd></div>
+    <div><dt>Code commit</dt><dd class="mono">{{ execution_context.code_commit or '—' }}</dd></div>
+    <div><dt>Resolved config</dt><dd class="mono">{{ execution_context.resolved_config_path or '—' }}</dd></div>
+  </dl>
+</section>
+{% endif %}
 
 {% if kind == 'upload' %}
 <section class="grid grid-2">
@@ -261,7 +276,7 @@
         </div>
         {% if clip.clip_file and clip.exists %}
           <video class="clip-player" controls preload="metadata"
-                 src="{{ url_for('clip_review_media', job_id=job_id, clip_file=clip.clip_file) }}">
+                 src="{{ url_for('ops_output_media', job_id=job_id, clip_id=clip.clip_id) if clip.clip_id else url_for('clip_review_media', job_id=job_id, clip_file=clip.clip_file) }}">
             Your browser does not support inline video playback.
           </video>
         {% endif %}
@@ -272,11 +287,11 @@
         </dl>
         <div class="actions">
           {% if clip.clip_id %}
-            <a class="button-link" href="{{ url_for('clip_review_detail', job_id=job_id, clip_id=clip.clip_id) }}">Inspect</a>
+            <a class="button-link" href="{{ url_for('ops_output_detail', job_id=job_id, clip_id=clip.clip_id) }}">Inspect</a>
           {% endif %}
           {% if clip.clip_file and clip.exists %}
             <a class="button-link" download="{{ clip.clip_file }}"
-               href="{{ url_for('clip_review_media', job_id=job_id, clip_file=clip.clip_file) }}?download=1">Download</a>
+               href="{{ url_for('ops_output_media', job_id=job_id, clip_id=clip.clip_id) if clip.clip_id else url_for('clip_review_media', job_id=job_id, clip_file=clip.clip_file) }}?download=1">Download</a>
           {% endif %}
         </div>
       </article>

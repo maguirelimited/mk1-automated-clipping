@@ -19,10 +19,16 @@ working unchanged.
 
 from __future__ import annotations
 
-import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
+
+_SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from shared.controls_file import read_controls_json, resolve_controls_path  # noqa: E402
 
 DEFAULT_CLIP_SELECTION_BACKEND = "ai_service"
 DEFAULT_AI_SERVICE_URL = "http://127.0.0.1:5075"
@@ -40,25 +46,12 @@ _FALSY = {"0", "false", "no", "off"}
 
 
 def controls_file_path() -> Path:
-    raw = os.environ.get("MK04_CONTROLS_FILE", "").strip()
-    if raw:
-        return Path(raw).expanduser()
-    # video-automation/scripts/ai_settings.py -> repo root is parents[2].
-    repo_root = Path(__file__).resolve().parents[2]
-    return repo_root / "ops-ui" / "data" / "controls.json"
+    return resolve_controls_path()
 
 
 def read_ai_config() -> dict[str, Any]:
     """Return the saved ``ai_config`` block, or ``{}`` on any problem."""
-    path = controls_file_path()
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
+    data = read_controls_json()
     block = data.get("ai_config")
     return block if isinstance(block, dict) else {}
 

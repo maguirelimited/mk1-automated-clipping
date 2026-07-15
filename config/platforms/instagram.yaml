@@ -1,0 +1,27 @@
+# config/platforms/instagram.yaml
+#
+# Platform configuration for Instagram Reels.
+# Do not include secrets, API tokens, or real account credentials here.
+
+platform:
+  id: instagram
+  name: Instagram Reels
+  enabled: false
+
+uploading:
+  enabled: false
+
+format:
+  aspect_ratio: "9:16"
+  width: 1080
+  height: 1920
+  max_duration_seconds: 90
+  title_max_length: 0   # Instagram Reels has no separate title field
+  caption_max_length: 2200
+
+accounts:
+  default_account_id: null
+
+posting:
+  default_hashtags: []
+  posting_windows: []

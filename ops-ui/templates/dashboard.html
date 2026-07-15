@@ -1,23 +1,45 @@
 {% extends "base.html" %}
 
 {% block content %}
+{% include "partials/_legacy_page_notice.html" %}
 <section class="card runtime-card">
   <div class="card-head">
     <div>
       <p class="eyebrow">runtime environment</p>
-      <h2>{{ runtime.environment|upper }} Mission Control</h2>
+      <h2>{{ env_summary.environment_label }} Mission Control</h2>
     </div>
     <div class="actions">
-      <span class="pill {{ 'bad' if runtime.upload_mode == 'real' else 'warn' }}">uploads: {{ runtime.upload_mode }}</span>
-      <span class="pill {{ 'ok' if runtime.scheduler_mode == 'autonomous' else 'muted' }}">scheduler: {{ runtime.scheduler_mode }}</span>
+      <span class="pill {{ 'bad' if env_summary.is_production else 'warn' }}">{{ env_summary.environment_label }}</span>
+      <span class="pill {{ 'ok' if env_summary.posting_config_enabled else 'muted' }}">{{ env_summary.posting_config_label }}</span>
+      <span class="pill {{ 'ok' if env_summary.config_validation_state == 'pass' else 'bad' }}">{{ env_summary.config_validation_message or ('Config validation: ' ~ env_summary.config_validation_state|upper) }}</span>
     </div>
   </div>
   <dl class="runtime-details">
+    <div><dt>MK04_ENV</dt><dd class="mono">{{ env_summary.mk04_env }}</dd></div>
+    <div><dt>Funnel / platform / preset</dt><dd>{{ env_summary.funnel_id }} / {{ env_summary.platform_id }} / {{ env_summary.preset_id }}</dd></div>
+    <div><dt>Runtime upload control</dt><dd>{{ env_summary.runtime_upload_control_label }}</dd></div>
+    <div><dt>Boot readiness</dt><dd>
+      <span class="pill {{ 'ok' if env_summary.boot_readiness == 'READY' else 'bad' if env_summary.boot_readiness == 'NOT READY' else 'muted' }}">
+        {{ env_summary.boot_readiness }}
+      </span>
+      {% if env_summary.boot_readiness_detail %}
+        <span class="muted">{{ env_summary.boot_readiness_detail }}</span>
+      {% endif %}
+    </dd></div>
+    <div><dt>Health state</dt><dd>{{ env_summary.health_state }}</dd></div>
+    <div><dt>Last update status</dt><dd>{{ env_summary.last_update_status }}{% if env_summary.last_update_finished_at != 'not_available' %} · {{ env_summary.last_update_finished_at }}{% endif %}{% if env_summary.last_update_commit != 'not_available' %} · commit {{ env_summary.last_update_commit }}{% endif %}</dd></div>
+    <div><dt>Jobs root</dt><dd class="mono">{{ env_summary.jobs_root }}</dd></div>
+    <div><dt>Outputs root</dt><dd class="mono">{{ env_summary.outputs_root }}</dd></div>
+    <div><dt>Database</dt><dd class="mono">{{ env_summary.database_path }}</dd></div>
+    <div><dt>Config root</dt><dd class="mono">{{ env_summary.config_root }}</dd></div>
+    <div><dt>Legacy config root</dt><dd class="mono">{{ runtime.config_root }}</dd></div>
     <div><dt>Code</dt><dd class="mono">{{ runtime.code_root }}</dd></div>
-    <div><dt>Config</dt><dd class="mono">{{ runtime.config_root }}</dd></div>
     <div><dt>Runtime</dt><dd class="mono">{{ runtime.runtime_root }}</dd></div>
     <div><dt>Controls</dt><dd class="mono">{{ runtime.controls_file }}</dd></div>
   </dl>
+  {% if env_summary.error %}
+    <p class="bad-text">{{ env_summary.error }}</p>
+  {% endif %}
 </section>
 
 <section class="grid grid-3">

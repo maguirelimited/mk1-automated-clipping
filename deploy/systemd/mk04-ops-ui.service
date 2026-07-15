@@ -1,6 +1,8 @@
 [Unit]
 Description=mk0.4 ops-ui control panel
-After=network-online.target mk04-output-funnel.service
+# Independent of pipeline peers so the UI can start and report dependency
+# failures rather than waiting on them.
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -9,11 +11,11 @@ User=mk04
 Group=mk04
 WorkingDirectory=/opt/mk04/prod/current/ops-ui
 Environment=MK04_ENV=prod
-EnvironmentFile=-/etc/mk04/prod/env
+EnvironmentFile=/etc/mk04/prod/env
 EnvironmentFile=-/etc/mk04/prod/services/ops-ui.env
 ExecStart=/opt/mk04/prod/current/deploy/scripts/run-ops-ui.sh prod
 Restart=always
-RestartSec=10
+RestartSec=5
 TimeoutStartSec=30
 TimeoutStopSec=30
 

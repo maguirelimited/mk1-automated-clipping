@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>mk04 Operations · Sign in</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='ops.css') }}">
+  </head>
+  <body class="login-body">
+    <main class="login-card card">
+      <p class="eyebrow">mk04 operations</p>
+      <h1>Operator sign in</h1>
+      <p class="muted">
+        Authentication is required before viewing or controlling the production system.
+      </p>
+
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <section class="flash-stack">
+            {% for category, message in messages %}
+              <div class="flash {{ category }}">{{ message }}</div>
+            {% endfor %}
+          </section>
+        {% endif %}
+      {% endwith %}
+
+      {% if not auth_enabled %}
+      <p class="flash warn">Authentication is disabled in this process (OPS_UI_AUTH_DISABLED).</p>
+      <p><a href="{{ url_for('ops_overview') }}">Continue to Operations</a></p>
+      {% else %}
+      <form method="post" action="{{ url_for('login_post') }}" class="login-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="next" value="{{ next_url }}">
+        <label class="filter-field">
+          <span>Operator password</span>
+          <input
+            type="password"
+            name="password"
+            autocomplete="current-password"
+            required
+            class="login-input"
+          >
+        </label>
+        <button type="submit" class="filter-submit">Sign in</button>
+      </form>
+      {% endif %}
+    </main>
+  </body>
+</html>

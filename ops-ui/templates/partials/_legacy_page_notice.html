@@ -1,0 +1,7 @@
+{# Canonical-path notice for legacy/advanced pages. Optional `legacy_notice_extra` block in parent. #}
+<p class="page-role-notice legacy-page-notice muted">
+  <strong>Advanced / legacy.</strong>
+  Daily operations use the <a href="{{ url_for('ops_overview') }}">Operator Console</a>
+  and modern <code>/ops/*</code> pages.
+  {% if legacy_notice_extra %}{{ legacy_notice_extra }}{% endif %}
+</p>

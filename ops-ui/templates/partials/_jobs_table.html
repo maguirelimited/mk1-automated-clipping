@@ -1,0 +1,68 @@
+<article class="card overview-card">
+  <div class="overview-card-header">
+    <h3>{{ title|default('Jobs') }}</h3>
+    {% if show_view_all|default(false) %}
+    <a href="{{ url_for('ops_jobs') }}">View all jobs</a>
+    {% endif %}
+  </div>
+  {% if jobs_error %}
+  <p class="muted">Jobs unavailable ({{ jobs_error }}).</p>
+  {% elif jobs %}
+  <table class="overview-table">
+    <thead>
+      <tr>
+        <th>Job ID</th>
+        <th>State</th>
+        <th>Stage</th>
+        <th>Funnel</th>
+        <th>Platform</th>
+        <th>Preset</th>
+        <th>Runtime</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr>
+        <td>
+          <a href="{{ url_for('ops_job_detail', job_id=job.job_id) }}"><code>{{ job.job_id }}</code></a>
+        </td>
+        <td>
+          <span class="badge status-{{ 'ok' if job.state == 'completed' else ('bad' if job.state == 'failed' else ('warn' if job.state in ['running', 'queued', 'needs_attention'] else 'muted')) }}">
+            {{ job.state }}
+          </span>
+        </td>
+        <td>{{ job.stage or "—" }}</td>
+        <td>{{ job.funnel or "—" }}</td>
+        <td>{{ job.platform or "—" }}</td>
+        <td>{{ job.preset or "—" }}</td>
+        <td>
+          {% if job.runtime_seconds is not none %}
+            {{ job.runtime_seconds }}s
+          {% else %}
+            —
+          {% endif %}
+        </td>
+        <td>
+          <a href="{{ url_for('ops_job_detail', job_id=job.job_id) }}">Inspect</a>
+          {% if job.state == 'failed' %}
+          · <a href="{{ url_for('ops_failures') }}">Failures</a>
+          {% elif job.state == 'completed' and job.outputs_href %}
+          · <a href="{{ job.outputs_href }}">Outputs</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% elif jobs_empty %}
+  <p class="muted">No jobs match the current filters.</p>
+  <p class="console-section-link">
+    <a href="{{ url_for('ops_overview') }}">Operator Console</a>
+    ·
+    <a href="{{ url_for('ops_jobs', state='failed') }}">Jobs (failed filter)</a>
+  </p>
+  {% else %}
+  <p class="muted">Unavailable while disconnected.</p>
+  {% endif %}
+</article>

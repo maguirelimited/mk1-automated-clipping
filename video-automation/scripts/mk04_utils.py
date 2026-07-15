@@ -105,6 +105,60 @@ def ensure_paths(config: dict[str, Any]) -> dict[str, str]:
     return resolved
 
 
+def assert_config_manager_pipeline_path_agreement(config: dict[str, Any] | None = None) -> None:
+    """
+    Require ConfigManager jobs/outputs roots to match PIPELINE_CONFIG_PATH.
+
+    Production mismatches fail closed. Skipped when ConfigManager cannot load
+    (local unit tests without a config tree) unless MK04_REQUIRE_RUNTIME_PATHS=1.
+    """
+    import sys
+    from pathlib import Path
+
+    cfg = config if isinstance(config, dict) else load_config()
+    pipeline = resolve_paths(cfg)
+    pipeline_jobs = Path(pipeline["jobs"]).resolve()
+    pipeline_output = Path(pipeline["output"]).resolve()
+
+    repo_root = Path(PROJECT_ROOT).resolve()
+    # Prefer MK04_CODE_ROOT when deployed (video-automation may live under code root).
+    code_root = os.environ.get("MK04_CODE_ROOT", "").strip()
+    if code_root:
+        repo_root = Path(code_root).expanduser().resolve()
+
+    scripts_config = repo_root / "scripts" / "config"
+    if str(scripts_config) not in sys.path:
+        sys.path.insert(0, str(scripts_config))
+
+    production = (os.environ.get("MK04_ENV") or "").strip().lower() in {
+        "prod",
+        "production",
+    }
+    require = production or os.environ.get("MK04_REQUIRE_RUNTIME_PATHS", "").strip() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+    try:
+        from config_manager import ConfigManager  # noqa: PLC0415
+        from runtime_paths import assert_pipeline_config_agrees  # noqa: PLC0415
+
+        resolved = ConfigManager.load(config_root=repo_root / "config")
+        assert_pipeline_config_agrees(
+            config_manager_jobs=resolved.paths.jobs_root,
+            config_manager_outputs=resolved.paths.outputs_root,
+            pipeline_jobs=pipeline_jobs,
+            pipeline_outputs=pipeline_output,
+            production=require,
+        )
+    except Exception as exc:
+        if require:
+            raise RuntimeError(
+                f"PIPELINE_CONFIG_PATH / ConfigManager path agreement failed: {exc}"
+            ) from exc
+
+
 DEFAULT_FFPROBE_TIMEOUT_SEC = 30
 
 
@@ -493,6 +547,9 @@ def create_job_paths(
         "task_path": os.path.join(job_dir, "task.json"),
         "analytics_path": os.path.join(job_dir, "analytics.json"),
         "review_path": os.path.join(job_dir, "review.md"),
+        # Added in Prompt 5 (Execution Context):
+        "resolved_config_path": os.path.join(job_dir, "resolved_config.yaml"),
+        "execution_context_path": os.path.join(job_dir, "execution_context.json"),
     }
 
 

@@ -5,19 +5,34 @@ _MK04_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _MK04_SCRIPT_ROOT="$(cd "$_MK04_SCRIPT_DIR/../.." && pwd)"
 _MK04_ENV_ARG="${1:-}"
 
-if [[ -n "$_MK04_ENV_ARG" && "$_MK04_ENV_ARG" != "dev" && "$_MK04_ENV_ARG" != "prod" ]]; then
-  echo "Invalid mk04 environment: $_MK04_ENV_ARG (expected dev or prod)" >&2
-  exit 2
-fi
+# Canonical runtime environment tokens: dev | prod.
+# Accepts aliases development|production and normalizes immediately.
+normalize_mk04_runtime_env() {
+  local raw="${1:-}"
+  case "${raw,,}" in
+    dev|development)
+      echo "dev"
+      ;;
+    prod|production)
+      echo "prod"
+      ;;
+    *)
+      echo "Invalid environment: ${raw:-<missing>}. Expected dev, development, prod, or production." >&2
+      return 1
+      ;;
+  esac
+}
 
-export MK04_ENV="${_MK04_ENV_ARG:-${MK04_ENV:-dev}}"
-case "$MK04_ENV" in
-  dev|prod) ;;
-  *)
-    echo "Invalid MK04_ENV=$MK04_ENV (expected dev or prod)" >&2
-    exit 2
-    ;;
-esac
+if [[ -n "$_MK04_ENV_ARG" ]]; then
+  MK04_ENV="$(normalize_mk04_runtime_env "$_MK04_ENV_ARG")" || exit 2
+elif [[ -n "${MK04_ENV:-}" ]]; then
+  MK04_ENV="$(normalize_mk04_runtime_env "$MK04_ENV")" || exit 2
+else
+  # Intentional documented library default for deploy helpers: development.
+  # Never defaults to production.
+  MK04_ENV="dev"
+fi
+export MK04_ENV
 
 load_env_file() {
   local file="$1"
@@ -90,6 +105,83 @@ _mk04_realpath() {
     return
   fi
   printf '%s\n' "$1"
+}
+
+# Production layout roots. MK04_PROD_BASE is a hermetic test injection hook only;
+# production defaults remain /opt/mk04/prod. Not a safety bypass.
+: "${MK04_PROD_BASE:=/opt/mk04/prod}"
+_MK04_PROD_CURRENT="${MK04_PROD_BASE%/}/current"
+_MK04_PROD_RELEASES="${MK04_PROD_BASE%/}/releases"
+
+_mk04_resolve_active_release() {
+  # Physical active release: resolved target of the logical current symlink.
+  # Fails closed unless current is a symlink into ${_MK04_PROD_RELEASES}/<id>.
+  local current="$_MK04_PROD_CURRENT"
+  local releases_root="$_MK04_PROD_RELEASES"
+  local releases=""
+  local target=""
+
+  [[ -e "$current" || -L "$current" ]] || return 1
+  [[ -L "$current" ]] || return 2
+  [[ -d "$releases_root" ]] || return 4
+  releases="$(_mk04_realpath "$releases_root")"
+  if ! target="$(readlink -f "$current" 2>/dev/null)"; then
+    return 3
+  fi
+  [[ -n "$target" && -d "$target" ]] || return 3
+  case "$target" in
+    "$releases"/*)
+      # Reject the releases directory itself; require a single release child.
+      local rel="${target#"$releases"/}"
+      [[ -n "$rel" && "$rel" != *"/"* ]] || return 4
+      printf '%s\n' "$target"
+      return 0
+      ;;
+    *)
+      return 5
+      ;;
+  esac
+}
+
+_mk04_assert_prod_deployment_root() {
+  # Logical entry: ${_MK04_PROD_CURRENT}
+  # Physical active release: resolved current target under ${_MK04_PROD_RELEASES}/
+  # Executing code (script root + MK04_CODE_ROOT) must resolve to that exact target.
+  local active=""
+  local rc=0
+  local code_logical code_real script_real
+
+  active="$(_mk04_resolve_active_release)" && rc=0 || rc=$?
+  case "$rc" in
+    0) ;;
+    1) _mk04_fail_prod_preflight "missing production current entry: $_MK04_PROD_CURRENT" ;;
+    2) _mk04_fail_prod_preflight "$_MK04_PROD_CURRENT must be a symlink (got a real directory or non-link)" ;;
+    3) _mk04_fail_prod_preflight "broken or unresolvable production current symlink: $_MK04_PROD_CURRENT" ;;
+    4) _mk04_fail_prod_preflight "production current must point at a release directory under $_MK04_PROD_RELEASES/" ;;
+    5) _mk04_fail_prod_preflight "production current symlink must target under $_MK04_PROD_RELEASES/ (got $(readlink -f "$_MK04_PROD_CURRENT" 2>/dev/null || readlink "$_MK04_PROD_CURRENT" 2>/dev/null || echo unknown))" ;;
+    *) _mk04_fail_prod_preflight "unable to resolve active production release (rc=$rc)" ;;
+  esac
+
+  code_logical="${MK04_CODE_ROOT%/}"
+  [[ "$code_logical" == "$_MK04_PROD_CURRENT" ]] || _mk04_fail_prod_preflight \
+    "MK04_CODE_ROOT must be the logical deployment entry $_MK04_PROD_CURRENT (got ${MK04_CODE_ROOT:-<empty>})"
+
+  code_real="$(_mk04_realpath "$MK04_CODE_ROOT")"
+  script_real="$(_mk04_realpath "$_MK04_SCRIPT_ROOT")"
+
+  [[ "$code_real" == "$active" ]] || _mk04_fail_prod_preflight \
+    "MK04_CODE_ROOT physical path must be the active release $active (got $code_real)"
+  [[ "$script_real" == "$active" ]] || _mk04_fail_prod_preflight \
+    "run prod only from the active release via $_MK04_PROD_CURRENT (script root physical: $script_real; active: $active)"
+
+  case "$code_real" in
+    /Users/*|/home/*)
+      _mk04_fail_prod_preflight "refusing active user checkout: $code_real"
+      ;;
+  esac
+
+  # Export for callers/diagnostics (non-secret).
+  export MK04_ACTIVE_RELEASE="$active"
 }
 
 _mk04_export_service_urls() {
@@ -165,7 +257,8 @@ mk04_export_runtime() {
       output_port=5055
       ops_port=5070
       ai_port=5075
-      scheduler_mode="autonomous"
+      # First-bootstrap / unscheduled default. Cron install is deliberate and separate.
+      scheduler_mode="manual"
       ;;
   esac
 
@@ -205,6 +298,23 @@ mk04_export_runtime() {
   export OUTPUT_FUNNEL_DB="${OUTPUT_FUNNEL_DB:-$MK04_RUNTIME_ROOT/output-funnel/output_funnel.sqlite3}"
   export MK04_UPLOAD_MODE="${MK04_UPLOAD_MODE:-dry_run}"
 
+  # Derived transport mirror of YAML uploading.enabled — never an operator override.
+  _mk04_py="${PYTHON_BIN:-$MK04_CODE_ROOT/video-automation/.venv/bin/python}"
+  [[ -x "$_mk04_py" ]] || _mk04_py="$(command -v python3 2>/dev/null || true)"
+  _mk04_upload_cfg="false"
+  if [[ -n "$_mk04_py" ]]; then
+    _mk04_upload_cfg="$("$_mk04_py" "$MK04_CODE_ROOT/scripts/config/config_manager.py" \
+      --env "$MK04_ENV" --print-json 2>/dev/null | "$_mk04_py" -c \
+      'import json,sys
+try:
+    d=json.load(sys.stdin)
+    print("true" if d.get("uploading_enabled") else "false")
+except Exception:
+    print("false")' 2>/dev/null || echo false)"
+  fi
+  export MK04_CONFIG_UPLOAD_ENABLED="${_mk04_upload_cfg:-false}"
+  unset _mk04_py _mk04_upload_cfg
+
   export OPS_UI_DATA_DIR="${OPS_UI_DATA_DIR:-$MK04_RUNTIME_ROOT/ops-ui}"
   export OPS_UI_DB="${OPS_UI_DB:-$OPS_UI_DATA_DIR/ops_ui.sqlite3}"
   export MK04_CONTROLS_FILE="${MK04_CONTROLS_FILE:-$OPS_UI_DATA_DIR/controls.json}"
@@ -212,16 +322,55 @@ mk04_export_runtime() {
   export OPS_OUTPUT_FUNNEL_DB="${OPS_OUTPUT_FUNNEL_DB:-$OUTPUT_FUNNEL_DB}"
   export OPS_UI_LOG_DIR="${OPS_UI_LOG_DIR:-$MK04_LOG_ROOT/ops-ui}"
 
+  # Canonical mutable-state path authority (Prompt 3).
+  # Production: all mutable categories under /var/lib (logs under /var/log).
+  # Development hybrid: jobs/outputs under runtime; orchestration under code root.
+  export MK04_JOBS_ROOT="${MK04_JOBS_ROOT:-$MK04_RUNTIME_ROOT/video-automation/jobs}"
+  export MK04_OUTPUTS_ROOT="${MK04_OUTPUTS_ROOT:-$MK04_RUNTIME_ROOT/video-automation/output}"
+  if [[ "$MK04_ENV" == "prod" ]]; then
+    export MK04_DATA_ROOT="${MK04_DATA_ROOT:-$MK04_RUNTIME_ROOT/data}"
+    export MK04_RUNS_ROOT="${MK04_RUNS_ROOT:-$MK04_RUNTIME_ROOT/runs}"
+    export MK04_REPORTS_ROOT="${MK04_REPORTS_ROOT:-$MK04_RUNTIME_ROOT/reports}"
+    export MK04_DATABASE_PATH="${MK04_DATABASE_PATH:-$MK04_RUNTIME_ROOT/database/prod.db}"
+    export MK04_REQUIRE_RUNTIME_PATHS="${MK04_REQUIRE_RUNTIME_PATHS:-1}"
+  else
+    export MK04_DATA_ROOT="${MK04_DATA_ROOT:-$MK04_CODE_ROOT/data/dev}"
+    export MK04_RUNS_ROOT="${MK04_RUNS_ROOT:-$MK04_CODE_ROOT/runs/dev}"
+    export MK04_REPORTS_ROOT="${MK04_REPORTS_ROOT:-$MK04_CODE_ROOT/reports/dev}"
+    export MK04_DATABASE_PATH="${MK04_DATABASE_PATH:-$MK04_CODE_ROOT/database/dev.db}"
+  fi
+  export MK04_LOGS_ROOT="${MK04_LOGS_ROOT:-$MK04_LOG_ROOT}"
+  export MK04_CONTROL_STATE_FILE="${MK04_CONTROL_STATE_FILE:-$MK04_DATA_ROOT/control_state.json}"
+  export AI_SERVICE_LOG_DIR="${AI_SERVICE_LOG_DIR:-$MK04_LOG_ROOT/ai-service}"
+
+  # Cross-environment execution gate (Prompt 4).
+  # Preserve an operator-supplied MK04_SHARED_LOCK_ROOT.
+  # Production defaults to the deployed shared root (preflight verifies it).
+  # Development: use the deployed root only when it already exists and is writable;
+  # otherwise leave unset so Python may use $MK04_CODE_ROOT/.mk04_locks before bootstrap.
+  #
+  # MK04_DEPLOYED_LOCK_ROOT is a path-injection hook for hermetic tests (defaults to
+  # /var/lib/mk04/locks). It only affects the *dev* "is deployed root usable?" probe —
+  # it is not a production safety bypass; prod still hard-defaults to /var/lib/mk04/locks.
+  if [[ -n "${MK04_SHARED_LOCK_ROOT:-}" ]]; then
+    export MK04_SHARED_LOCK_ROOT
+  elif [[ "$MK04_ENV" == "prod" ]]; then
+    export MK04_SHARED_LOCK_ROOT="/var/lib/mk04/locks"
+  else
+    _mk04_deployed_lock_root="${MK04_DEPLOYED_LOCK_ROOT:-/var/lib/mk04/locks}"
+    if [[ -d "$_mk04_deployed_lock_root" && -w "$_mk04_deployed_lock_root" ]]; then
+      export MK04_SHARED_LOCK_ROOT="$_mk04_deployed_lock_root"
+    else
+      unset MK04_SHARED_LOCK_ROOT || true
+    fi
+  fi
+
   export WATCHDOG_LOG_DIR="${WATCHDOG_LOG_DIR:-$MK04_LOG_ROOT/watchdog}"
   export MK04_SCHEDULER_MODE="${MK04_SCHEDULER_MODE:-$scheduler_mode}"
 
-  if [[ "$MK04_ENV" == "prod" ]]; then
-    export OUTPUT_FUNNEL_PLAN_WORKER_ENABLED="${OUTPUT_FUNNEL_PLAN_WORKER_ENABLED:-1}"
-    export OUTPUT_FUNNEL_UPLOAD_WORKER_ENABLED="${OUTPUT_FUNNEL_UPLOAD_WORKER_ENABLED:-1}"
-  else
-    export OUTPUT_FUNNEL_PLAN_WORKER_ENABLED="${OUTPUT_FUNNEL_PLAN_WORKER_ENABLED:-0}"
-    export OUTPUT_FUNNEL_UPLOAD_WORKER_ENABLED="${OUTPUT_FUNNEL_UPLOAD_WORKER_ENABLED:-0}"
-  fi
+  # Safe first-bootstrap defaults: plan and upload workers off until deliberately armed.
+  export OUTPUT_FUNNEL_PLAN_WORKER_ENABLED="${OUTPUT_FUNNEL_PLAN_WORKER_ENABLED:-0}"
+  export OUTPUT_FUNNEL_UPLOAD_WORKER_ENABLED="${OUTPUT_FUNNEL_UPLOAD_WORKER_ENABLED:-0}"
   export OUTPUT_FUNNEL_AUTO_SCHEDULE="${OUTPUT_FUNNEL_AUTO_SCHEDULE:-1}"
   export OUTPUT_FUNNEL_AUTO_UPLOAD="${OUTPUT_FUNNEL_AUTO_UPLOAD:-0}"
   export OUTPUT_FUNNEL_AUTO_SCHEDULE_LIMIT="${OUTPUT_FUNNEL_AUTO_SCHEDULE_LIMIT:-50}"
@@ -240,26 +389,25 @@ mk04_export_runtime() {
 mk04_prod_preflight() {
   [[ "$MK04_ENV" == "prod" ]] || return 0
 
-  local script_root_real code_root_real
-  script_root_real="$(_mk04_realpath "$_MK04_SCRIPT_ROOT")"
-  code_root_real="$(_mk04_realpath "$MK04_CODE_ROOT")"
+  _mk04_assert_prod_deployment_root
 
-  [[ "$code_root_real" == "/opt/mk04/prod/current" ]] || _mk04_fail_prod_preflight "MK04_CODE_ROOT must resolve to /opt/mk04/prod/current (got $code_root_real)"
-  [[ "$script_root_real" == "$code_root_real" ]] || _mk04_fail_prod_preflight "run prod only from deployed copy at $MK04_CODE_ROOT (script root: $_MK04_SCRIPT_ROOT)"
-  case "$code_root_real" in
-    /Users/*) _mk04_fail_prod_preflight "refusing active user checkout: $code_root_real" ;;
-  esac
-
-  _mk04_assert_prod_path MK04_CODE_ROOT "$MK04_CODE_ROOT" "/opt/mk04/prod/current"
-  _mk04_assert_prod_path MK04_ROOT "$MK04_ROOT" "/opt/mk04/prod/current"
+  _mk04_assert_prod_path MK04_CODE_ROOT "$MK04_CODE_ROOT" "$_MK04_PROD_CURRENT"
+  _mk04_assert_prod_path MK04_ROOT "$MK04_ROOT" "$_MK04_PROD_CURRENT"
   _mk04_assert_prod_path MK04_CONFIG_ROOT "$MK04_CONFIG_ROOT" "/etc/mk04/prod"
   _mk04_assert_prod_path MK04_RUNTIME_ROOT "$MK04_RUNTIME_ROOT" "/var/lib/mk04/prod"
   _mk04_assert_prod_path MK04_LOG_ROOT "$MK04_LOG_ROOT" "/var/log/mk04/prod"
-  _mk04_assert_prod_path INPUT_SERVICE_ROOT "$INPUT_SERVICE_ROOT" "/opt/mk04/prod/current"
+  _mk04_assert_prod_path MK04_DATA_ROOT "$MK04_DATA_ROOT" "/var/lib/mk04/prod"
+  _mk04_assert_prod_path MK04_JOBS_ROOT "$MK04_JOBS_ROOT" "/var/lib/mk04/prod"
+  _mk04_assert_prod_path MK04_OUTPUTS_ROOT "$MK04_OUTPUTS_ROOT" "/var/lib/mk04/prod"
+  _mk04_assert_prod_path MK04_RUNS_ROOT "$MK04_RUNS_ROOT" "/var/lib/mk04/prod"
+  _mk04_assert_prod_path MK04_REPORTS_ROOT "$MK04_REPORTS_ROOT" "/var/lib/mk04/prod"
+  _mk04_assert_prod_path MK04_CONTROL_STATE_FILE "$MK04_CONTROL_STATE_FILE" "/var/lib/mk04/prod"
+  _mk04_assert_prod_path AI_SERVICE_LOG_DIR "$AI_SERVICE_LOG_DIR" "/var/log/mk04/prod"
+  _mk04_assert_prod_path INPUT_SERVICE_ROOT "$INPUT_SERVICE_ROOT" "$_MK04_PROD_CURRENT"
   _mk04_assert_prod_path INPUT_SERVICE_CONFIG_DIR "$INPUT_SERVICE_CONFIG_DIR" "/etc/mk04/prod"
   _mk04_assert_prod_path INPUT_SERVICE_DATA_DIR "$INPUT_SERVICE_DATA_DIR" "/var/lib/mk04/prod"
   _mk04_assert_prod_path INPUT_JOB_LEDGER_DIR "$INPUT_JOB_LEDGER_DIR" "/var/lib/mk04/prod"
-  _mk04_assert_prod_path VIDEO_AUTOMATION_PROJECT_ROOT "$VIDEO_AUTOMATION_PROJECT_ROOT" "/opt/mk04/prod/current"
+  _mk04_assert_prod_path VIDEO_AUTOMATION_PROJECT_ROOT "$VIDEO_AUTOMATION_PROJECT_ROOT" "$_MK04_PROD_CURRENT"
   _mk04_assert_prod_path VIDEO_AUTOMATION_INPUT_DIR "$VIDEO_AUTOMATION_INPUT_DIR" "/var/lib/mk04/prod"
   _mk04_assert_prod_path PIPELINE_CONFIG_PATH "$PIPELINE_CONFIG_PATH" "/etc/mk04/prod"
   _mk04_assert_prod_path VIDEO_PIPELINE_PROFILES_PATH "$VIDEO_PIPELINE_PROFILES_PATH" "/etc/mk04/prod"
@@ -280,10 +428,15 @@ mk04_prod_preflight() {
   _mk04_assert_prod_path OPS_OUTPUT_FUNNEL_DB "$OPS_OUTPUT_FUNNEL_DB" "/var/lib/mk04/prod"
   _mk04_assert_prod_path OPS_UI_LOG_DIR "$OPS_UI_LOG_DIR" "/var/log/mk04/prod"
   _mk04_assert_prod_path WATCHDOG_LOG_DIR "$WATCHDOG_LOG_DIR" "/var/log/mk04/prod"
+  _mk04_assert_prod_path MK04_SHARED_LOCK_ROOT "$MK04_SHARED_LOCK_ROOT" "/var/lib/mk04/locks"
+  [[ -d "$MK04_SHARED_LOCK_ROOT" ]] || _mk04_fail_prod_preflight "MK04_SHARED_LOCK_ROOT does not exist: $MK04_SHARED_LOCK_ROOT (complete production bootstrap)"
+  [[ -w "$MK04_SHARED_LOCK_ROOT" ]] || _mk04_fail_prod_preflight "MK04_SHARED_LOCK_ROOT is not writable: $MK04_SHARED_LOCK_ROOT (fix mk04 group permissions / ACLs)"
 
   local name
   for name in \
     MK04_CODE_ROOT MK04_ROOT MK04_CONFIG_ROOT MK04_RUNTIME_ROOT MK04_LOG_ROOT \
+    MK04_DATA_ROOT MK04_JOBS_ROOT MK04_OUTPUTS_ROOT MK04_RUNS_ROOT MK04_REPORTS_ROOT \
+    MK04_CONTROL_STATE_FILE AI_SERVICE_LOG_DIR \
     INPUT_SERVICE_ROOT INPUT_SERVICE_CONFIG_DIR INPUT_SERVICE_DATA_DIR INPUT_JOB_LEDGER_DIR \
     VIDEO_AUTOMATION_PROJECT_ROOT VIDEO_AUTOMATION_INPUT_DIR PIPELINE_CONFIG_PATH VIDEO_PIPELINE_PROFILES_PATH \
     VIDEO_FUNNELS_CONFIG_DIR FUNNEL_CONFIG_DIR OUTPUT_FUNNEL_CONFIG_DIR OUTPUT_FUNNEL_SETTINGS \
@@ -322,7 +475,7 @@ case "$MK04_ENV" in
     export MK04_CODE_ROOT="${MK04_CODE_ROOT:-$_MK04_SCRIPT_ROOT}"
     ;;
   prod)
-    export MK04_CODE_ROOT="${MK04_CODE_ROOT:-/opt/mk04/prod/current}"
+    export MK04_CODE_ROOT="${MK04_CODE_ROOT:-$_MK04_PROD_CURRENT}"
     ;;
 esac
 
@@ -333,18 +486,8 @@ export MK04_LOG_ROOT="${MK04_LOG_ROOT:-/var/log/mk04/$MK04_ENV}"
 load_env_file "$MK04_CONFIG_ROOT/env"
 
 if [[ "$MK04_ENV" == "prod" ]]; then
-  _script_root_real="$(_mk04_realpath "$_MK04_SCRIPT_ROOT")"
-  _code_root_real="$(_mk04_realpath "$MK04_CODE_ROOT")"
-  if [[ "$_script_root_real" != "$_code_root_real" ]]; then
-    echo "Refusing prod runtime from $_MK04_SCRIPT_ROOT; run deployed copy at $MK04_CODE_ROOT" >&2
-    exit 2
-  fi
-  case "$_code_root_real" in
-    /Users/*)
-      echo "Refusing prod runtime from active user checkout: $_code_root_real" >&2
-      exit 2
-      ;;
-  esac
+  # Early checkout / stale-release guard (same logical/physical contract as preflight).
+  _mk04_assert_prod_deployment_root
 fi
 
 mk04_export_runtime

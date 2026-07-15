@@ -553,11 +553,11 @@ def run_retention_cleanup(
     ]
 
     # Pass the same runtime root the preview walked so execution targets the
-    # identical tree. With sudo removed, this env propagates reliably to the
-    # script.
+    # identical tree. Assign (do not setdefault) so explicit Settings always
+    # win over inherited live-development paths in the process environment.
     sweep_env = dict(os.environ)
     sweep_env["MK04_ENV"] = env_name
-    sweep_env.setdefault("MK04_RUNTIME_ROOT", str(settings.runtime_root))
+    sweep_env["MK04_RUNTIME_ROOT"] = str(settings.runtime_root)
     return _run(command, timeout=timeout, env=sweep_env)
 
 

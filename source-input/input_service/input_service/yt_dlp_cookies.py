@@ -16,9 +16,12 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .log_util import detail
+
 log = logging.getLogger(__name__)
 
 _TRUTHY = {"1", "true", "yes", "on", "deno"}
+_AUTH_SUMMARY_LOGGED = False
 
 
 def _env(name: str) -> str:
@@ -56,9 +59,7 @@ def resolve_yt_dlp_cookiefile() -> str | None:
             path,
         )
         return None
-    resolved = str(path.resolve())
-    log.info("yt-dlp will use Netscape cookies from %s", resolved)
-    return resolved
+    return str(path.resolve())
 
 
 def resolve_yt_dlp_browser_cookies() -> tuple[str, str | None, str | None, str | None] | None:
@@ -66,9 +67,7 @@ def resolve_yt_dlp_browser_cookies() -> tuple[str, str | None, str | None, str |
     raw = _env("YT_DLP_COOKIES_FROM_BROWSER")
     if not raw:
         return None
-    spec = _parse_browser_spec(raw)
-    log.info("yt-dlp will load cookies from browser %s", spec[0])
-    return spec
+    return _parse_browser_spec(raw)
 
 
 def resolve_yt_dlp_js_runtimes() -> dict[str, dict[str, str]] | None:
@@ -81,9 +80,7 @@ def resolve_yt_dlp_js_runtimes() -> dict[str, dict[str, str]] | None:
     if runtime == "deno" or use_deno:
         deno_path = _env("YT_DLP_DENO_PATH")
         if deno_path:
-            log.info("yt-dlp will use Deno JavaScript runtime at %s", deno_path)
             return {"deno": {"path": deno_path}}
-        log.info("yt-dlp will use Deno JavaScript runtime from PATH")
         return {"deno": {}}
     return None
 
@@ -101,27 +98,55 @@ def resolve_yt_dlp_remote_components() -> list[str]:
     return ["ejs:github"]
 
 
+def _auth_mode_label(
+    *,
+    browser: tuple[str, str | None, str | None, str | None] | None,
+    cookiefile: str | None,
+    js_runtimes: dict[str, dict[str, str]] | None,
+    remote_components: list[str],
+) -> str:
+    if browser:
+        cookie_mode = f"browser:{browser[0]}"
+    elif cookiefile:
+        cookie_mode = f"cookies.txt ({cookiefile})"
+    else:
+        cookie_mode = "none"
+    if js_runtimes:
+        js_mode = ",".join(sorted(js_runtimes.keys()))
+    else:
+        js_mode = "default"
+    remote_mode = ",".join(remote_components) if remote_components else "none"
+    return f"cookie={cookie_mode} js={js_mode} remote={remote_mode}"
+
+
 def apply_yt_dlp_auth_runtime_options(opts: dict[str, Any]) -> dict[str, Any]:
     """Apply cookie/browser-cookie and JS-runtime options to a yt-dlp options dict."""
+    global _AUTH_SUMMARY_LOGGED
+
     browser = resolve_yt_dlp_browser_cookies()
     cookiefile = None if browser else resolve_yt_dlp_cookiefile()
     if browser:
         opts["cookiesfrombrowser"] = browser
-        log.info("yt-dlp cookie mode: browser:%s", browser[0])
     elif cookiefile:
         opts["cookiefile"] = cookiefile
-        log.info("yt-dlp cookie mode: cookies.txt")
-    else:
-        log.info("yt-dlp cookie mode: none")
 
     js_runtimes = resolve_yt_dlp_js_runtimes()
     if js_runtimes:
         opts["js_runtimes"] = js_runtimes
-        log.info("yt-dlp JavaScript runtime mode: %s", ",".join(js_runtimes))
-    else:
-        log.info("yt-dlp JavaScript runtime mode: yt-dlp default")
     remote_components = resolve_yt_dlp_remote_components()
     if remote_components:
         opts["remote_components"] = remote_components
-        log.info("yt-dlp remote components enabled: %s", ",".join(remote_components))
+
+    if not _AUTH_SUMMARY_LOGGED:
+        _AUTH_SUMMARY_LOGGED = True
+        detail(
+            log,
+            "yt-dlp runtime: %s",
+            _auth_mode_label(
+                browser=browser,
+                cookiefile=cookiefile,
+                js_runtimes=js_runtimes,
+                remote_components=remote_components,
+            ),
+        )
     return opts

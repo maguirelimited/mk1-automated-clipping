@@ -1,10 +1,21 @@
-"""Selection Gate v1 — Post-Processing MK1.
+"""MK1 Evaluation stage — Selection Gate v1 baseline.
 
-The first real post-processing decision stage.
+This module is the canonical MK1 **Evaluation** stage. It consumes processed
+candidates from ``raw_candidate_pool.json`` (assembled after Candidate
+Processing) and decides which candidates become rendered clips.
 
-Consumes the validated raw candidate pool from processing and decides which
-candidates should be sent forward to the universal conveyor (rendering,
-captions, B-roll upgrades, etc.).
+Evaluation produces ``selection_result.json`` with selected, reserve, and
+rejected entries. It does not discover candidates, run boundary sanity, dedupe
+overlaps, render media, or call AI.
+
+**Current execution location:** Evaluation runs at the start of MK1
+post-processing (``post_processing_mk1.py``), before the conveyor/render step.
+That is the implementation location today, not a conceptual post-render stage.
+
+**Scoring note:** Ranking uses deterministic thresholds and lexicographic sort
+over existing Discovery-provided score fields. This is an operational Evaluation
+baseline, not a statistically validated performance model. Do not treat it as
+evidence-based weighted quality scoring.
 
 Supported selection modes:
     maximum_quality         — strictest thresholds, fewest clips
@@ -17,6 +28,7 @@ This module deliberately does NOT:
 - render clips or modify video files
 - call AI/LLM services
 - rediscover transcript sections or candidates
+- perform Candidate Processing (boundary sanity, overlap/dedupe)
 - run post-processing upgrade modules (captions, B-roll, zoom, etc.)
 - write post_processing_report.json
 - register output funnels
@@ -38,6 +50,7 @@ from processing_contracts import (
 
 SELECTION_GATE_SCHEMA_VERSION = "selection_gate_v1"
 SELECTION_RESULT_FILENAME = "selection_result.json"
+MK1_EVALUATION_STRATEGY = "mk1_selection_gate_evaluation_v1"
 
 STATUS_SELECTION_COMPLETE = "SELECTION_COMPLETE"
 STATUS_SELECTION_FAILED = "SELECTION_FAILED"
@@ -156,14 +169,14 @@ def run_selection_gate_v1(
     config: dict[str, Any] | None = None,
     selection_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Run Selection Gate v1 on a loaded raw candidate pool dict.
+    """Run MK1 Evaluation (Selection Gate v1) on a loaded raw candidate pool dict.
 
-    Deterministically classifies each candidate as selected, reserve, or
-    rejected, then returns a structured result.
+    Deterministically classifies each processed candidate as selected, reserve,
+    or rejected, then returns a structured Evaluation result.
 
     Args:
-        raw_candidate_pool: Validated raw candidate pool dict produced by
-            ``processing_mk1``.
+        raw_candidate_pool: Validated ``raw_candidate_pool.json`` payload containing
+            canonical ``mk1_candidate_v1`` candidates from Candidate Processing.
         job_metadata: Optional job-level metadata.  ``job_id`` is resolved
             from here first, then from the pool.
         config: Optional config overrides merged over mode defaults.
@@ -172,7 +185,7 @@ def run_selection_gate_v1(
             there after a successful run.
 
     Returns:
-        Structured selection result dict with status
+        Structured Evaluation result dict with status
         ``SELECTION_COMPLETE`` or ``SELECTION_FAILED``.
     """
     job_metadata = dict(job_metadata or {})
@@ -280,6 +293,13 @@ def run_selection_gate_v1(
         "job_id": job_id,
         "selection_mode": selection_mode,
         "status": STATUS_SELECTION_COMPLETE,
+        "evaluation": _build_evaluation_metadata(
+            selection_mode=selection_mode,
+            input_candidate_count=raw_count,
+            selected_count=len(selected),
+            reserve_count=len(reserve),
+            rejected_count=len(rejected),
+        ),
         "selected_candidates": selected,
         "rejected_candidates": rejected,
         "reserve_candidates": reserve,
@@ -592,6 +612,24 @@ def _ranking_key(candidate: dict[str, Any]) -> tuple:
 # ---------------------------------------------------------------------------
 
 
+def _build_evaluation_metadata(
+    *,
+    selection_mode: str,
+    input_candidate_count: int,
+    selected_count: int,
+    reserve_count: int,
+    rejected_count: int,
+) -> dict[str, Any]:
+    return {
+        "strategy": MK1_EVALUATION_STRATEGY,
+        "mode": selection_mode,
+        "input_candidate_count": input_candidate_count,
+        "selected_count": selected_count,
+        "reserve_count": reserve_count,
+        "rejected_count": rejected_count,
+    }
+
+
 def _build_selected_entry(candidate: dict[str, Any], *, rank: int) -> dict[str, Any]:
     return {
         "candidate_id": candidate.get("candidate_id"),
@@ -692,6 +730,13 @@ def _selection_failed_result(
         "job_id": job_id,
         "selection_mode": selection_mode,
         "status": STATUS_SELECTION_FAILED,
+        "evaluation": _build_evaluation_metadata(
+            selection_mode=selection_mode,
+            input_candidate_count=0,
+            selected_count=0,
+            reserve_count=0,
+            rejected_count=0,
+        ),
         "selected_candidates": [],
         "rejected_candidates": [],
         "reserve_candidates": [],
@@ -705,6 +750,11 @@ def _selection_failed_result(
             }
         ],
     }
+
+
+# Alias for MK1 staged architecture documentation. Behaviour identical to
+# :func:`run_selection_gate_v1`.
+run_mk1_evaluation = run_selection_gate_v1
 
 
 # ---------------------------------------------------------------------------

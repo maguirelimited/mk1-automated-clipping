@@ -11,7 +11,7 @@
         "source_type": "youtube_channel",
         "url": "https://www.youtube.com/@MyFirstMillionPod/videos",
         "active": true,
-        "max_videos_per_source": 5,
+        "max_videos_per_source": 25,
         "hydrate_missing_duration": true,
         "title_blocklist": ["shorts", "short", "clip", "clips", "highlight", "highlights", "trailer", "teaser", "preview", "compilation"]
       }

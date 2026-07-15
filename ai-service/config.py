@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+_SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from shared.controls_file import read_controls_json, resolve_controls_path  # noqa: E402
 
 DEFAULT_AI_PROVIDER = "ollama"
 DEFAULT_AI_MODEL = "qwen2.5:14b-instruct"
@@ -78,25 +83,12 @@ def load_settings() -> Settings:
 
 
 def _controls_file_path() -> Path:
-    raw = os.environ.get("MK04_CONTROLS_FILE", "").strip()
-    if raw:
-        return Path(raw).expanduser()
-    # ai-service/config.py -> repo root is parents[1].
-    repo_root = Path(__file__).resolve().parents[1]
-    return repo_root / "ops-ui" / "data" / "controls.json"
+    return resolve_controls_path()
 
 
 def _load_ui_ai_config() -> dict[str, Any]:
     """Read the Ops-UI-saved ai_config block. Returns {} on any problem."""
-    path = _controls_file_path()
-    try:
-        if not path.is_file():
-            return {}
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
+    data = read_controls_json()
     block = data.get("ai_config")
     return block if isinstance(block, dict) else {}
 

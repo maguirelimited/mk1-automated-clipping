@@ -68,7 +68,7 @@ def test_failed_jobs_page_renders(tmp_path: Path) -> None:
     app = create_app(settings)
     response = app.test_client().get("/failed")
     assert response.status_code == 200
-    assert b"Failed Jobs" in response.data
+    assert b"Legacy failed jobs" in response.data
     assert b"Dead-letter queue" in response.data
 
 
@@ -98,7 +98,8 @@ def test_stuck_detection_flags_old_running_job() -> None:
                 "job_id": "job_x",
                 "status": "running",
                 "current_stage": "transcribe",
-                "started_at": "2020-01-01T00:00:00Z",
+                "started_at": "2026-01-01T00:00:00Z",
+                "heartbeat_at": "2020-01-01T00:00:00Z",
             }
         ],
         running_threshold_sec=60,
@@ -106,6 +107,8 @@ def test_stuck_detection_flags_old_running_job() -> None:
     )
     assert len(stuck) == 1
     assert stuck[0]["id"] == "job_x"
+    assert stuck[0]["since"] == "2020-01-01T00:00:00Z"
+    assert stuck[0]["can_cancel"] is True
     assert "possibly stuck" in stuck[0]["detail"]
 
 

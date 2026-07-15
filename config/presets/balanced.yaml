@@ -1,0 +1,28 @@
+# config/presets/balanced.yaml
+#
+# Balanced preset: moderate quality thresholds and moderate volume.
+# Suitable for stable production funnels where quality and quantity are equally weighted.
+#
+# Presets store behaviour choices. They do not make creative or business decisions.
+
+preset:
+  id: balanced
+  name: Balanced
+
+selection:
+  mode: balanced
+  max_clips: 6
+  min_overall_potential: 7
+  min_confidence: 0.6
+  exploration_ratio: 0.15
+
+posting:
+  uploads_per_day: 4
+
+post_processing:
+  conveyor:
+    - render_clip_v1
+    - platform_safe_format_v1
+    - intelligent_captions_v1
+    - validation_v1
+    - metadata_writer_v1

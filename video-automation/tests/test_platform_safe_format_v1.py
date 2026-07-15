@@ -40,11 +40,16 @@ from post_processing_conveyor import (  # noqa: E402
 )
 from render_clip_v1 import RenderClipV1Module, _make_output_path as render_output_path
 from platform_safe_format_v1 import (  # noqa: E402
+    DEFAULT_REFRAME_MODE,
+    FORMAT_STRATEGY_BLUR,
     MODULE_NAME,
     MODULE_VERSION,
+    REFRAME_MODES,
     PlatformSafeFormatV1Module,
+    _build_format_command,
     _make_output_path,
     _probe_video_info,
+    _resolve_reframe_plan,
     _safe_filename_part,
     _validate_format_config,
     get_platform_safe_format_v1_module,
@@ -65,6 +70,47 @@ requires_ffmpeg = pytest.mark.skipif(
     not FFTOOLS_AVAILABLE,
     reason="ffmpeg/ffprobe not installed — skipping real-format tests",
 )
+
+
+def _eligible_detection_report(input_path: str, *, frames: int = 20) -> "DetectionReport":
+    from reframing.types import DetectionReport
+
+    return DetectionReport(
+        ok=True,
+        input_path=input_path,
+        detection_fps=2.0,
+        detector_backend="mediapipe",
+        frames_sampled=frames,
+        frames_with_faces=frames,
+        faces_detected_pct=100.0,
+        frame_width=640,
+        frame_height=360,
+    )
+
+
+def _eligible_track_report(input_path: str, *, frames: int = 20) -> "TrackReport":
+    from reframing.types import BoundingBox, TrackReport, TrackedFaceSample
+
+    track = [
+        TrackedFaceSample(
+            timestamp_sec=index / 2.0,
+            frame_index=index,
+            bbox=BoundingBox(x=100, y=50, width=80, height=80),
+            confidence=0.9,
+            missing=False,
+        )
+        for index in range(frames)
+    ]
+    return TrackReport(
+        ok=True,
+        usable=True,
+        input_path=input_path,
+        frames_sampled=frames,
+        track_samples=frames,
+        track_coverage_pct=100.0,
+        max_gap_sec=0.0,
+        track=track,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -164,12 +210,18 @@ def _write_fake_mp4(path: str, size: int = 512) -> str:
     return path
 
 
-def _default_probe_info(width: int = 320, height: int = 240) -> dict[str, Any]:
+def _default_probe_info(
+    width: int = 320,
+    height: int = 240,
+    *,
+    duration: float = 2.5,
+    has_audio: bool = True,
+) -> dict[str, Any]:
     return {
         "width": width,
         "height": height,
-        "duration_sec": 2.5,
-        "has_audio": True,
+        "duration_sec": duration,
+        "has_audio": has_audio,
     }
 
 
@@ -321,6 +373,508 @@ def test_default_target_is_1080x1920():
     assert _DEFAULT_CONFIG["target_height"] == 1920
 
 
+def test_default_reframe_mode_is_blur_background():
+    from platform_safe_format_v1 import _DEFAULT_CONFIG
+    assert _DEFAULT_CONFIG["reframe_mode"] == DEFAULT_REFRAME_MODE
+    assert DEFAULT_REFRAME_MODE == "blur_background"
+    assert _DEFAULT_CONFIG["face_track_test_enabled"] is False
+
+
+def test_invalid_reframe_mode_fails_config_validation():
+    err = _validate_format_config({
+        "target_width": 1080,
+        "target_height": 1920,
+        "duration_tolerance_sec": 1.0,
+        "output_ext": ".mp4",
+        "reframe_mode": "smart_ai_magic",
+    })
+    assert err is not None
+    assert "reframe_mode" in err
+
+
+def test_resolve_reframe_plan_blur_background():
+    plan = _resolve_reframe_plan({"reframe_mode": "blur_background"})
+    assert plan["format_strategy"] == FORMAT_STRATEGY_BLUR
+    assert plan["use_blur_fallback"] is True
+    assert plan["attempt_face_pipeline"] is False
+    assert plan["reframe_attempted"] is False
+    assert plan["fail_reason"] is None
+    assert plan["warnings"] == []
+
+
+def test_resolve_reframe_plan_auto_requires_test_enabled():
+    disabled = _resolve_reframe_plan({"reframe_mode": "auto"})
+    assert disabled["attempt_face_pipeline"] is False
+    assert disabled["face_track_skip_reason"] == "face_track_test_disabled"
+
+    enabled = _resolve_reframe_plan({"reframe_mode": "auto", "face_track_test_enabled": True})
+    assert enabled["attempt_face_pipeline"] is True
+    assert enabled["face_track_test_enabled"] is True
+
+
+def test_resolve_reframe_plan_auto_uses_blur_for_now():
+    plan = _resolve_reframe_plan({"reframe_mode": "auto", "face_track_test_enabled": True})
+    assert plan["format_strategy"] == FORMAT_STRATEGY_BLUR
+    assert plan["use_blur_fallback"] is True
+    assert plan["attempt_face_pipeline"] is True
+    assert plan["reframe_attempted"] is False
+    assert plan["fail_reason"] is None
+    assert plan["warnings"] == []
+
+
+def test_resolve_reframe_plan_face_track_attempts_pipeline():
+    plan = _resolve_reframe_plan({"reframe_mode": "face_track"})
+    assert plan["format_strategy"] == "face_track_crop"
+    assert plan["use_blur_fallback"] is False
+    assert plan["attempt_face_pipeline"] is True
+
+
+def test_explicit_blur_background_uses_fallback_builder(tmp_path):
+    fake = _write_fake_mp4(str(tmp_path / "in.mp4"))
+    ctx = _make_context(clip_dir=str(tmp_path))
+    ctx["config"] = {"reframe_mode": "blur_background"}
+    output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
+
+    with patch("platform_safe_format_v1.build_blur_background_command") as mock_build, \
+         patch("platform_safe_format_v1.subprocess.run") as mock_run, \
+         patch("platform_safe_format_v1._probe_video_info") as mock_probe:
+        mock_build.return_value = ["ffmpeg", "-y", "-i", fake, output_path]
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        _write_fake_mp4(output_path, size=1024)
+        mock_probe.side_effect = [
+            _default_probe_info(320, 240),
+            _default_probe_info(1080, 1920),
+        ]
+        result = PlatformSafeFormatV1Module().run(ctx, input_path=fake)
+
+    assert result["status"] == MODULE_STATUS_PASS
+    mock_build.assert_called_once()
+
+
+def test_explicit_blur_background_uses_same_ffmpeg_command(tmp_path):
+    fake = _write_fake_mp4(str(tmp_path / "in.mp4"))
+    ctx = _make_context(clip_dir=str(tmp_path))
+    ctx["config"] = {"reframe_mode": "blur_background"}
+    output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
+
+    with patch("platform_safe_format_v1.subprocess.run") as mock_run, \
+         patch("platform_safe_format_v1._probe_video_info") as mock_probe:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        _write_fake_mp4(output_path, size=1024)
+        mock_probe.side_effect = [
+            _default_probe_info(320, 240),
+            _default_probe_info(1080, 1920),
+        ]
+        result = PlatformSafeFormatV1Module().run(ctx, input_path=fake)
+
+    assert result["status"] == MODULE_STATUS_PASS
+    cmd = mock_run.call_args[0][0]
+    cmd_str = " ".join(str(a) for a in cmd)
+    assert "boxblur=" in cmd_str
+    assert "force_original_aspect_ratio=decrease" in cmd_str
+
+
+def test_auto_mode_passes_with_blur_fallback_metadata(tmp_path):
+    fake = _write_fake_mp4(str(tmp_path / "in.mp4"))
+    ctx = _make_context(clip_dir=str(tmp_path))
+    ctx["config"] = {"reframe_mode": "auto", "face_track_test_enabled": True}
+    output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
+
+    from reframing.types import CropPathReport, DetectionReport, TrackReport
+
+    mock_detection = DetectionReport(
+        ok=False,
+        input_path=str(fake),
+        detection_fps=2.0,
+        detector_backend="mediapipe",
+        reason="detector_dependency_unavailable",
+    )
+    mock_track = TrackReport(
+        ok=False,
+        usable=False,
+        input_path=str(fake),
+        reason="detection_failed",
+    )
+    mock_crop = CropPathReport(
+        ok=False,
+        usable=False,
+        input_path=str(fake),
+        reason="track_not_usable",
+    )
+    mock_smoothed_crop = CropPathReport(
+        ok=False,
+        usable=False,
+        input_path=str(fake),
+        reason="crop_path_not_usable",
+    )
+
+    with patch(
+        "platform_safe_format_v1.build_smoothed_face_crop_path_for_clip",
+        return_value=(mock_detection, mock_track, mock_crop, mock_smoothed_crop),
+    ), \
+         patch("platform_safe_format_v1.subprocess.run") as mock_run, \
+         patch("platform_safe_format_v1._probe_video_info") as mock_probe:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        _write_fake_mp4(output_path, size=1024)
+        mock_probe.side_effect = [
+            _default_probe_info(320, 240),
+            _default_probe_info(1080, 1920),
+        ]
+        result = PlatformSafeFormatV1Module().run(ctx, input_path=fake)
+
+    assert result["status"] == MODULE_STATUS_PASS
+    assert result["metadata"]["reframe_mode"] == "auto"
+    assert result["metadata"]["format_strategy"] == FORMAT_STRATEGY_BLUR
+    assert result["metadata"]["reframe_attempted"] is True
+    assert result["metadata"]["face_detection_attempted"] is True
+    assert result["metadata"]["face_tracking_attempted"] is True
+    assert result["metadata"]["crop_path_attempted"] is True
+    assert result["metadata"]["smoothing_attempted"] is True
+    assert "face_detection_failed_using_blur_fallback" in result["warnings"]
+
+
+def test_face_track_mode_fails_when_pipeline_not_usable(tmp_path):
+    fake = _write_fake_mp4(str(tmp_path / "in.mp4"))
+    ctx = _make_context(clip_dir=str(tmp_path))
+    ctx["config"] = {"reframe_mode": "face_track"}
+
+    from reframing.types import CropPathReport, DetectionReport, TrackReport
+
+    mock_detection = DetectionReport(
+        ok=True,
+        input_path=str(fake),
+        detection_fps=2.0,
+        detector_backend="mediapipe",
+        frames_sampled=3,
+        frame_width=640,
+        frame_height=360,
+    )
+    mock_track = _eligible_track_report(str(fake), frames=20)
+    mock_crop = CropPathReport(
+        ok=True,
+        usable=True,
+        input_path=str(fake),
+        source_width=640,
+        source_height=360,
+        crop_width=360,
+        crop_height=360,
+        samples=[],
+    )
+    mock_smoothed_crop = CropPathReport(
+        ok=False,
+        usable=False,
+        input_path=str(fake),
+        reason="no_crop_samples",
+    )
+
+    with patch(
+        "platform_safe_format_v1.build_smoothed_face_crop_path_for_clip",
+        return_value=(mock_detection, mock_track, mock_crop, mock_smoothed_crop),
+    ), \
+         patch("platform_safe_format_v1.subprocess.run") as mock_run, \
+         patch("platform_safe_format_v1._probe_video_info") as mock_probe:
+        mock_probe.return_value = _default_probe_info(320, 240)
+        result = PlatformSafeFormatV1Module().run(ctx, input_path=fake)
+
+    assert result["status"] == MODULE_STATUS_FAIL
+    assert result["metadata"]["failure_code"] == "face_track_pipeline_failed"
+    mock_run.assert_not_called()
+
+
+def test_face_track_mode_renders_face_track_crop_on_success(tmp_path):
+    fake = _write_fake_mp4(str(tmp_path / "in.mp4"))
+    ctx = _make_context(clip_dir=str(tmp_path))
+    ctx["config"] = {"reframe_mode": "face_track"}
+    output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
+
+    from reframing.types import CropPathReport, CropPathSample, CropRect, DetectionReport, FaceTrackRenderResult, TrackReport
+
+    mock_detection = _eligible_detection_report(str(fake), frames=20)
+    mock_track = _eligible_track_report(str(fake), frames=20)
+    mock_crop = CropPathReport(
+        ok=True,
+        usable=True,
+        input_path=str(fake),
+        source_width=640,
+        source_height=360,
+        crop_width=202,
+        crop_height=360,
+        samples=[
+            CropPathSample(
+                timestamp_sec=0.0,
+                frame_index=0,
+                crop=CropRect(x=16, y=0, width=202, height=360),
+                held=False,
+            ),
+            CropPathSample(
+                timestamp_sec=0.5,
+                frame_index=1,
+                crop=CropRect(x=20, y=0, width=202, height=360),
+                held=False,
+            ),
+        ],
+    )
+    mock_smoothed_crop = CropPathReport(
+        ok=True,
+        usable=True,
+        input_path=str(fake),
+        source_width=640,
+        source_height=360,
+        crop_width=202,
+        crop_height=360,
+        smoothed=True,
+        smoothing_method="deadzone_ema_velocity_cap",
+        samples=mock_crop.samples,
+    )
+    mock_render = FaceTrackRenderResult(
+        ok=True,
+        output_path=output_path,
+        segments_rendered=2,
+        crop_renderer="segmented_ffmpeg",
+        target_width=1080,
+        target_height=1920,
+        ffmpeg_command_summary="ffmpeg segment | ffmpeg concat",
+    )
+
+    with patch(
+        "platform_safe_format_v1.build_smoothed_face_crop_path_for_clip",
+        return_value=(mock_detection, mock_track, mock_crop, mock_smoothed_crop),
+    ), \
+         patch("platform_safe_format_v1.render_face_track_crop", return_value=mock_render) as mock_render_fn, \
+         patch("platform_safe_format_v1.subprocess.run") as mock_run, \
+         patch("platform_safe_format_v1._probe_video_info") as mock_probe:
+        _write_fake_mp4(output_path, size=1024)
+        mock_probe.side_effect = [
+            _default_probe_info(640, 360, duration=2.0),
+            _default_probe_info(1080, 1920, duration=2.0),
+        ]
+        result = PlatformSafeFormatV1Module().run(ctx, input_path=fake)
+
+    assert result["status"] == MODULE_STATUS_PASS
+    assert result["metadata"]["format_strategy"] == "face_track_crop"
+    assert result["metadata"]["face_track_rendered"] is True
+    assert result["metadata"]["segments_rendered"] == 2
+    assert result["metadata"]["face_track_eligible"] is True
+    mock_render_fn.assert_called_once()
+    mock_run.assert_not_called()
+
+
+def test_auto_mode_with_test_disabled_skips_face_pipeline(tmp_path):
+    fake = _write_fake_mp4(str(tmp_path / "in.mp4"))
+    ctx = _make_context(clip_dir=str(tmp_path))
+    ctx["config"] = {"reframe_mode": "auto", "face_track_test_enabled": False}
+    output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
+
+    with patch(
+        "platform_safe_format_v1.build_smoothed_face_crop_path_for_clip",
+    ) as mock_pipeline, patch("platform_safe_format_v1.subprocess.run") as mock_run, patch(
+        "platform_safe_format_v1._probe_video_info"
+    ) as mock_probe:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        _write_fake_mp4(output_path, size=1024)
+        mock_probe.side_effect = [
+            _default_probe_info(320, 240),
+            _default_probe_info(1080, 1920),
+        ]
+        result = PlatformSafeFormatV1Module().run(ctx, input_path=fake)
+
+    assert result["status"] == MODULE_STATUS_PASS
+    assert result["metadata"]["format_strategy"] == FORMAT_STRATEGY_BLUR
+    assert result["metadata"]["face_track_test_enabled"] is False
+    assert result["metadata"]["face_track_attempted"] is False
+    assert result["metadata"]["face_track_used"] is False
+    assert result["metadata"]["face_track_skip_reason"] == "face_track_test_disabled"
+    assert "face_track_eligible" not in result["metadata"]
+    assert "face_track_test_disabled_using_blur_fallback" in result["warnings"]
+    mock_pipeline.assert_not_called()
+    mock_run.assert_called_once()
+
+
+def test_auto_mode_falls_back_to_blur_when_render_fails(tmp_path):
+    fake = _write_fake_mp4(str(tmp_path / "in.mp4"))
+    ctx = _make_context(clip_dir=str(tmp_path))
+    ctx["config"] = {"reframe_mode": "auto", "face_track_test_enabled": True}
+    output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
+
+    from reframing.types import CropPathReport, CropPathSample, CropRect, DetectionReport, FaceTrackRenderResult, TrackReport
+
+    mock_detection = _eligible_detection_report(str(fake), frames=20)
+    mock_track = _eligible_track_report(str(fake), frames=20)
+    samples = [
+        CropPathSample(timestamp_sec=0.0, frame_index=0, crop=CropRect(x=16, y=0, width=202, height=360), held=False),
+        CropPathSample(timestamp_sec=0.5, frame_index=1, crop=CropRect(x=20, y=0, width=202, height=360), held=False),
+    ]
+    mock_crop = CropPathReport(
+        ok=True,
+        usable=True,
+        input_path=str(fake),
+        source_width=640,
+        source_height=360,
+        crop_width=202,
+        crop_height=360,
+        samples=samples,
+    )
+    mock_smoothed_crop = CropPathReport(
+        ok=True,
+        usable=True,
+        input_path=str(fake),
+        source_width=640,
+        source_height=360,
+        crop_width=202,
+        crop_height=360,
+        smoothed=True,
+        samples=samples,
+    )
+    mock_render = FaceTrackRenderResult(
+        ok=False,
+        reason="segment_render_failed",
+        message="segment render failed",
+        target_width=1080,
+        target_height=1920,
+    )
+
+    with patch(
+        "platform_safe_format_v1.build_smoothed_face_crop_path_for_clip",
+        return_value=(mock_detection, mock_track, mock_crop, mock_smoothed_crop),
+    ), \
+         patch("platform_safe_format_v1.render_face_track_crop", return_value=mock_render), \
+         patch("platform_safe_format_v1.subprocess.run") as mock_run, \
+         patch("platform_safe_format_v1._probe_video_info") as mock_probe:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        _write_fake_mp4(output_path, size=1024)
+        mock_probe.side_effect = [
+            _default_probe_info(640, 360, duration=2.0),
+            _default_probe_info(1080, 1920, duration=2.0),
+        ]
+        result = PlatformSafeFormatV1Module().run(ctx, input_path=fake)
+
+    assert result["status"] == MODULE_STATUS_PASS
+    assert result["metadata"]["format_strategy"] == FORMAT_STRATEGY_BLUR
+    assert "face_track_render_failed_using_blur_fallback" in result["warnings"]
+    mock_run.assert_called_once()
+
+
+def test_face_track_mode_fails_when_not_eligible(tmp_path):
+    fake = _write_fake_mp4(str(tmp_path / "in.mp4"))
+    ctx = _make_context(clip_dir=str(tmp_path))
+    ctx["config"] = {"reframe_mode": "face_track"}
+
+    from reframing.types import CropPathReport, DetectionReport, TrackReport
+
+    mock_detection = DetectionReport(
+        ok=True,
+        input_path=str(fake),
+        detection_fps=2.0,
+        detector_backend="mediapipe",
+        frames_sampled=100,
+        frames_with_faces=30,
+        frame_width=640,
+        frame_height=360,
+    )
+    mock_track = TrackReport(
+        ok=True,
+        usable=False,
+        input_path=str(fake),
+        frames_sampled=100,
+        track_samples=30,
+        track_coverage_pct=30.0,
+        max_gap_sec=39.5,
+        reason="excessive_gap",
+    )
+    mock_crop = CropPathReport(ok=False, usable=False, input_path=str(fake), reason="track_not_usable")
+    mock_smoothed_crop = CropPathReport(
+        ok=False,
+        usable=False,
+        input_path=str(fake),
+        reason="crop_path_not_usable",
+    )
+
+    with patch(
+        "platform_safe_format_v1.build_smoothed_face_crop_path_for_clip",
+        return_value=(mock_detection, mock_track, mock_crop, mock_smoothed_crop),
+    ), patch("platform_safe_format_v1.subprocess.run") as mock_run, patch(
+        "platform_safe_format_v1._probe_video_info"
+    ) as mock_probe:
+        mock_probe.return_value = _default_probe_info(320, 240)
+        result = PlatformSafeFormatV1Module().run(ctx, input_path=fake)
+
+    assert result["status"] == MODULE_STATUS_FAIL
+    assert result["metadata"]["failure_code"] == "face_track_not_eligible"
+    assert result["metadata"]["face_track_eligible"] is False
+    assert result["metadata"]["face_track_eligibility_reason"] == "insufficient_face_coverage"
+    mock_run.assert_not_called()
+
+
+def test_auto_mode_falls_back_to_blur_when_not_eligible(tmp_path):
+    fake = _write_fake_mp4(str(tmp_path / "in.mp4"))
+    ctx = _make_context(clip_dir=str(tmp_path))
+    ctx["config"] = {"reframe_mode": "auto", "face_track_test_enabled": True}
+    output_path = _make_output_path(str(tmp_path), "job_test_001", "cand_001")
+
+    from reframing.types import CropPathReport, DetectionReport, TrackReport
+
+    mock_detection = DetectionReport(
+        ok=True,
+        input_path=str(fake),
+        detection_fps=2.0,
+        detector_backend="mediapipe",
+        frames_sampled=100,
+        frames_with_faces=30,
+        frame_width=640,
+        frame_height=360,
+    )
+    mock_track = TrackReport(
+        ok=True,
+        usable=False,
+        input_path=str(fake),
+        frames_sampled=100,
+        track_samples=30,
+        track_coverage_pct=30.0,
+        max_gap_sec=39.5,
+        reason="excessive_gap",
+    )
+    mock_crop = CropPathReport(ok=False, usable=False, input_path=str(fake), reason="track_not_usable")
+    mock_smoothed_crop = CropPathReport(
+        ok=False,
+        usable=False,
+        input_path=str(fake),
+        reason="crop_path_not_usable",
+    )
+
+    with patch(
+        "platform_safe_format_v1.build_smoothed_face_crop_path_for_clip",
+        return_value=(mock_detection, mock_track, mock_crop, mock_smoothed_crop),
+    ), patch("platform_safe_format_v1.subprocess.run") as mock_run, patch(
+        "platform_safe_format_v1._probe_video_info"
+    ) as mock_probe:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        _write_fake_mp4(output_path, size=1024)
+        mock_probe.side_effect = [
+            _default_probe_info(640, 360, duration=2.0),
+            _default_probe_info(1080, 1920, duration=2.0),
+        ]
+        result = PlatformSafeFormatV1Module().run(ctx, input_path=fake)
+
+    assert result["status"] == MODULE_STATUS_PASS
+    assert result["metadata"]["format_strategy"] == FORMAT_STRATEGY_BLUR
+    assert result["metadata"]["face_track_eligible"] is False
+    assert result["metadata"]["face_track_eligibility_fallback"] == "blur_background"
+    assert "face_track_not_eligible_using_blur_fallback" in result["warnings"]
+    mock_run.assert_called_once()
+
+
+def test_pass_metadata_includes_reframe_fields(tmp_path):
+    r = _run_pass_scenario(tmp_path)
+    assert r["status"] == MODULE_STATUS_PASS
+    assert r["metadata"]["reframe_mode"] == "blur_background"
+    assert r["metadata"]["reframe_attempted"] is False
+    assert r["metadata"]["format_strategy"] == FORMAT_STRATEGY_BLUR
+
+
+def test_supported_reframe_modes_constant():
+    assert REFRAME_MODES == ("blur_background", "auto", "face_track")
+
+
 # ===========================================================================
 # 14–18: Output path and overwrite
 # ===========================================================================
@@ -445,7 +999,6 @@ def test_output_file_is_non_empty(tmp_path):
 
 def test_filter_uses_force_original_aspect_ratio_decrease_for_fg():
     """Verify filter graph uses 'decrease' for foreground (no stretching)."""
-    from platform_safe_format_v1 import _build_format_command
     cmd = _build_format_command(
         input_path="/in.mp4",
         output_path="/out.mp4",
@@ -712,7 +1265,6 @@ def test_module_does_not_generate_captions():
 
 
 def test_module_does_not_burn_subtitles():
-    from platform_safe_format_v1 import _build_format_command
     cmd = _build_format_command(
         input_path="/in.mp4", output_path="/out.mp4",
         target_w=1080, target_h=1920,
@@ -725,9 +1277,14 @@ def test_module_does_not_burn_subtitles():
     assert "ass" not in cmd_str
 
 
-def test_module_does_not_perform_face_tracking():
+def test_module_does_not_invoke_face_detection():
+    import inspect
+
     import platform_safe_format_v1 as m
-    assert "face" not in " ".join(vars(m).keys())
+
+    source = inspect.getsource(m)
+    assert "mediapipe" not in source
+    assert "cv2" not in source
 
 
 def test_module_does_not_perform_object_tracking():
@@ -736,7 +1293,6 @@ def test_module_does_not_perform_object_tracking():
 
 
 def test_module_does_not_perform_intelligent_zoom():
-    from platform_safe_format_v1 import _build_format_command
     cmd = _build_format_command(
         input_path="/in.mp4", output_path="/out.mp4",
         target_w=1080, target_h=1920,

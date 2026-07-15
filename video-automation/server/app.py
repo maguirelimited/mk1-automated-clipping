@@ -18,11 +18,94 @@ from werkzeug.utils import secure_filename
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
+_REPO_ROOT = os.path.abspath(os.path.join(_PROJECT_DIR, ".."))
+_SCRIPTS_CONFIG = os.path.join(_REPO_ROOT, "scripts", "config")
+if _SCRIPTS_CONFIG not in sys.path:
+    sys.path.insert(0, _SCRIPTS_CONFIG)
+
+from environment_names import is_production_env  # noqa: E402
+from config_manager import ConfigError, ConfigManager  # noqa: E402
+from execution_context import (  # noqa: E402
+    ExecutionContext,
+    ResolvedConfigLoadError,
+    extract_conveyor_config_from_resolved,
+    load_execution_context_for_job,
+    load_resolved_config_for_job,
+)
+
+_OPS_SCRIPTS = os.path.join(_REPO_ROOT, "scripts", "ops")
+if _OPS_SCRIPTS not in sys.path:
+    sys.path.insert(0, _OPS_SCRIPTS)
+
+
+def _orchestration_context_from_request(payload: dict[str, Any]) -> dict[str, str] | None:
+    """Extract run_id/environment from payload or headers."""
+    ctx = payload.get("orchestration_context")
+    run_id = ""
+    environment = ""
+    if isinstance(ctx, dict):
+        run_id = str(ctx.get("run_id") or "").strip()
+        environment = str(ctx.get("environment") or "").strip()
+    if not run_id:
+        run_id = str(request.headers.get("X-MK04-Run-Id") or "").strip()
+    if not environment:
+        environment = str(request.headers.get("X-MK04-Environment") or "").strip()
+    if not run_id:
+        run_id = str(payload.get("mk04_run_id") or payload.get("run_id") or "").strip()
+    if not environment:
+        environment = str(payload.get("mk04_environment") or "").strip()
+    if not environment:
+        environment = str(os.environ.get("MK04_ENV") or "dev").strip()
+    if not run_id:
+        return None
+    return {"run_id": run_id, "environment": environment}
+
+
+def _test_mode_active() -> bool:
+    """True only for an explicit test harness (not ordinary development)."""
+    if (os.environ.get("MK04_TEST_MODE") or "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    # pytest sets this for the duration of each test item.
+    if (os.environ.get("PYTEST_CURRENT_TEST") or "").strip():
+        return True
+    return False
+
+
+def _ungated_jobs_config_error() -> str | None:
+    """Return an error message if MK04_ALLOW_UNGATED_JOBS is set invalidly."""
+    raw = (os.environ.get("MK04_ALLOW_UNGATED_JOBS") or "").strip().lower()
+    if raw not in {"1", "true", "yes"}:
+        return None
+    if is_production_env(os.environ.get("MK04_ENV"), default="dev"):
+        return (
+            "MK04_ALLOW_UNGATED_JOBS is not allowed when MK04_ENV=prod; "
+            "refusing to weaken production admission"
+        )
+    return None
+
+
+def _assert_ungated_jobs_config() -> None:
+    err = _ungated_jobs_config_error()
+    if err:
+        raise RuntimeError(err)
+
+
+def _ungated_jobs_allowed() -> bool:
+    """Allow orchestration-context bypass only in explicit dev test mode."""
+    raw = (os.environ.get("MK04_ALLOW_UNGATED_JOBS") or "").strip().lower()
+    if raw not in {"1", "true", "yes"}:
+        return False
+    err = _ungated_jobs_config_error()
+    if err:
+        return False
+    if not _test_mode_active():
+        return False
+    return True
 
 
 def _load_project_env_file() -> None:
     """Load ``video-automation/.env`` when present (does not override existing env)."""
-    if os.environ.get("MK04_ENV", "dev").strip().lower() == "prod":
+    if is_production_env(os.environ.get("MK04_ENV"), default="dev"):
         return
     env_path = os.path.join(_PROJECT_DIR, ".env")
     if not os.path.isfile(env_path):
@@ -72,6 +155,7 @@ from pipeline_utils import (
     postprocess_segments,
 )
 from mk04_utils import (
+    assert_config_manager_pipeline_path_agreement,
     build_funnel_job_record,
     categorize_error,
     create_job_paths,
@@ -147,7 +231,7 @@ _JOB_RECOVERY_DONE = False
 
 
 def _assert_supported_prod_launch() -> None:
-    if os.environ.get("MK04_ENV", "dev").strip().lower() != "prod":
+    if not is_production_env(os.environ.get("MK04_ENV"), default="dev"):
         return
     required = {
         "MK04_ROOT": "/opt/mk04/prod/current",
@@ -175,6 +259,13 @@ def _assert_supported_prod_launch() -> None:
 
 
 _assert_supported_prod_launch()
+_assert_ungated_jobs_config()
+
+# When deployed, require PIPELINE_CONFIG_PATH jobs/output to match ConfigManager.
+if os.environ.get("MK04_RUNTIME_ROOT", "").strip() or os.environ.get(
+    "MK04_REQUIRE_RUNTIME_PATHS", ""
+).strip() in {"1", "true", "yes"}:
+    assert_config_manager_pipeline_path_agreement()
 
 
 def _secret_configured(env_name: str) -> str:
@@ -482,6 +573,174 @@ def _fail(message: str, *, log_detail=None, status_code=500):
         print(f"[process] {message}", flush=True)
     body = {"success": False, "error": message, "pipeline": PIPELINE_NAME}
     return jsonify(body), status_code
+
+
+def _load_env_config_for_job(
+    *,
+    funnel_id: str | None = None,
+    platform_id: str | None = None,
+    preset_id: str | None = None,
+    environment: str | None = None,
+):
+    """Load ConfigManager config for job creation.
+
+    Respects Prompt 3 runtime-path overrides via ConfigManager.
+    Production fails closed when configuration cannot be resolved.
+    """
+    env_token = environment if environment is not None else os.environ.get("MK04_ENV")
+    load_kwargs: dict[str, Any] = {}
+    if env_token is not None and str(env_token).strip():
+        load_kwargs["environment"] = str(env_token).strip()
+    if funnel_id:
+        load_kwargs["funnel_id"] = str(funnel_id).strip()
+    if platform_id:
+        load_kwargs["platform_id"] = str(platform_id).strip()
+    if preset_id:
+        load_kwargs["preset_id"] = str(preset_id).strip()
+
+    try:
+        return ConfigManager.load(**load_kwargs)
+    except ConfigError as exc:
+        if is_production_env(env_token, default="dev"):
+            raise RuntimeError(
+                f"Unable to create production job: configuration unavailable ({exc})"
+            ) from exc
+        raise RuntimeError(
+            f"Unable to create job: configuration unavailable ({exc})"
+        ) from exc
+
+
+def _save_execution_context(resolved, job_id: str, job_dir: str) -> dict[str, Any]:
+    """Persist execution_context.json and resolved_config.yaml for a job.
+
+    Uses ConfigManager snapshot + ExecutionContext serializers.
+    Returns a secret-safe context dict for reports/tasks/logging.
+    """
+    snap_path = resolved.save_snapshot(job_dir)
+    ctx = ExecutionContext.from_resolved_config(
+        resolved,
+        job_id=job_id,
+        resolved_config_path=snap_path,
+        repo_root=_REPO_ROOT,
+    )
+    ctx.save(job_dir)
+    return ctx.to_dict()
+
+
+def _log_pipeline_start(
+    *,
+    job_id: str,
+    funnel_id: str | None = None,
+    execution_context: dict[str, Any] | None = None,
+    run_id: str | None = None,
+    trigger: str | None = None,
+) -> None:
+    """Secret-safe structured start log for MK1 / pipeline processing."""
+    if isinstance(execution_context, dict):
+        env = str(execution_context.get("environment") or "unknown")
+        fid = str(
+            funnel_id
+            or execution_context.get("funnel_id")
+            or "unknown"
+        )
+        rid = str(run_id or execution_context.get("run_id") or "").strip()
+        trig = str(trigger or execution_context.get("trigger") or "").strip()
+        parts = [
+            f"job_id={job_id}",
+            f"environment={env}",
+            f"funnel_id={fid}",
+            "config_source=execution_context",
+            "legacy=false",
+        ]
+        if rid:
+            parts.append(f"run_id={rid}")
+        if trig:
+            parts.append(f"trigger={trig}")
+        print(f"[pipeline] start {' '.join(parts)}", flush=True)
+        return
+
+    fid = str(funnel_id or "unknown")
+    print(
+        f"[pipeline] start job_id={job_id} funnel_id={fid} "
+        f"config_source=legacy legacy=true "
+        f"(no execution_context; using compatibility path)",
+        flush=True,
+    )
+
+
+def _behavioural_config_from_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Unwrap ConfigManager snapshot nesting; flat test fixtures pass through."""
+    if not isinstance(snapshot, dict):
+        return None
+    nested = snapshot.get("resolved_config")
+    if isinstance(nested, dict):
+        return nested
+    return snapshot
+
+
+def _apply_resolved_selection_overrides(
+    selection_config: dict[str, Any] | None,
+    behavioural: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not behavioural:
+        return selection_config
+    sel = behavioural.get("selection")
+    if not isinstance(sel, dict):
+        return selection_config
+    out = dict(selection_config or {})
+    key_map = (
+        ("mode", "selection_mode"),
+        ("max_clips", "max_clips"),
+        ("min_overall_potential", "min_overall_potential"),
+        ("min_confidence", "min_confidence"),
+        ("exploration_ratio", "exploration_ratio"),
+    )
+    for src, dst in key_map:
+        if src in sel:
+            out[dst] = sel[src]
+            out[src] = sel[src]
+    return out
+
+
+def _apply_resolved_conveyor_overrides(
+    conveyor_config: dict[str, Any] | None,
+    behavioural: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not behavioural:
+        return conveyor_config
+    out = dict(conveyor_config or {})
+    pp = behavioural.get("post_processing")
+    if isinstance(pp, dict) and isinstance(pp.get("conveyor"), list):
+        out["conveyor"] = list(pp["conveyor"])
+    extracted = extract_conveyor_config_from_resolved(behavioural)
+    out.update(extracted)
+    return out
+
+
+def _configuration_error_response(
+    *,
+    report: dict[str, Any],
+    job: dict[str, str],
+    message: str,
+    details: Any = None,
+    http_error: str,
+):
+    err = categorize_error(
+        "configuration",
+        "configuration_error",
+        message,
+        details,
+    )
+    report["errors"] = [err]
+    report["warnings"] = []
+    _mark_report_failed(report)
+    report["completed_at"] = now_iso()
+    write_json(job["report_path"], report)
+    try:
+        write_review(job["review_path"], report)
+    except Exception as exc:
+        print("[jobs] review update failed:", repr(exc), flush=True)
+    return _fail(http_error, log_detail=message, status_code=500)
 
 
 def _parse_segments_from_selector_output(
@@ -1453,6 +1712,7 @@ def _persist_job_task(job: dict[str, str], task: dict[str, Any]) -> None:
         "input_source": task.get("input_source"),
         "input_ledger_state": task.get("input_ledger_state"),
         "policy_bundle": task.get("policy_bundle") or {},
+        "orchestration_context": task.get("orchestration_context"),
         "created_at": now_iso(),
     }
     write_json(job["task_path"], payload)
@@ -1574,11 +1834,97 @@ def _execute_job(task: dict[str, Any]) -> None:
     job_id = str(task["job_id"])
     input_id = task.get("input_id")
     video_path = str(task["video_path"])
+    orch = task.get("orchestration_context") if isinstance(task.get("orchestration_context"), dict) else {}
+    run_id = str(orch.get("run_id") or task.get("run_id") or f"job:{job_id}").strip()
+    environment = str(orch.get("environment") or os.environ.get("MK04_ENV") or "dev").strip()
     _progress(
         f"Worker picked up job — {os.path.basename(video_path)}"
         + (f" (input_id={input_id})" if input_id else ""),
         job_id=job_id,
     )
+    heavy = None
+    try:
+        from execution_gate import GateError, acquire_global_pipeline_lock  # noqa: PLC0415
+
+        # Recovered / queued jobs wait for the shared heavy-resource lock rather
+        # than failing permanently when production holds priority.
+        heavy = acquire_global_pipeline_lock(
+            environment=environment,
+            run_id=run_id,
+            job_id=job_id,
+            blocking=True,
+        )
+        _progress("Acquired global pipeline lock", job_id=job_id)
+    except GateError as exc:
+        msg = str(exc)
+        # Misconfiguration is terminal; busy/transient cases stay recoverable.
+        permanent = any(
+            token in msg.lower()
+            for token in ("required", "must not", "not configured", "repository path")
+        )
+        err = categorize_error(
+            "pipeline",
+            "execution_gate_error",
+            "Failed to acquire global pipeline lock",
+            repr(exc),
+        )
+        report = _load_json_object(job["report_path"]) or {}
+        errors = report.get("errors") if isinstance(report.get("errors"), list) else []
+        errors.append(err)
+        if permanent:
+            report.update(
+                {
+                    "status": "failed",
+                    "current_stage": "failed",
+                    "completed_at": now_iso(),
+                    "gate_error": msg,
+                    "errors": errors,
+                }
+            )
+            write_json(job["report_path"], report)
+            write_review(job["review_path"], report)
+            _progress(f"Gate config failed (terminal): {exc}", job_id=job_id)
+            _JOB_QUEUE.task_done()
+            return
+        report.update(
+            {
+                "status": "queued",
+                "current_stage": "queued",
+                "gate_error": msg,
+                "errors": errors,
+            }
+        )
+        write_json(job["report_path"], report)
+        _progress(f"Gate acquire failed (left queued): {exc}", job_id=job_id)
+        _JOB_QUEUE.task_done()
+        time.sleep(2.0)
+        _JOB_QUEUE.put(task)
+        return
+    except Exception as exc:
+        err = categorize_error(
+            "pipeline",
+            "execution_gate_error",
+            "Failed to acquire global pipeline lock",
+            repr(exc),
+        )
+        report = _load_json_object(job["report_path"]) or {}
+        errors = report.get("errors") if isinstance(report.get("errors"), list) else []
+        errors.append(err)
+        report.update(
+            {
+                "status": "queued",
+                "current_stage": "queued",
+                "gate_error": str(exc),
+                "errors": errors,
+            }
+        )
+        write_json(job["report_path"], report)
+        _progress(f"Gate acquire failed (left queued): {exc}", job_id=job_id)
+        _JOB_QUEUE.task_done()
+        time.sleep(2.0)
+        _JOB_QUEUE.put(task)
+        return
+
     try:
         _update_job_report(
             job,
@@ -1586,6 +1932,8 @@ def _execute_job(task: dict[str, Any]) -> None:
                 "status": "running",
                 "current_stage": "transcription",
                 "started_at": now_iso(),
+                "mk04_run_id": run_id,
+                "mk04_environment": environment,
             },
         )
         if input_id:
@@ -1661,6 +2009,11 @@ def _execute_job(task: dict[str, Any]) -> None:
                 print("[jobs] input ledger exception update failed", flush=True)
         _progress(f"Job crashed: {exc}", job_id=job_id)
     finally:
+        if heavy is not None:
+            try:
+                heavy.release()
+            except Exception:
+                pass
         _JOB_QUEUE.task_done()
 
 
@@ -1844,6 +2197,60 @@ def _run_mk1_pipeline_after_transcript(
     job_id = str(job["job_id"])
     job_dir = job["job_dir"]
 
+    # Load the job's configuration snapshot before any config-dependent work.
+    execution_context = load_execution_context_for_job(job_dir)
+    try:
+        resolved_snapshot = load_resolved_config_for_job(job_dir)
+    except ResolvedConfigLoadError as exc:
+        return _configuration_error_response(
+            report=report,
+            job=job,
+            message=(
+                f"resolved_config.yaml is invalid and cannot be used: {exc}"
+            ),
+            details={
+                "path": str(
+                    getattr(exc, "path", None)
+                    or os.path.join(job_dir, "resolved_config.yaml")
+                )
+            },
+            http_error=(
+                "Invalid resolved_config.yaml — refusing to run pipeline "
+                "with a malformed configuration snapshot"
+            ),
+        )
+
+    env_hint = None
+    if isinstance(execution_context, dict):
+        env_hint = execution_context.get("environment")
+    if not env_hint:
+        env_hint = report.get("mk04_environment") or os.environ.get("MK04_ENV")
+
+    if resolved_snapshot is None and is_production_env(env_hint, default="dev"):
+        return _configuration_error_response(
+            report=report,
+            job=job,
+            message=(
+                "resolved_config.yaml is missing for a production job; "
+                "refusing to run without a configuration snapshot"
+            ),
+            details={"job_dir": job_dir},
+            http_error=(
+                "Missing resolved_config.yaml for production job — "
+                "configuration snapshot required"
+            ),
+        )
+
+    behavioural_config = _behavioural_config_from_snapshot(resolved_snapshot)
+    _log_pipeline_start(
+        job_id=job_id,
+        funnel_id=funnel_id,
+        execution_context=execution_context,
+        run_id=str(report.get("mk04_run_id") or "") or None,
+    )
+    if execution_context is not None:
+        report["execution_context"] = execution_context
+
     # The local model is needed for section candidate discovery; mark the GPU
     # phase transition just like the legacy selection stage does.
     report["current_stage"] = "processing"
@@ -1882,6 +2289,7 @@ def _run_mk1_pipeline_after_transcript(
             ai_client=discovery_client,
             discovery_config=discovery_config,
             sectioning_config=sectioning_config,
+            execution_context=execution_context,
         )
     except (ProcessingPipelineError, SectionCandidateDiscoveryError) as exc:
         err = categorize_error(
@@ -1968,6 +2376,13 @@ def _run_mk1_pipeline_after_transcript(
             )
         )
 
+    selection_config = _apply_resolved_selection_overrides(
+        selection_config, behavioural_config
+    )
+    conveyor_config = _apply_resolved_conveyor_overrides(
+        conveyor_config, behavioural_config
+    )
+
     pp_config: dict[str, Any] = {
         "execute_post_processing": True,
         "transcript_path": transcript_path,
@@ -1987,6 +2402,7 @@ def _run_mk1_pipeline_after_transcript(
                 "job_id": job_id,
                 "funnel_id": funnel_id or "",
                 "processing_report_path": processing.processing_report_path,
+                "execution_context": execution_context,
             },
             config=pp_config,
             output_root=job_dir,
@@ -3156,255 +3572,27 @@ def get_job_debug(job_id: str):
     return jsonify(_job_debug_summary(job_dir, report))
 
 
-def _process_pipeline_json_payload(payload: dict[str, Any], *, route_label: str):
-    """Handle a parsed JSON body for ``/process`` and ``/process-inline`` (video must exist under input/)."""
-    raw_input_id = payload.get("input_id") or payload.get("job_id")
-    input_id = str(raw_input_id).strip() if raw_input_id is not None else ""
-    raw_video = payload.get("video")
-    raw_path = payload.get("video_path")
-    video_arg: str | None = None
-    video_from_path = False
-    ledger_record: dict[str, Any] | None = None
-    if input_id:
-        try:
-            ledger_record = input_ledger.load_record(input_id)
-            ledger_path = input_ledger.resolve_file_path(input_id)
-        except input_ledger.LedgerError as exc:
-            _pipeline_diagnostic_log(
-                "H4",
-                f"app.py:{route_label}",
-                "fail input ledger lookup",
-                {"input_id": input_id, "error": str(exc)[:500]},
-            )
-            return _fail("Input ledger lookup failed", log_detail=str(exc), status_code=400)
-        video_arg = str(ledger_path)
-        _pipeline_diagnostic_log(
-            "H4",
-            f"app.py:{route_label}",
-            "resolved video from input ledger",
-            {
-                "input_id": input_id,
-                "ledger_state": ledger_record.get("state"),
-                "video_path": str(ledger_path),
-            },
-        )
-    elif raw_video is not None and str(raw_video).strip():
-        video_arg = str(raw_video).strip()
-    elif raw_path is not None and str(raw_path).strip():
-        video_arg = os.path.basename(str(raw_path).strip().rstrip("/"))
-        video_from_path = True
-        _pipeline_diagnostic_log(
-            "H4",
-            f"app.py:{route_label}",
-            "derived video basename from video_path",
-            {
-                "video_path_prefix": str(raw_path)[:280],
-                "video_arg": video_arg,
-            },
-        )
-    if not video_arg:
-        _pipeline_diagnostic_log(
-            "H4",
-            f"app.py:{route_label}",
-            "fail missing input_id, video and video_path",
-            {"payload_keys": sorted(payload.keys())},
-        )
-        return _fail(
-            "Missing usable 'input_id', 'video' or 'video_path' in the JSON body (after unwrapping common automation keys: "
-            "json, body, data, item). Prefer sending run-funnel's input_id, e.g. use a JSON body with "
-            "\"input_id\": \"={{ $json.input_id }}\" on the same item that received /run-funnel output, "
-            "or merge that field into the object next to \"selection\".",
-            status_code=400,
-        )
-    selection_policy = payload.get("selection", {}) or {}
-    try:
-        _cfg = load_config()
-        _input_root_dbg = ensure_paths(_cfg)["input"]
-    except Exception as _e:
-        _input_root_dbg = f"<ensure_paths_error:{_e}>"
-    _pipeline_diagnostic_log(
-        "H4",
-        f"app.py:{route_label}",
-        "json parsed",
-        {
-            "video_arg": str(video_arg)[:500],
-            "video_from_video_path": video_from_path,
-            "input_id": input_id or None,
-            "input_ledger_state": (ledger_record or {}).get("state"),
-            "payload_keys": sorted(payload.keys()),
-            "payload_empty": payload == {},
-            "input_root_resolved": _input_root_dbg,
-        },
-    )
-    if not isinstance(selection_policy, dict):
-        _pipeline_diagnostic_log(
-            "H3",
-            f"app.py:{route_label}",
-            "fail invalid selection type",
-            {"detail": repr(selection_policy)[:300]},
-        )
-        return _fail(
-            "Invalid selection policy",
-            log_detail=repr(selection_policy),
-            status_code=400,
-        )
-
-    pipe_raw = payload.get("pipeline")
-    if pipe_raw is None:
-        pipe_blob: dict[str, Any] = {}
-    elif isinstance(pipe_raw, dict):
-        pipe_blob = pipe_raw
-    else:
-        _pipeline_diagnostic_log(
-            "H3",
-            f"app.py:{route_label}",
-            "fail pipeline not object",
-            {"pipe_type": type(pipe_raw).__name__},
-        )
-        return _fail("`pipeline` must be a JSON object when provided", status_code=400)
-
-    pp = payload.get("pipeline_profile")
-    prof_hint = pp.strip() if isinstance(pp, str) and pp.strip() else None
-    if prof_hint is None:
-        fid_catalog = payload.get("funnel_id")
-        if isinstance(fid_catalog, str) and fid_catalog.strip():
-            prof_hint = fid_catalog.strip()
-    if prof_hint is None:
-        fc_hint = payload.get("funnel_config")
-        if fc_hint is not None:
-            try:
-                prof_hint = sanitize_funnel_config_basename(fc_hint)
-            except ValueError:
-                prof_hint = None
-
-    fid_body = payload.get("funnel_id")
-    http_funnel_id = fid_body.strip() if isinstance(fid_body, str) and fid_body.strip() else None
-    fc_body = payload.get("funnel_config")
-
-    try:
-        bundle = resolve_http_policy_bundle(
-            selection_blob=selection_policy,
-            pipeline_blob=pipe_blob,
-            pipeline_profile_hint=prof_hint,
-            http_funnel_id=http_funnel_id,
-            http_funnel_config=fc_body,
-        )
-    except ValueError as exc:
-        _pipeline_diagnostic_log(
-            "H3",
-            f"app.py:{route_label}",
-            "fail policy bundle",
-            {"error": str(exc)[:500]},
-        )
-        return _fail("Invalid pipeline policy resolution", log_detail=str(exc), status_code=400)
-
-    if input_id:
-        video_path = os.path.abspath(str(video_arg))
-    else:
-        _, video_path = _resolve_input_video_path(str(video_arg))
-    _pipeline_diagnostic_log(
-        "H2",
-        f"app.py:{route_label}",
-        "video path resolved",
-        {
-            "video_arg": str(video_arg)[:500],
-            "video_path": video_path,
-            "isfile": os.path.isfile(video_path),
-        },
-    )
-    if not os.path.isfile(video_path):
-        _pipeline_diagnostic_log(
-            "H2",
-            f"app.py:{route_label}",
-            "fail input not found",
-            {"video_path": video_path},
-        )
-        if input_id:
-            try:
-                input_ledger.mark_failed(input_id, f"input_video_not_found: {video_path}")
-            except input_ledger.LedgerError:
-                print("[process] input ledger missing-file update failed", flush=True)
-        return _fail(
-            "Input video not found for /process. Copy or move the source video into the configured input folder, then send its basename as `video`.",
-            log_detail=video_path,
-            status_code=400,
-        )
-    _pipeline_diagnostic_log(
-        "H5",
-        f"app.py:{route_label}",
-        "starting _run_pipeline",
-        {"video_path": video_path, "input_id": input_id or None},
-    )
-    if input_id:
-        try:
-            input_ledger.mark_processing(input_id)
-        except input_ledger.LedgerError as exc:
-            _pipeline_diagnostic_log(
-                "H5",
-                f"app.py:{route_label}",
-                "fail mark input processing",
-                {"input_id": input_id, "error": str(exc)[:500]},
-            )
-            return _fail("Input ledger update failed", log_detail=str(exc), status_code=500)
-    try:
-        response = _run_pipeline(video_path, bundle, input_id=input_id or None)
-    except Exception as exc:
-        if input_id:
-            try:
-                input_ledger.mark_failed(input_id, f"pipeline_exception: {exc}")
-            except input_ledger.LedgerError:
-                print("[process] input ledger exception update failed", flush=True)
-        raise
-    if input_id:
-        try:
-            status_code = response[1] if isinstance(response, tuple) and len(response) > 1 else 200
-            response_obj = response[0] if isinstance(response, tuple) else response
-            body: dict[str, Any] = {}
-            try:
-                body = response_obj.get_json(silent=True) or {}
-            except Exception:
-                body = {}
-            if isinstance(status_code, int) and 200 <= status_code < 300 and body.get("success") is True:
-                try:
-                    completed_record = input_ledger.load_record(input_id)
-                    meta = completed_record.get("source_metadata")
-                    if not isinstance(meta, dict):
-                        meta = {}
-                    DuplicateStore().mark_seen(
-                        video_id=str(meta.get("video_id") or "") or None,
-                        url=str(completed_record.get("source_url") or "") or None,
-                    )
-                except Exception as exc:
-                    print(
-                        "[process] seen store final success update failed:",
-                        repr(exc),
-                        flush=True,
-                    )
-                input_ledger.mark_succeeded(
-                    input_id,
-                    {
-                        "pipeline_job_id": body.get("job_id"),
-                        "run_id": body.get("run_id"),
-                        "clip_count": len(body.get("clips") or []),
-                    },
-                )
-            else:
-                input_ledger.mark_failed(
-                    input_id,
-                    body.get("error") or f"pipeline_http_status:{status_code}",
-                    {
-                        "pipeline_job_id": body.get("job_id"),
-                        "run_id": body.get("run_id"),
-                        "status_code": status_code,
-                    },
-                )
-        except input_ledger.LedgerError:
-            print("[process] input ledger terminal update failed", flush=True)
-    return response
-
-
 def _create_job_from_payload(payload: dict[str, Any], *, compatibility_route: str | None = None):
     payload = _lift_adapter_wrapped_video_fields(payload)
+    orch = _orchestration_context_from_request(payload)
+    ungated_cfg_error = _ungated_jobs_config_error()
+    if ungated_cfg_error:
+        return _fail(ungated_cfg_error, status_code=403)
+    if orch is None and not _ungated_jobs_allowed():
+        allow_raw = (os.environ.get("MK04_ALLOW_UNGATED_JOBS") or "").strip().lower()
+        if allow_raw in {"1", "true", "yes"} and not _test_mode_active():
+            return _fail(
+                "MK04_ALLOW_UNGATED_JOBS requires explicit test mode "
+                "(MK04_TEST_MODE=1 or pytest); ordinary development must supply "
+                "orchestration_context via run_pipeline",
+                status_code=403,
+            )
+        return _fail(
+            "orchestration context required: set orchestration_context.run_id "
+            "(or X-MK04-Run-Id) via the canonical run_pipeline coordinator; "
+            "direct ungated jobs are disabled",
+            status_code=403,
+        )
     try:
         input_id, video_path, input_source, ledger_record = _resolve_job_video_input(payload)
     except input_ledger.LedgerError as exc:
@@ -3498,6 +3686,71 @@ def _create_job_from_payload(payload: dict[str, Any], *, compatibility_route: st
     job_id = _new_job_id()
     config = load_config()
     job = create_job_paths(config, video_path, job_id=job_id)
+
+    funnel_id_for_config = None
+    funnel_ops_raw = bundle.get("funnel_ops")
+    if isinstance(funnel_ops_raw, dict):
+        fid_raw = funnel_ops_raw.get("funnel_id")
+        if isinstance(fid_raw, str) and fid_raw.strip():
+            funnel_id_for_config = fid_raw.strip()
+    if funnel_id_for_config is None and http_funnel_id:
+        funnel_id_for_config = http_funnel_id
+
+    platform_id_for_config = None
+    if isinstance(funnel_ops_raw, dict):
+        platforms = funnel_ops_raw.get("platforms")
+        if isinstance(platforms, dict):
+            enabled = [k for k, v in platforms.items() if v is True]
+            if enabled:
+                platform_id_for_config = sorted(enabled)[0]
+
+    orch_env = orch.get("environment") if isinstance(orch, dict) else None
+    try:
+        resolved_env_config = _load_env_config_for_job(
+            funnel_id=funnel_id_for_config,
+            platform_id=platform_id_for_config,
+            environment=orch_env,
+        )
+        execution_context = _save_execution_context(
+            resolved_env_config, job_id, job["job_dir"]
+        )
+    except Exception as exc:
+        err = categorize_error(
+            "configuration",
+            "configuration_error",
+            f"Failed to persist job configuration snapshot: {exc}",
+            {"job_id": job_id},
+        )
+        report = {
+            "job_id": job_id,
+            "input_id": input_id,
+            "input_source": input_source,
+            "input_video_path": os.path.abspath(video_path),
+            "input_video_name": os.path.basename(video_path),
+            "status": "failed",
+            "current_stage": "failed",
+            "created_at": now_iso(),
+            "started_at": None,
+            "completed_at": now_iso(),
+            "errors": [err],
+            "warnings": [],
+            "stage_timings_ms": {},
+            "clips": [],
+            "job_store_type": "json",
+        }
+        write_json(job["report_path"], report)
+        write_review(job["review_path"], report)
+        print(
+            "[jobs] configuration snapshot failed:",
+            repr(exc),
+            flush=True,
+        )
+        return _fail(
+            str(exc) if str(exc) else "Failed to create job configuration snapshot",
+            log_detail=repr(exc),
+            status_code=500,
+        )
+
     report = _create_queued_report(
         job_id=job_id,
         job=job,
@@ -3506,6 +3759,14 @@ def _create_job_from_payload(payload: dict[str, Any], *, compatibility_route: st
         input_source=input_source,
         policy_bundle=bundle,
     )
+    report["execution_context"] = execution_context
+    write_json(job["report_path"], report)
+    write_review(job["review_path"], report)
+    if orch:
+        report["mk04_run_id"] = orch["run_id"]
+        report["mk04_environment"] = orch["environment"]
+        write_json(job["report_path"], report)
+        write_review(job["review_path"], report)
     if compatibility_route:
         report["compatibility_route"] = compatibility_route
         report["deprecated_endpoint"] = compatibility_route
@@ -3520,6 +3781,8 @@ def _create_job_from_payload(payload: dict[str, Any], *, compatibility_route: st
         "input_source": input_source,
         "input_ledger_state": (ledger_record or {}).get("state"),
         "policy_bundle": bundle,
+        "orchestration_context": orch,
+        "execution_context": execution_context,
     }
     try:
         _persist_job_task(job, task)

@@ -1,0 +1,61 @@
+<article class="card overview-card console-section console-funnels">
+  <div class="card-head">
+    <h3>Funnel configuration</h3>
+    <a class="console-section-link" href="{{ url_for('funnels_page') }}">Manage funnels</a>
+  </div>
+
+  {% if console_funnels_empty %}
+  <p class="muted">
+    No canonical funnels in the registry yet.
+    <a href="{{ url_for('funnel_create_page') }}">Create a funnel</a>
+    or open
+    <a href="{{ url_for('funnels_page') }}">Funnel Management</a>.
+  </p>
+  {% else %}
+  <p class="muted console-supporting">
+    Canonical registry:
+    <code>{{ console_funnels_registry_path }}</code>
+    {% if console_ingestion_paused %}
+      · ingestion paused
+    {% elif not console_funnels_ops_available %}
+      · live run health unavailable
+    {% endif %}
+  </p>
+
+  <div class="table-wrap">
+    <table class="console-funnel-table">
+      <thead>
+        <tr>
+          <th>Funnel</th>
+          <th>Readiness</th>
+          <th>Runnable</th>
+          <th>Sources</th>
+          <th>Platforms</th>
+          <th>Validation</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in console_funnel_rows %}
+          <tr>
+            <td>
+              <strong>
+                <a href="{{ url_for('funnel_detail_page', funnel_id=row.funnel_id) }}">
+                  {{ row.display_name }}
+                </a>
+              </strong>
+              <div class="muted mono">{{ row.funnel_id }}</div>
+            </td>
+            <td>
+              <span class="pill {{ row.readiness_status|status_class }}">{{ row.readiness_status }}</span>
+            </td>
+            <td>{{ 'yes' if row.runnable else 'no' }}</td>
+            <td>{{ row.source_count }}</td>
+            <td>{{ row.target_platforms_display }}</td>
+            <td class="muted">{{ row.validation_summary }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</article>

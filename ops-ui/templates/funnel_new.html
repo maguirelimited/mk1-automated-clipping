@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <div>
+      <p class="eyebrow">Funnel Management</p>
+      <h2>Create Funnel</h2>
+    </div>
+  </div>
+  <p class="hint muted">
+    Create a baseline dev/test funnel. You only need a name, niche, source URL, and template.
+    Processing defaults are applied automatically. Posting stays off until you configure it later.
+  </p>
+  <div class="actions">
+    <a class="button-link" href="{{ url_for('funnels_page') }}">← All funnels</a>
+  </div>
+</section>
+
+{% if errors %}
+<section class="card">
+  <h3>Please fix the following</h3>
+  <ul class="check-list">
+    {% for error in errors %}
+      <li>{{ error }}</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section class="card">
+  <form method="post" action="{{ url_for('funnel_create_submit') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <h3>Basics</h3>
+    <label>
+      Funnel ID
+      <input type="text" name="funnel_id" value="{{ form.funnel_id }}" required autocomplete="off" class="mono">
+    </label>
+    <p class="hint muted">Lowercase letters, numbers, and underscores only.</p>
+
+    <label>
+      Display name
+      <input type="text" name="display_name" value="{{ form.display_name }}" required autocomplete="off">
+    </label>
+
+    <label>
+      Niche / category
+      <input type="text" name="category" value="{{ form.category }}" required autocomplete="off" placeholder="e.g. gaming, podcast, sports">
+    </label>
+
+    <label>
+      Description <span class="muted">(optional)</span>
+      <textarea name="description" rows="2">{{ form.description }}</textarea>
+    </label>
+
+    <h3>Source</h3>
+    <label>
+      Source type
+      <select name="source_type" required>
+        {% for option in per_source_types %}
+          <option value="{{ option.value }}" {{ 'selected' if form.source_type == option.value else '' }}>{{ option.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label>
+      Source URL(s)
+      <textarea name="source_urls" rows="4" required autocomplete="off" class="mono"
+        placeholder="{{ source_url_placeholder_playlist if form.source_type == 'youtube_playlist' else source_url_placeholder_channel }}">{{ form.source_urls }}</textarea>
+    </label>
+    <p class="hint muted">One URL per line. Channel or playlist links are both supported.</p>
+
+    <h3>Baseline template</h3>
+    <label>
+      Template
+      <select name="template_id" required>
+        {% for template in templates %}
+          <option value="{{ template.template_id }}" {{ 'selected' if form.template_id == template.template_id else '' }}>
+            {{ template.display_name }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    {% for template in templates %}
+      {% if form.template_id == template.template_id %}
+        <p class="muted">{{ template.description }}</p>
+      {% endif %}
+    {% endfor %}
+
+    <details class="muted">
+      <summary>What gets configured automatically</summary>
+      <ul class="check-list">
+        <li>Environment: dev</li>
+        <li>Status: testing (ready for dev/test runs after sync)</li>
+        <li>AI profile: built-in baseline rules</li>
+        <li>Clipping: conservative defaults for rough clips</li>
+        <li>Posting: disabled</li>
+      </ul>
+    </details>
+
+    <div class="actions">
+      <button type="submit">Create funnel</button>
+      <a class="button-link" href="{{ url_for('funnels_page') }}">Cancel</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

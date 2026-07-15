@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="overview-page">
+  <article class="card overview-card">
+    <h2>Confirm high-risk action</h2>
+    <p class="muted">
+      This action can affect production behaviour. It uses the same operational
+      backend as SSH. Confirm only if you intend to proceed.
+    </p>
+    <dl class="overview-dl">
+      <div><dt>Action</dt><dd><strong>{{ action_label }}</strong></dd></div>
+      <div><dt>Environment</dt><dd>{{ shell_environment_label }}</dd></div>
+      {% if restart_target %}
+      <div><dt>Target</dt><dd><code>{{ restart_target }}</code></dd></div>
+      {% endif %}
+      {% if funnel_id %}
+      <div><dt>Funnel</dt><dd><code>{{ funnel_id }}</code></dd></div>
+      {% endif %}
+    </dl>
+
+    <div class="controls-actions">
+      <form method="post" action="{{ url_for('ops_action', action=action) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="confirm" value="yes">
+        {% if restart_target %}
+        <input type="hidden" name="restart_target" value="{{ restart_target }}">
+        {% endif %}
+        {% if funnel_id %}
+        <input type="hidden" name="funnel_id" value="{{ funnel_id }}">
+        {% endif %}
+        <button type="submit" class="filter-submit risk-high">Confirm {{ action_label }}</button>
+      </form>
+      <a class="filter-clear" href="{{ url_for('ops_overview') }}">Cancel</a>
+    </div>
+  </article>
+</section>
+{% endblock %}

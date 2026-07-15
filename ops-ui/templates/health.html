@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 
 {% block content %}
+{% set diagnostic_notice_text = "Service doctor and readiness checks. For operator failure triage use Failures." %}
+{% set diagnostic_notice_extra %} <a href="{{ url_for('ops_failures') }}">Failures</a> · <a href="{{ url_for('ops_overview') }}">Console</a>{% endset %}
+{% include "partials/_diagnostic_page_notice.html" %}
 <section class="card">
   <div class="card-head">
     <div>
@@ -11,7 +14,7 @@
   </div>
   <p class="hint muted">
     Aggregates each service <code>/doctor</code> (or output-funnel <code>/healthz</code> + local SQLite check).
-    Paths are validated on the machine running Mission Control.
+    Paths are validated on the machine running ops-ui (not necessarily Mission Control).
   </p>
 </section>
 

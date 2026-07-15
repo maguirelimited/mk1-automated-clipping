@@ -455,6 +455,7 @@ def _execute_post_processing_flow(
                     conveyor_result.get("status") if conveyor_result else None
                 ),
             },
+            execution_context=job_metadata.get("execution_context") or None,
         )
         write_post_processing_report(report, post_processing_report_path)
     except Exception as exc:
@@ -574,23 +575,30 @@ def _resolve_selection_config(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_CONVEYOR_CONFIG_EXCLUDED_KEYS = frozenset(
+    {
+        "execute_post_processing",
+        "module_registry",
+        "selection_config",
+        "conveyor_config",
+        "processing_report_path",
+        "output_root",
+    }
+)
+
+
 def _resolve_conveyor_config(config: dict[str, Any]) -> dict[str, Any]:
-    raw = config.get("conveyor_config")
-    if isinstance(raw, dict):
-        return dict(raw)
-    return {
+    global_fields = {
         key: value
         for key, value in config.items()
-        if key
-        not in {
-            "execute_post_processing",
-            "module_registry",
-            "selection_config",
-            "conveyor_config",
-            "processing_report_path",
-            "output_root",
-        }
+        if key not in _CONVEYOR_CONFIG_EXCLUDED_KEYS
     }
+    raw = config.get("conveyor_config")
+    if isinstance(raw, dict):
+        # Preserve job-wide context (transcript_path, funnel_id, …) while letting
+        # nested conveyor_config override module-specific settings.
+        return {**global_fields, **dict(raw)}
+    return global_fields
 
 
 def _public_config(config: dict[str, Any]) -> dict[str, Any]:

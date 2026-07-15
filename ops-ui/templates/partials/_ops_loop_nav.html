@@ -1,0 +1,8 @@
+{# Daily operator loop links — pass `links` as list of {label, href, primary?, muted?} #}
+{% if links %}
+<nav class="console-links page-loop-nav" aria-label="Daily loop navigation">
+  {% for link in links %}
+  <a class="console-link{% if link.primary %} console-link-primary{% endif %}{% if link.muted %} console-link-muted{% endif %}" href="{{ link.href }}">{{ link.label }}</a>
+  {% endfor %}
+</nav>
+{% endif %}

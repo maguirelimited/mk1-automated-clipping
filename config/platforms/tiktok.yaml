@@ -1,0 +1,27 @@
+# config/platforms/tiktok.yaml
+#
+# Platform configuration for TikTok.
+# Do not include secrets, API tokens, session cookies, or real account IDs here.
+
+platform:
+  id: tiktok
+  name: TikTok
+  enabled: false
+
+uploading:
+  enabled: false
+
+format:
+  aspect_ratio: "9:16"
+  width: 1080
+  height: 1920
+  max_duration_seconds: 60
+  title_max_length: 150
+  caption_max_length: 2200
+
+accounts:
+  default_account_id: null
+
+posting:
+  default_hashtags: []
+  posting_windows: []

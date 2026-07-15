@@ -1,0 +1,14 @@
+<article class="card overview-card">
+  <h3>Needs attention</h3>
+  {% if attention %}
+  <ul class="attention-list">
+    {% for item in attention %}
+    <li>{{ item }}</li>
+    {% endfor %}
+  </ul>
+  {% elif attention_empty %}
+  <p class="muted">No attention items reported by the backend.</p>
+  {% else %}
+  <p class="muted">Unavailable while disconnected.</p>
+  {% endif %}
+</article>

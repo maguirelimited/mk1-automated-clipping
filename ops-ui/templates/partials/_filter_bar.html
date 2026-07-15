@@ -1,0 +1,19 @@
+<form class="filter-bar" method="get" action="{{ action }}">
+  {% for field in fields %}
+  <label class="filter-field">
+    <span>{{ field.label }}</span>
+    <select name="{{ field.name }}">
+      <option value="">All</option>
+      {% for option in field.options %}
+      <option value="{{ option.value }}" {% if field.selected == option.value %}selected{% endif %}>
+        {{ option.label }}
+      </option>
+      {% endfor %}
+    </select>
+  </label>
+  {% endfor %}
+  <button type="submit" class="filter-submit">Apply</button>
+  {% if clear_url %}
+  <a class="filter-clear" href="{{ clear_url }}">Clear</a>
+  {% endif %}
+</form>

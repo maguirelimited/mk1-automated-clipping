@@ -200,6 +200,29 @@ def test_run_retention_cleanup_invokes_without_sudo(tmp_path: Path, monkeypatch)
     # Runtime root + env propagate reliably (no sudo to strip them).
     assert captured["env"]["MK04_RUNTIME_ROOT"] == str(runtime_root)
     assert captured["env"]["MK04_ENV"] == "dev"
+    assert "/var/lib/mk04" not in captured["env"]["MK04_RUNTIME_ROOT"]
+
+
+def test_run_retention_cleanup_overrides_inherited_runtime_root(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Explicit settings.runtime_root must win over a polluted process env."""
+    repo_root = Path(__file__).resolve().parents[2]
+    captured: dict = {}
+
+    def _fake_run(args, *, timeout, env=None):
+        captured["env"] = dict(env or {})
+        return CommandResult(True, "[tag] summary removed=0 bytes=0 dry_run=0", 0)
+
+    monkeypatch.setattr("ops_ui.system._run", _fake_run)
+    monkeypatch.setenv("MK04_RUNTIME_ROOT", "/var/lib/mk04/dev")
+    runtime_root = tmp_path / "isolated_runtime"
+    settings = _settings(tmp_path, runtime_root=runtime_root, code_root=repo_root)
+    result = run_retention_cleanup(settings, media_days=5, metadata_days=14)
+    assert result.ok is True
+    assert captured["env"]["MK04_RUNTIME_ROOT"] == str(runtime_root)
+    assert captured["env"]["MK04_RUNTIME_ROOT"] != "/var/lib/mk04/dev"
+    assert "/var/lib/mk04" not in captured["env"]["MK04_RUNTIME_ROOT"]
 
 
 def test_cleanup_preview_route_renders(tmp_path: Path) -> None:

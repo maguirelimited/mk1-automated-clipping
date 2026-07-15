@@ -20,25 +20,23 @@ OUTPUT_FUNNEL_ROOT="$MK04_ROOT/output-funnel"
 OPS_UI_ROOT="$MK04_ROOT/ops-ui"
 AI_SERVICE_ROOT="$MK04_ROOT/ai-service"
 
-python3 -m venv "$INPUT_ROOT/.venv"
-"$INPUT_ROOT/.venv/bin/python" -m pip install --upgrade pip
-"$INPUT_ROOT/.venv/bin/python" -m pip install -r "$INPUT_ROOT/requirements.txt"
+ensure_component_venv() {
+  local venv_dir="$1"
+  local requirements="$2"
+  if [[ -L "$venv_dir" ]]; then
+    echo "Preserving promotion dependency-bundle venv symlink: $venv_dir"
+    return 0
+  fi
+  python3 -m venv "$venv_dir"
+  "$venv_dir/bin/python" -m pip install --upgrade pip
+  "$venv_dir/bin/python" -m pip install -r "$requirements"
+}
 
-python3 -m venv "$VIDEO_ROOT/.venv"
-"$VIDEO_ROOT/.venv/bin/python" -m pip install --upgrade pip
-"$VIDEO_ROOT/.venv/bin/python" -m pip install -r "$VIDEO_ROOT/requirements-dev.txt"
-
-python3 -m venv "$OUTPUT_FUNNEL_ROOT/.venv"
-"$OUTPUT_FUNNEL_ROOT/.venv/bin/python" -m pip install --upgrade pip
-"$OUTPUT_FUNNEL_ROOT/.venv/bin/python" -m pip install -r "$OUTPUT_FUNNEL_ROOT/requirements.txt"
-
-python3 -m venv "$OPS_UI_ROOT/.venv"
-"$OPS_UI_ROOT/.venv/bin/python" -m pip install --upgrade pip
-"$OPS_UI_ROOT/.venv/bin/python" -m pip install -r "$OPS_UI_ROOT/requirements.txt"
-
-python3 -m venv "$AI_SERVICE_ROOT/.venv"
-"$AI_SERVICE_ROOT/.venv/bin/python" -m pip install --upgrade pip
-"$AI_SERVICE_ROOT/.venv/bin/python" -m pip install -r "$AI_SERVICE_ROOT/requirements.txt"
+ensure_component_venv "$INPUT_ROOT/.venv" "$INPUT_ROOT/requirements.txt"
+ensure_component_venv "$VIDEO_ROOT/.venv" "$VIDEO_ROOT/requirements-dev.txt"
+ensure_component_venv "$OUTPUT_FUNNEL_ROOT/.venv" "$OUTPUT_FUNNEL_ROOT/requirements.txt"
+ensure_component_venv "$OPS_UI_ROOT/.venv" "$OPS_UI_ROOT/requirements.txt"
+ensure_component_venv "$AI_SERVICE_ROOT/.venv" "$AI_SERVICE_ROOT/requirements.txt"
 
 mkdir -p \
   "$AI_SERVICE_ROOT/logs" \
@@ -67,6 +65,8 @@ mkdir -p \
   "$MK04_RUNTIME_ROOT/video-automation/analytics" \
   "$MK04_RUNTIME_ROOT/output-funnel" \
   "$MK04_RUNTIME_ROOT/ops-ui" \
+  "$MK04_RUNTIME_ROOT/data" \
+  "$MK04_RUNTIME_ROOT/data/cache" \
   "$MK04_LOG_ROOT/video-automation" \
   "$MK04_LOG_ROOT/output-funnel" \
   "$MK04_LOG_ROOT/ops-ui" \

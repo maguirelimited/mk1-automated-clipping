@@ -1,0 +1,22 @@
+<article class="card overview-card console-section console-quick-links">
+  <h3>Daily loop</h3>
+  <nav class="console-links" aria-label="Daily operator navigation">
+    <a class="console-link console-link-primary" href="{{ url_for('ops_outputs') }}">Outputs</a>
+    <a class="console-link" href="{{ url_for('ops_runs') }}">Runs</a>
+    <a class="console-link" href="{{ url_for('ops_jobs') }}">Jobs</a>
+    <a class="console-link" href="{{ url_for('ops_failures') }}">Failures</a>
+  </nav>
+  <h4 class="console-quick-links-subheading">Diagnostics</h4>
+  <nav class="console-links" aria-label="Diagnostic navigation">
+    <a class="console-link" href="{{ url_for('ops_storage') }}">Storage</a>
+    <a class="console-link" href="{{ url_for('ops_configuration') }}">Configuration</a>
+    <a class="console-link" href="{{ url_for('health') }}">Health</a>
+    <a class="console-link" href="{{ url_for('logs') }}">Logs</a>
+  </nav>
+  <h4 class="console-quick-links-subheading">Advanced / Legacy</h4>
+  <p class="muted console-quick-links-note">Deep tools outside the daily <code>/ops</code> workflow.</p>
+  <nav class="console-links" aria-label="Advanced and legacy navigation">
+    <a class="console-link console-link-muted" href="{{ url_for('dashboard') }}">Mission Control</a>
+    <a class="console-link console-link-muted" href="{{ url_for('funnels_page') }}">Funnel Management</a>
+  </nav>
+</article>

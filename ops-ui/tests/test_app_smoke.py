@@ -6,8 +6,8 @@ from ops_ui.app import create_app
 from ops_ui.config import ServiceConfig, Settings
 
 
-def test_dashboard_renders_when_services_are_offline(tmp_path: Path) -> None:
-    settings = Settings(
+def _settings(tmp_path: Path, *, environment: str = "dev") -> Settings:
+    return Settings(
         host="127.0.0.1",
         port=5070,
         data_dir=tmp_path,
@@ -19,6 +19,7 @@ def test_dashboard_renders_when_services_are_offline(tmp_path: Path) -> None:
         stuck_running_sec=7200.0,
         stuck_queued_sec=1800.0,
         stuck_uploading_sec=1800.0,
+        environment=environment,
         services=(
             ServiceConfig(
                 key="source-input",
@@ -40,9 +41,12 @@ def test_dashboard_renders_when_services_are_offline(tmp_path: Path) -> None:
             ),
         ),
     )
-    app = create_app(settings)
 
-    response = app.test_client().get("/")
+
+def test_dashboard_renders_when_services_are_offline(tmp_path: Path) -> None:
+    app = create_app(_settings(tmp_path))
+
+    response = app.test_client().get("/dashboard")
 
     assert response.status_code == 200
     assert b"Mission Control" in response.data
@@ -53,7 +57,5 @@ def test_dashboard_renders_when_services_are_offline(tmp_path: Path) -> None:
     assert b"Upload Queue" in publishing.data
 
     clip_review = app.test_client().get("/clip-review")
-    assert clip_review.status_code == 200
-    assert b"Review Queue" in clip_review.data
-    assert b"do not currently block publishing" in clip_review.data
-
+    assert clip_review.status_code in {302, 301}
+    assert "/ops/outputs" in (clip_review.headers.get("Location") or "")

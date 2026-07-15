@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card ops-placeholder">
+  <h2>{{ page_title }}</h2>
+  <p class="muted">
+    This page is a navigation placeholder in the Operations UI shell.
+    It will be implemented in a later Operations &amp; Observability phase.
+  </p>
+  <p class="muted">
+    Operational context above (environment, health, activity, upload, scheduler)
+    is loaded from the observability backend (<code>/health</code>, <code>/status</code>).
+  </p>
+  {% if not shell_connected %}
+  <div class="flash bad">
+    Observability backend disconnected. Status values are not fabricated.
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

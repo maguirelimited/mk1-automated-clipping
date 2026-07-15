@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <div>
+      <p class="eyebrow">Funnel Management</p>
+      <h2>Clone Funnel</h2>
+    </div>
+  </div>
+  <p class="hint muted">
+    Copy an existing canonical funnel into a new draft registry entry. Runtime configs are not
+    changed. Clones start disabled with posting off.
+  </p>
+  <div class="actions">
+    <a class="button-link" href="{{ url_for('funnel_detail_page', funnel_id=source.funnel_id) }}">← Source funnel</a>
+    <a class="button-link" href="{{ url_for('funnels_page') }}">All funnels</a>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Source funnel</h2></div>
+  <dl class="grid grid-2">
+    <div><dt>Display name</dt><dd>{{ source.display_name }}</dd></div>
+    <div><dt>Funnel ID</dt><dd class="mono">{{ source.funnel_id }}</dd></div>
+    <div><dt>Category</dt><dd>{{ source.category }}</dd></div>
+    <div><dt>Environment</dt><dd>{{ source.environment }}</dd></div>
+    <div><dt>Status</dt><dd><span class="pill muted">{{ source.status }}</span></dd></div>
+    <div><dt>Enabled</dt><dd>{{ 'yes' if source.enabled else 'no' }}</dd></div>
+    <div><dt>Sources</dt><dd>{{ source.source_count }}</dd></div>
+    <div><dt>Target platforms</dt><dd>{{ source.target_platforms_display }}</dd></div>
+    <div><dt>Routes</dt><dd>{{ source.route_count }}</dd></div>
+  </dl>
+</section>
+
+{% if errors %}
+<section class="card">
+  <h3>Please fix the following</h3>
+  <ul class="check-list">
+    {% for error in errors %}
+      <li>{{ error }}</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section class="card">
+  <form method="post" action="{{ url_for('funnel_clone_submit', funnel_id=source.funnel_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <h3>New funnel identity</h3>
+    <label>
+      New funnel ID
+      <input type="text" name="new_funnel_id" value="{{ form.new_funnel_id }}" required autocomplete="off" class="mono">
+    </label>
+    <p class="hint muted">Use lowercase letters, numbers, and underscores only.</p>
+
+    <label>
+      Display name
+      <input type="text" name="display_name" value="{{ form.display_name }}" required autocomplete="off">
+    </label>
+
+    <label>
+      Environment
+      <select name="environment">
+        <option value="dev" {{ 'selected' if form.environment == 'dev' else '' }}>dev</option>
+        <option value="prod" {{ 'selected' if form.environment == 'prod' else '' }}>prod</option>
+      </select>
+    </label>
+
+    <label>
+      Description
+      <textarea name="description" rows="2">{{ form.description }}</textarea>
+    </label>
+
+    <label>
+      Category
+      <input type="text" name="category" value="{{ form.category }}" autocomplete="off">
+    </label>
+
+    <label>
+      Operator note
+      <textarea name="operator_note" rows="2">{{ form.operator_note }}</textarea>
+    </label>
+
+    <h3>Copy options</h3>
+    <label>
+      <input type="checkbox" name="copy_sources" value="on" {{ 'checked' if form.copy_sources else '' }}>
+      Copy acquisition sources
+    </label>
+    <label>
+      <input type="checkbox" name="copy_distribution_routes" value="on" {{ 'checked' if form.copy_distribution_routes else '' }}>
+      Copy distribution channel routes
+    </label>
+    <label>
+      <input type="checkbox" name="copy_mappings" value="on" {{ 'checked' if form.copy_mappings else '' }}>
+      Copy ConfigManager mapping
+    </label>
+    <p class="muted">Copied routes are canonical intent only until output-funnel sync is implemented later.</p>
+
+    <div class="actions">
+      <button type="submit">Create cloned draft</button>
+      <a class="button-link" href="{{ url_for('funnel_detail_page', funnel_id=source.funnel_id) }}">Cancel</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

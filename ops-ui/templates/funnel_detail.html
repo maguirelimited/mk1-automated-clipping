@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <div>
+      <p class="eyebrow">Funnel Management</p>
+      {% if detail %}
+        <h2>{{ detail.identity.display_name }}</h2>
+        <p class="muted mono">{{ detail.funnel_id }}</p>
+      {% else %}
+        <h2>Funnel detail</h2>
+        <p class="muted mono">{{ funnel_id }}</p>
+      {% endif %}
+    </div>
+  </div>
+  <div class="actions">
+    <a class="button-link" href="{{ url_for('funnels_page') }}">← All funnels</a>
+  </div>
+</section>
+
+{% if load_error %}
+<section class="card">
+  <h3>Could not load canonical funnel</h3>
+  <p>{{ load_error }}</p>
+</section>
+{% else %}
+
+<section class="card">
+  <div class="card-head">
+    <h2>Status</h2>
+    {% if detail.simple_status.next_action %}
+      <span class="pill muted">Next: {{ detail.simple_status.next_action }}</span>
+    {% endif %}
+  </div>
+  <dl class="grid grid-2">
+    <div><dt>Created</dt><dd>Yes</dd></div>
+    <div><dt>Synced</dt><dd>{{ detail.simple_status.synced_label }}</dd></div>
+    <div><dt>Processing</dt><dd><span class="pill {{ detail.validation.processing_state|status_class }}">{{ detail.simple_status.processing_label }}</span></dd></div>
+    <div><dt>Test run</dt><dd><span class="pill {{ 'ok' if detail.simple_status.test_run_available else 'bad' }}">{{ detail.simple_status.test_run_label }}</span></dd></div>
+    <div><dt>Posting</dt><dd>{{ detail.simple_status.posting_label }}</dd></div>
+  </dl>
+
+  {% if detail.simple_status.blockers %}
+    <h3>What is blocking a test run</h3>
+    <ul class="check-list">
+      {% for blocker in detail.simple_status.blockers %}
+        <li>{{ blocker }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  <div class="actions stack-actions">
+    <a class="button-link" href="{{ url_for('funnel_sync_page', funnel_id=detail.funnel_id) }}">Sync runtime config</a>
+    <form method="post" action="{{ url_for('run_funnel') }}">
+      <input type="hidden" name="funnel_id" value="{{ detail.funnel_id }}">
+      <input type="hidden" name="next" value="funnel_detail">
+      <button type="submit" {{ '' if detail.simple_status.test_run_available else 'disabled' }}>Run test</button>
+    </form>
+    <a class="button-link" href="{{ url_for('funnel_edit_page', funnel_id=detail.funnel_id) }}">Edit</a>
+  </div>
+
+  <details class="muted">
+    <summary>Advanced readiness details</summary>
+    <dl class="grid grid-2">
+      <div><dt>Sync tier</dt><dd><span class="pill {{ detail.validation.sync_state|status_class }}">{{ detail.validation.sync_label }}</span></dd></div>
+      <div><dt>Posting tier</dt><dd><span class="pill {{ detail.validation.posting_state|status_class }}">{{ detail.validation.posting_label }}</span></dd></div>
+      <div><dt>Operational</dt><dd><span class="pill {{ detail.operational_label|status_class }}">{{ detail.operational_label }}</span></dd></div>
+      <div><dt>Checked</dt><dd class="mono">{{ detail.validation.checked_at }}</dd></div>
+    </dl>
+    {% if detail.validation.warnings %}
+      <h4>Warnings</h4>
+      <ul class="check-list">
+        {% for issue in detail.validation.warnings %}
+          <li>{{ issue.message }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+    {% if detail.validation.info %}
+      <h4>Technical notes</h4>
+      <ul class="check-list">
+        {% for issue in detail.validation.info %}
+          <li>{{ issue.message }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </details>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Identity</h2></div>
+  <dl class="grid grid-2">
+    <div><dt>Funnel ID</dt><dd class="mono">{{ detail.identity.funnel_id }}</dd></div>
+    <div><dt>Display name</dt><dd>{{ detail.identity.display_name }}</dd></div>
+    <div><dt>Category</dt><dd>{{ detail.identity.category }}</dd></div>
+    <div><dt>Environment</dt><dd>{{ detail.identity.environment }}</dd></div>
+    <div><dt>Status</dt><dd><span class="pill muted">{{ detail.identity.status }}</span></dd></div>
+    <div><dt>Enabled</dt><dd>{{ 'yes' if detail.identity.enabled else 'no' }}</dd></div>
+    <div><dt>Template</dt><dd>{{ detail.identity.template_source }}</dd></div>
+    <div><dt>Description</dt><dd>{{ detail.identity.description }}</dd></div>
+  </dl>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Sources</h2></div>
+  {% if detail.acquisition.sources %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Label</th>
+            <th>URL</th>
+            <th>Type</th>
+            <th>Active</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for source in detail.acquisition.sources %}
+            <tr>
+              <td>{{ source.label }}</td>
+              <td class="mono">{{ source.url }}</td>
+              <td>{{ source.source_type }}</td>
+              <td>{{ 'yes' if source.active else 'no' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="muted">No sources configured.</p>
+  {% endif %}
+</section>
+
+<details>
+  <summary class="card-head"><h2>Processing &amp; distribution (advanced)</h2></summary>
+  <section class="card nested">
+    <dl class="grid grid-2">
+      <div><dt>AI rule profile</dt><dd class="mono">{{ detail.processing.ai_rule_profile }}</dd></div>
+      <div><dt>Max clips</dt><dd>{{ detail.processing.max_clips }}</dd></div>
+      <div><dt>Clip duration</dt><dd>{{ detail.processing.min_clip_duration_sec }}–{{ detail.processing.max_clip_duration_sec }} sec</dd></div>
+      <div><dt>Posting enabled</dt><dd>{{ 'yes' if detail.distribution.posting_enabled else 'no' }}</dd></div>
+    </dl>
+  </section>
+</details>
+
+<section class="card">
+  <div class="card-head"><h2>More actions</h2></div>
+  <div class="actions stack-actions">
+    <a class="button-link" href="{{ url_for('funnel_clone_page', funnel_id=detail.funnel_id) }}">Clone</a>
+    <a class="button-link" href="{{ detail.jobs_href }}">Jobs</a>
+    <a class="button-link" href="{{ detail.outputs_href }}">Outputs</a>
+    <a class="button-link" href="{{ url_for('funnels_page', log=detail.funnel_id) }}#logs">Logs</a>
+    {% if detail.ops.paused %}
+      <form method="post" action="{{ url_for('resume_funnel', funnel_id=detail.funnel_id) }}">
+        <input type="hidden" name="next" value="funnel_detail">
+        <button type="submit">Resume</button>
+      </form>
+    {% else %}
+      <form method="post" action="{{ url_for('pause_funnel', funnel_id=detail.funnel_id) }}">
+        <input type="hidden" name="next" value="funnel_detail">
+        <button type="submit">Pause</button>
+      </form>
+    {% endif %}
+  </div>
+  {% if detail.trigger_history %}
+    <h3>Recent test runs</h3>
+    <ul class="events">
+      {% for action in detail.trigger_history %}
+        <li>
+          <span class="pill {{ 'ok' if action.ok else 'bad' }}">run</span>
+          <span>{{ action.message }}</span>
+          <time>{{ action.created_at }}</time>
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</section>
+
+{% endif %}
+{% endblock %}

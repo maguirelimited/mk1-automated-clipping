@@ -1,0 +1,39 @@
+{
+  "aliases": {
+    "business": "business",
+    "business_ai": "business",
+    "comedy": "comedy",
+    "finance": "finance",
+    "gta_clips_002": "business",
+    "mfm_business_ai_001": "business",
+    "sport": "sport",
+    "sports": "sport"
+  },
+  "profiles": {
+    "business": {
+      "managed": "builtin",
+      "rules_version": "business_v1"
+    },
+    "comedy": {
+      "managed": "builtin",
+      "rules_version": "comedy_v1"
+    },
+    "finance": {
+      "managed": "builtin",
+      "rules_version": "finance_v1"
+    },
+    "gaming": {
+      "managed": "ops_ui",
+      "rules_version": "gaming_v1"
+    },
+    "gta_streamer_clips": {
+      "managed": "builtin",
+      "rules_version": "gta_streamer_clips_v1"
+    },
+    "sport": {
+      "managed": "builtin",
+      "rules_version": "sport_v1"
+    }
+  },
+  "schema_version": 1
+}

@@ -1,0 +1,126 @@
+<article class="card overview-card controls-panel console-section console-actions">
+  <h3>Safe actions</h3>
+  {% if console_actions_disabled %}
+  <p class="muted">Actions are unavailable while observability is disconnected.</p>
+  {% else %}
+  <p class="muted">
+    Uses the same operational layer as SSH. High-risk actions require confirmation.
+  </p>
+
+  <section class="console-actions-primary">
+    <h4>Run pipeline</h4>
+    <div class="controls-actions">
+      {% if shell_environment_css == 'development' %}
+      <form class="console-run-form" method="post" action="{{ url_for('ops_action', action='run_pipeline_dev') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="filter-field console-funnel-field" for="console_funnel_id_dev">
+          <span>Funnel</span>
+          <select id="console_funnel_id_dev" name="funnel_id" {{ 'disabled' if console_ingestion_paused else '' }}>
+            {% for opt in console_funnel_options %}
+              <option
+                value="{{ opt.funnel_id }}"
+                {{ 'selected' if opt.selected else '' }}
+                {{ 'disabled' if opt.disabled else '' }}
+              >
+                {{ opt.label }}{% if opt.disabled_hint %} — {{ opt.disabled_hint }}{% endif %}
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+        {% if not console_funnel_options %}
+        <p class="muted">No funnels available. Add one in Funnel Management first.</p>
+        {% endif %}
+        <button
+          type="submit"
+          class="filter-submit console-action-primary"
+          {{ 'disabled' if console_ingestion_paused or not console_funnel_options else '' }}
+        >Run pipeline</button>
+      </form>
+      {% elif shell_environment_css == 'production' %}
+      <form class="console-run-form" method="post" action="{{ url_for('ops_action', action='run_pipeline_prod') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="filter-field console-funnel-field" for="console_funnel_id_prod">
+          <span>Funnel</span>
+          <select id="console_funnel_id_prod" name="funnel_id" {{ 'disabled' if console_ingestion_paused else '' }}>
+            {% for opt in console_funnel_options %}
+              <option
+                value="{{ opt.funnel_id }}"
+                {{ 'selected' if opt.selected else '' }}
+                {{ 'disabled' if opt.disabled else '' }}
+              >
+                {{ opt.label }}{% if opt.disabled_hint %} — {{ opt.disabled_hint }}{% endif %}
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+        {% if not console_funnel_options %}
+        <p class="muted">No funnels available. Add one in Funnel Management first.</p>
+        {% endif %}
+        <button
+          type="submit"
+          class="filter-submit console-action-primary risk-high"
+          {{ 'disabled' if console_ingestion_paused or not console_funnel_options else '' }}
+        >Run pipeline</button>
+      </form>
+      {% else %}
+      <p class="muted">Run pipeline unavailable — environment unknown.</p>
+      {% endif %}
+    </div>
+  </section>
+
+  <div class="controls-grid">
+    <section>
+      <h4>Automation</h4>
+      <div class="controls-actions">
+        <form method="post" action="{{ url_for('ops_action', action='start_scheduler') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="filter-submit">Start scheduler</button>
+        </form>
+        <form method="post" action="{{ url_for('ops_action', action='stop_scheduler') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="filter-submit">Stop scheduler</button>
+        </form>
+        <form method="post" action="{{ url_for('ops_action', action='disable_uploads') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="filter-submit">Disable uploads</button>
+        </form>
+        <form method="post" action="{{ url_for('ops_action', action='enable_uploads') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="filter-submit risk-high">Enable uploads</button>
+        </form>
+      </div>
+    </section>
+
+    <section>
+      <h4>Maintenance</h4>
+      <p class="muted controls-hint">Refresh re-checks observability. Validate runs ConfigManager. Read-only state: <a href="{{ url_for('ops_configuration') }}">Configuration</a>. Service doctors: <a href="{{ url_for('health') }}">Health</a>.</p>
+      <div class="controls-actions">
+        <form method="post" action="{{ url_for('ops_action', action='refresh_health') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="filter-submit">Refresh health</button>
+        </form>
+        <form method="post" action="{{ url_for('ops_action', action='validate_config') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="filter-submit">Validate config</button>
+        </form>
+      </div>
+    </section>
+
+    <section>
+      <h4>Recovery</h4>
+      <div class="controls-actions">
+        <form method="post" action="{{ url_for('ops_action', action='restart_service') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="restart_target" value="worker">
+          <button type="submit" class="filter-submit risk-high">Restart worker</button>
+        </form>
+        <form method="post" action="{{ url_for('ops_action', action='restart_service') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="restart_target" value="api">
+          <button type="submit" class="filter-submit risk-high">Restart API</button>
+        </form>
+      </div>
+    </section>
+  </div>
+  {% endif %}
+</article>

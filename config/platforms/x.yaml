@@ -1,0 +1,27 @@
+# config/platforms/x.yaml
+#
+# Platform configuration for X (formerly Twitter).
+# Do not include secrets, API keys, bearer tokens, or real account IDs here.
+
+platform:
+  id: x
+  name: X
+  enabled: false
+
+uploading:
+  enabled: false
+
+format:
+  aspect_ratio: "9:16"
+  width: 1080
+  height: 1920
+  max_duration_seconds: 60
+  title_max_length: 0   # X has no separate title field; captions appear in the post body
+  caption_max_length: 280
+
+accounts:
+  default_account_id: null
+
+posting:
+  default_hashtags: []
+  posting_windows: []

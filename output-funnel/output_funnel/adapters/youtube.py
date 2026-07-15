@@ -43,14 +43,19 @@ class YouTubeAdapter(PlatformAdapter):
 
         try:
             youtube = self._youtube_service or self._build_service(profile)
-            from googleapiclient.http import MediaFileUpload
+            insert_kwargs: dict[str, Any] = {
+                "part": "snippet,status",
+                "body": body,
+            }
+            if self._youtube_service is None:
+                from googleapiclient.http import MediaFileUpload
 
-            media = MediaFileUpload(media_path, mimetype="video/mp4", resumable=True)
-            request = youtube.videos().insert(
-                part="snippet,status",
-                body=body,
-                media_body=media,
-            )
+                insert_kwargs["media_body"] = MediaFileUpload(
+                    media_path,
+                    mimetype="video/mp4",
+                    resumable=True,
+                )
+            request = youtube.videos().insert(**insert_kwargs)
             response = request.execute()
         except Exception as exc:
             return PublishResult(

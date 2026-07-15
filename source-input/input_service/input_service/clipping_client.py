@@ -9,6 +9,8 @@ from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
+from .log_util import detail
+
 log = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SEC = 30
@@ -34,6 +36,7 @@ def enqueue_clipping_job(
     funnel_id: str,
     pipeline_profile: str,
     timeout_sec: float = DEFAULT_TIMEOUT_SEC,
+    orchestration_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """POST ``/jobs`` on video-automation. Returns a normalized result dict."""
     if not auto_enqueue_enabled():
@@ -54,14 +57,27 @@ def enqueue_clipping_job(
         "funnel_id": str(funnel_id or "").strip(),
         "pipeline_profile": str(pipeline_profile or "").strip(),
     }
-    payload = json.dumps(body).encode("utf-8")
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if orchestration_context:
+        run_id = str(orchestration_context.get("run_id") or "").strip()
+        environment = str(orchestration_context.get("environment") or "").strip()
+        body["orchestration_context"] = {
+            "run_id": run_id,
+            "environment": environment or (os.environ.get("MK04_ENV") or "dev").strip(),
+            "trigger": str(orchestration_context.get("trigger") or "source_input"),
+        }
+        if run_id:
+            headers["X-MK04-Run-Id"] = run_id
+        if environment:
+            headers["X-MK04-Environment"] = environment
+    payload = json.dumps(body).encode("utf-8")
     secret = os.environ.get("VIDEO_AUTOMATION_SECRET", "").strip()
     if secret:
         headers["X-Video-Automation-Secret"] = secret
 
     req = urlrequest.Request(url, data=payload, headers=headers, method="POST")
-    log.info(
+    detail(
+        log,
         "Enqueue clipping job: url=%s input_id=%s funnel_id=%s pipeline_profile=%s",
         url,
         clean_input_id,

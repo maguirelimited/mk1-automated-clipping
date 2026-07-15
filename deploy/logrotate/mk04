@@ -1,43 +1,26 @@
-# mk0.4 file-based log rotation. Install at /etc/logrotate.d/mk04.
+# mk0.4 file-based log rotation for deploy sinks under /var/log/mk04.
 #
-# systemd-journald handles stdout/stderr for the service units; this only
-# covers file sinks the services write directly (debug NDJSON, analytics
-# JSONL, ops-ui audit, etc.). Sizes are conservative to survive long runs
-# without filling /var on a single-host mk1 box.
+# Prefer installing from config:
+#   sudo ./deploy/scripts/install-log-rotation.sh prod
+#
+# That renders this file from storage.log_rotation (max_bytes, backup_count,
+# compress). Values below match the system defaults and are kept as a fallback
+# template when install has not been run yet.
+#
+# systemd-journald handles stdout/stderr for service units (see
+# deploy/journald/mk04.conf.example and install-log-rotation.sh).
+#
+# Project logs under logs/<env>/ are rotated by:
+#   scripts/ops/run-log-rotation.sh
+# Expired rotated logs are removed by the retention engine (logs_days).
 
-# video-automation debug / agent / pipeline NDJSON sinks.
-/var/log/mk04/*/video-automation/*.log
-/var/log/mk04/*/video-automation/*.ndjson
+/var/log/mk04/*/*/*.log
+/var/log/mk04/*/*/*.ndjson
+/var/log/mk04/*/*/*.jsonl
 {
-    weekly
+    daily
     rotate 8
     size 100M
-    compress
-    delaycompress
-    missingok
-    notifempty
-    copytruncate
-}
-
-# Analytics events. Append-only JSONL with potentially many small rows.
-/var/lib/mk04/*/video-automation/analytics/*.jsonl
-{
-    monthly
-    rotate 12
-    size 200M
-    compress
-    delaycompress
-    missingok
-    notifempty
-    copytruncate
-}
-
-# ops-ui app log (if redirected from journald to a file by a process manager).
-/var/log/mk04/*/ops-ui/*.log
-{
-    weekly
-    rotate 4
-    size 50M
     compress
     delaycompress
     missingok

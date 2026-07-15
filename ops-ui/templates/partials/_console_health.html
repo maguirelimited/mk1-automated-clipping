@@ -1,0 +1,16 @@
+<article class="card overview-card console-section console-health">
+  <h3>Overall health</h3>
+  <p class="overview-metric status-{{ console_health_headline_tone }}">
+    {{ console_health_headline }}
+  </p>
+  {% if console_health_supporting %}
+  <p class="console-supporting muted">{{ console_health_supporting }}</p>
+  {% endif %}
+  {% if console_health_detail_href %}
+  <p class="console-section-link">
+    <a href="{{ url_for('ops_failures') }}">Inspect failures</a>
+    ·
+    <a href="{{ url_for('health') }}">Health diagnostic</a>
+  </p>
+  {% endif %}
+</article>

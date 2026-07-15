@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="overview-page">
+  <header class="overview-intro">
+    <p class="muted"><a href="{{ url_for('ops_overview') }}">← Operator Console</a></p>
+    <div>
+      <h2>Storage</h2>
+      <p class="muted">
+        Is storage safe, and what storage detail needs inspection?
+        Read-only summary — no cleanup, backup, or retention actions here.
+      </p>
+    </div>
+    <span class="pill {{ storage_overall.tone }}">{{ storage_overall.label }}</span>
+    {% set links = [
+      {"label": "Operator Console", "href": url_for('ops_overview'), "primary": true},
+      {"label": "Failures", "href": url_for('ops_failures')},
+      {"label": "Configuration", "href": url_for('ops_configuration')},
+    ] %}
+    {% include "partials/_ops_loop_nav.html" %}
+  </header>
+
+  {% if storage_error %}
+  <div class="flash bad">
+    Storage backend unavailable ({{ storage_error }}).
+    {% if storage_error_detail %}<span class="muted">{{ storage_error_detail }}</span>{% endif %}
+  </div>
+  {% endif %}
+
+  {% if storage_warnings %}
+  <article class="card overview-card">
+    <h3>Warnings</h3>
+    <ul class="plain-list">
+      {% for warning in storage_warnings %}
+      <li>
+        <span class="pill {{ warning.tone }}">{{ warning.title }}</span>
+        <span class="muted">{{ warning.detail }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    <p class="muted">Warnings are informational only. Corrective actions remain operator-controlled.</p>
+  </article>
+  {% endif %}
+
+  <div class="overview-grid">
+    <article class="card overview-card">
+      <h3>Disk usage</h3>
+      {% if storage_disk.available %}
+      <p class="overview-metric status-{{ storage_disk.tone }}">
+        {{ storage_disk.usage_percent }}%
+      </p>
+      <p class="muted">Storage state: <strong>{{ storage_disk.level }}</strong></p>
+      <dl class="overview-dl">
+        <div><dt>Used</dt><dd>{{ storage_disk.used_label }}</dd></div>
+        <div><dt>Free</dt><dd>{{ storage_disk.free_label }}</dd></div>
+        <div><dt>Capacity</dt><dd>{{ storage_disk.total_label }}</dd></div>
+        <div><dt>Path</dt><dd><code>{{ storage_disk.path }}</code></dd></div>
+      </dl>
+      {% if storage_disk.retention_recommended %}
+      <p class="muted"><span class="pill warn">Retention recommended</span> Operator-controlled.</p>
+      {% endif %}
+      <p class="muted">{{ storage_disk.detail }}</p>
+      {% else %}
+      <p class="muted">{{ storage_disk.detail or storage_disk.error or 'Disk usage unavailable' }}</p>
+      {% endif %}
+    </article>
+
+    <article class="card overview-card">
+      <h3>Retention</h3>
+      {% if storage_retention.available %}
+      <p class="overview-metric status-{{ storage_retention.tone }}">
+        {{ storage_retention.status }}
+      </p>
+      <dl class="overview-dl">
+        <div><dt>Last run</dt><dd>{{ storage_retention.timestamp or 'unknown' }}</dd></div>
+        <div><dt>Age</dt><dd>{{ storage_retention.age_label or 'unknown' }}</dd></div>
+        <div><dt>Mode</dt><dd>{{ storage_retention.mode or storage_retention.report_mode or 'unknown' }}</dd></div>
+        <div><dt>Files considered</dt><dd>{{ storage_retention.files_considered if storage_retention.files_considered is not none else 'n/a' }}</dd></div>
+        <div><dt>Files deleted / eligible</dt><dd>{{ storage_retention.files_deleted if storage_retention.files_deleted is not none else 'n/a' }}</dd></div>
+        <div><dt>Bytes reclaimed / reclaimable</dt><dd>{{ storage_retention.bytes_reclaimed_label }}</dd></div>
+      </dl>
+      {% if storage_retention.reason %}
+      <p class="muted">{{ storage_retention.reason }}</p>
+      {% endif %}
+      {% else %}
+      <p class="muted">{{ storage_retention.detail or 'No retention activity recorded' }}</p>
+      {% endif %}
+    </article>
+
+    <article class="card overview-card">
+      <h3>Database backup</h3>
+      {% if storage_backup.available %}
+      <p class="overview-metric status-{{ storage_backup.tone }}">
+        {{ storage_backup.status }}
+      </p>
+      <dl class="overview-dl">
+        <div><dt>Last backup</dt><dd>{{ storage_backup.timestamp or 'unknown' }}</dd></div>
+        <div><dt>Age</dt><dd>{{ storage_backup.age_label or 'unknown' }}</dd></div>
+        <div>
+          <dt>Integrity</dt>
+          <dd>
+            {% if storage_backup.integrity_ok is sameas true %}ok
+            {% elif storage_backup.integrity_ok is sameas false %}failed
+            {% else %}n/a{% endif %}
+          </dd>
+        </div>
+        <div><dt>Size</dt><dd>{{ storage_backup.backup_size_label }}</dd></div>
+        <div><dt>Backup count</dt><dd>{{ storage_backup.backup_count if storage_backup.backup_count is not none else 'n/a' }}</dd></div>
+        <div><dt>Location</dt><dd><code>{{ storage_backup.backup_path or 'n/a' }}</code></dd></div>
+      </dl>
+      {% if storage_backup.reason %}
+      <p class="muted">{{ storage_backup.reason }}</p>
+      {% endif %}
+      {% else %}
+      <p class="muted">{{ storage_backup.detail or 'No backup activity recorded' }}</p>
+      {% endif %}
+    </article>
+
+    <article class="card overview-card">
+      <h3>Log rotation</h3>
+      {% if storage_log_rotation.available %}
+      <p class="overview-metric status-{{ storage_log_rotation.tone }}">
+        {{ storage_log_rotation.status }}
+      </p>
+      <dl class="overview-dl">
+        <div><dt>Last run</dt><dd>{{ storage_log_rotation.timestamp or 'unknown' }}</dd></div>
+        <div><dt>Age</dt><dd>{{ storage_log_rotation.age_label or 'unknown' }}</dd></div>
+        <div><dt>Active logs</dt><dd>{{ storage_log_rotation.active_log_count if storage_log_rotation.active_log_count is not none else 'n/a' }}</dd></div>
+        <div><dt>Rotated</dt><dd>{{ storage_log_rotation.rotated_count if storage_log_rotation.rotated_count is not none else 'n/a' }}</dd></div>
+        <div><dt>Failures</dt><dd>{{ storage_log_rotation.failure_count if storage_log_rotation.failure_count is not none else 'n/a' }}</dd></div>
+      </dl>
+      {% if storage_log_rotation.reason %}
+      <p class="muted">{{ storage_log_rotation.reason }}</p>
+      {% endif %}
+      {% else %}
+      <p class="muted">{{ storage_log_rotation.detail or 'No log rotation activity recorded' }}</p>
+      {% endif %}
+    </article>
+  </div>
+
+  <div class="overview-grid overview-grid-wide">
+    <article class="card overview-card">
+      <h3>Storage roots</h3>
+      {% if storage_paths %}
+      <dl class="overview-dl">
+        <div><dt>Data</dt><dd><code>{{ storage_paths.data_root }}</code></dd></div>
+        <div><dt>Jobs</dt><dd><code>{{ storage_paths.jobs_root }}</code></dd></div>
+        <div><dt>Logs</dt><dd><code>{{ storage_paths.logs_root }}</code></dd></div>
+        <div><dt>Reports</dt><dd><code>{{ storage_paths.reports_root }}</code></dd></div>
+        <div><dt>Database</dt><dd><code>{{ storage_paths.database_path }}</code></dd></div>
+        <div><dt>Backups</dt><dd><code>{{ storage_paths.backups_root }}</code></dd></div>
+        <div><dt>Database backups</dt><dd><code>{{ storage_paths.database_backup_dir }}</code></dd></div>
+        <div><dt>Retention reports</dt><dd><code>{{ storage_paths.retention_reports_dir }}</code></dd></div>
+        <div><dt>Storage records</dt><dd><code>{{ storage_paths.storage_records_dir }}</code></dd></div>
+      </dl>
+      {% else %}
+      <p class="muted">Paths unavailable.</p>
+      {% endif %}
+    </article>
+
+    <article class="card overview-card">
+      <h3>Reports</h3>
+      {% if storage_links %}
+      <ul class="plain-list">
+        {% for link in storage_links %}
+        <li>
+          <a href="{{ url_for('ops_storage_artifact', kind=link.kind) }}">{{ link.label }}</a>
+          <span class="muted"><code>{{ link.path }}</code></span>
+        </li>
+        {% endfor %}
+      </ul>
+      <p class="muted">Downloads are limited to known operational records. No filesystem browser.</p>
+      {% else %}
+      <p class="muted">No storage reports available yet.</p>
+      {% endif %}
+    </article>
+  </div>
+</section>
+{% endblock %}

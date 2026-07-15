@@ -1,0 +1,62 @@
+<article class="card overview-card">
+  <div class="overview-card-header">
+    <h3>{{ title|default('Recent runs') }}</h3>
+    {% if show_view_all|default(true) %}
+    <a href="{{ url_for('ops_runs') }}">View all runs</a>
+    {% endif %}
+  </div>
+  {% if runs_error %}
+  <p class="muted">Runs unavailable ({{ runs_error }}).</p>
+  {% elif runs %}
+  <table class="overview-table">
+    <thead>
+      <tr>
+        <th>Run ID</th>
+        <th>Trigger</th>
+        <th>Status</th>
+        <th>Started</th>
+        <th>Finished</th>
+        <th>Duration</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in runs %}
+      <tr>
+        <td>
+          <a href="{{ url_for('ops_run_detail', run_id=run.run_id) }}"><code>{{ run.run_id }}</code></a>
+        </td>
+        <td>{{ run.trigger or "—" }}</td>
+        <td>
+          <span class="badge status-{{ 'ok' if run.status == 'SUCCESS' else ('bad' if run.status == 'FAIL' else ('warn' if run.status in ['SKIPPED', 'RUNNING'] else 'muted')) }}">
+            {{ run.status }}
+          </span>
+        </td>
+        <td>{{ run.started_at or "—" }}</td>
+        <td>{{ run.finished_at or "—" }}</td>
+        <td>
+          {% if run.duration_seconds is not none %}
+            {{ run.duration_seconds }}s
+          {% else %}
+            —
+          {% endif %}
+        </td>
+        <td>
+          <a href="{{ url_for('ops_run_detail', run_id=run.run_id) }}">Inspect</a>
+          {% if run.status == 'FAIL' %}
+          · <a href="{{ url_for('ops_failures') }}">Failures</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% elif runs_empty %}
+  <p class="muted">No runs recorded yet. Use the Operator Console to start a pipeline run.</p>
+  <p class="console-section-link">
+    <a href="{{ url_for('ops_overview') }}">Operator Console</a>
+  </p>
+  {% else %}
+  <p class="muted">Unavailable while disconnected.</p>
+  {% endif %}
+</article>

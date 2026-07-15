@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="overview-page">
+  <header class="overview-intro">
+    <p class="muted">
+      <a href="{{ url_for('ops_overview') }}">← Operator Console</a>
+      ·
+      <a href="{{ url_for('ops_failures') }}">Failures</a>
+    </p>
+    <h2>{{ failure_group.category }} · <code>{{ failure_group.name }}</code></h2>
+    <p class="muted">Inspect this failure group and open related jobs or runs when available.</p>
+    {% if failure_group.representative_reason %}
+    <p class="muted">{{ failure_group.representative_reason }}</p>
+    {% endif %}
+    {% if failures_loop_links %}
+    {% set links = failures_loop_links %}
+    {% include "partials/_ops_loop_nav.html" %}
+    {% endif %}
+  </header>
+
+  <div class="overview-grid">
+    <article class="card overview-card">
+      <h3>Group summary</h3>
+      <dl class="overview-dl">
+        <div><dt>Category</dt><dd>{{ failure_group.category }}</dd></div>
+        <div><dt>Count</dt><dd>{{ failure_group.count }}</dd></div>
+        <div><dt>Severity</dt><dd>{{ failure_group.severity }}</dd></div>
+        <div><dt>First</dt><dd>{{ failure_group.first_occurrence or "Not available" }}</dd></div>
+        <div><dt>Latest</dt><dd>{{ failure_group.latest_occurrence or "Not available" }}</dd></div>
+        <div><dt>Stage</dt><dd>{{ failure_group.affected_stage or "Not available" }}</dd></div>
+        <div><dt>Module</dt><dd>{{ failure_group.affected_module or "Not available" }}</dd></div>
+        <div>
+          <dt>Suggested next</dt>
+          <dd>{{ failure_group.suggested_next_inspection_target or "Not available" }}</dd>
+        </div>
+      </dl>
+      {% if failure_group.category == 'Configuration' or failure_group.category == 'Readiness' %}
+      <p class="console-section-link">
+        <a href="{{ url_for('ops_configuration') }}">Open configuration</a>
+      </p>
+      {% elif failure_group.category == 'Storage' or failure_group.category == 'Disk' %}
+      <p class="console-section-link">
+        <a href="{{ url_for('ops_storage') }}">Open storage</a>
+      </p>
+      {% endif %}
+    </article>
+
+    <article class="card overview-card">
+      <h3>Affected jobs</h3>
+      {% if related_jobs %}
+      <ul class="plain-list">
+        {% for job in related_jobs %}
+        <li><a href="{{ job.path }}"><code>{{ job.job_id }}</code></a></li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="muted">No related jobs indexed for this group.</p>
+      {% endif %}
+    </article>
+
+    <article class="card overview-card">
+      <h3>Affected runs</h3>
+      {% if related_runs %}
+      <ul class="plain-list">
+        {% for run in related_runs %}
+        <li><a href="{{ run.path }}"><code>{{ run.run_id }}</code></a></li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="muted">No related runs indexed for this group.</p>
+      {% endif %}
+    </article>
+  </div>
+</section>
+{% endblock %}

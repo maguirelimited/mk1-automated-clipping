@@ -1,0 +1,77 @@
+<article class="card overview-card controls-panel">
+  <h3>Safe controls</h3>
+  <p class="muted">
+    Authenticated actions call the existing operational layer (same behaviour as SSH scripts).
+    High-risk actions require an extra confirmation step.
+  </p>
+
+  <div class="controls-grid">
+    <section>
+      <h4>Lower risk</h4>
+      <div class="controls-actions">
+        <form method="post" action="{{ url_for('ops_action', action='refresh_health') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="filter-submit">Refresh health</button>
+        </form>
+        <form method="post" action="{{ url_for('ops_action', action='validate_config') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="filter-submit">Validate config</button>
+        </form>
+        <form method="post" action="{{ url_for('ops_action', action='stop_scheduler') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="filter-submit">Stop scheduler</button>
+        </form>
+        <form method="post" action="{{ url_for('ops_action', action='start_scheduler') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="filter-submit">Start scheduler</button>
+        </form>
+        <form method="post" action="{{ url_for('ops_action', action='disable_uploads') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="filter-submit">Disable uploads</button>
+        </form>
+        {% if shell_environment_css == 'development' %}
+        <form method="post" action="{{ url_for('ops_action', action='run_pipeline_dev') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="funnel_id" value="business">
+          <button type="submit" class="filter-submit">Trigger development run</button>
+        </form>
+        {% endif %}
+      </div>
+    </section>
+
+    <section>
+      <h4>Higher risk (confirmation required)</h4>
+      <div class="controls-actions">
+        <form method="post" action="{{ url_for('ops_action', action='enable_uploads') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="filter-submit risk-high">Enable uploads</button>
+        </form>
+        <form method="post" action="{{ url_for('ops_action', action='restart_service') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label class="filter-field">
+            <span>Service</span>
+            <select name="restart_target">
+              <option value="api">API</option>
+              <option value="worker">Worker</option>
+              <option value="ai">AI Service</option>
+              <option value="output-funnel">Output Funnel</option>
+              <option value="ops-ui">Operations UI</option>
+            </select>
+          </label>
+          <button type="submit" class="filter-submit risk-high">Restart service</button>
+        </form>
+        <form method="post" action="{{ url_for('ops_action', action='restart_all') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="filter-submit risk-high">Restart all services</button>
+        </form>
+        {% if shell_environment_css == 'production' %}
+        <form method="post" action="{{ url_for('ops_action', action='run_pipeline_prod') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="funnel_id" value="business">
+          <button type="submit" class="filter-submit risk-high">Trigger production run</button>
+        </form>
+        {% endif %}
+      </div>
+    </section>
+  </div>
+</article>

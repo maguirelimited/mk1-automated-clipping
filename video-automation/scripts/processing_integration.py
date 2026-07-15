@@ -24,6 +24,7 @@ from processing_contracts import (
     write_raw_candidate_pool,
 )
 from processing_diagnostics import build_processing_diagnostics_report
+from candidate_processing import MK1_CANDIDATE_PROCESSING_STRATEGY
 
 
 class ProcessingIntegrationError(RuntimeError):
@@ -123,6 +124,7 @@ def build_processing_artifacts(
     transcript_warnings: list[Any] | None = None,
     processing_warnings: list[Any] | None = None,
     created_at: str | None = None,
+    execution_context: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Build and write both processing artifacts to ``job_dir``.
 
@@ -157,6 +159,7 @@ def build_processing_artifacts(
             diagnostics=diagnostics,
             processing_version=PROCESSING_VERSION,
             created_at=ts,
+            execution_context=execution_context,
         )
         pool_path = write_raw_candidate_pool(job_dir, pool)
     except ProcessingIntegrationError:
@@ -176,6 +179,8 @@ def build_processing_artifacts(
             transcript_warnings=transcript_warnings,
             processing_warnings=processing_warnings,
             created_at=ts,
+            execution_context=execution_context,
+            candidate_processing_strategy=MK1_CANDIDATE_PROCESSING_STRATEGY,
         )
         report_path = write_processing_report(job_dir, report)
     except ProcessingIntegrationError:

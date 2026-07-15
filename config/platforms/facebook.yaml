@@ -1,0 +1,27 @@
+# config/platforms/facebook.yaml
+#
+# Platform configuration for Facebook Reels.
+# Do not include secrets, API tokens, or real account credentials here.
+
+platform:
+  id: facebook
+  name: Facebook Reels
+  enabled: false
+
+uploading:
+  enabled: false
+
+format:
+  aspect_ratio: "9:16"
+  width: 1080
+  height: 1920
+  max_duration_seconds: 60
+  title_max_length: 0   # Facebook Reels has no separate title field
+  caption_max_length: 63206
+
+accounts:
+  default_page_id: null
+
+posting:
+  default_hashtags: []
+  posting_windows: []

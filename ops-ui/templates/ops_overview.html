@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="overview-page console-page">
+  <header class="overview-intro console-intro">
+    <h2>Operator Console</h2>
+    <p class="muted">
+      Daily control panel — check state, run the pipeline, monitor progress, inspect outputs.
+    </p>
+  </header>
+
+  {% if not overview_connected %}
+  <div class="flash bad">
+    Observability backend disconnected. Values below are not fabricated.
+  </div>
+  {% endif %}
+
+  <div class="console-row console-row-pair">
+    {# 1. Overall health #}
+    {% include "partials/_console_health.html" %}
+
+    {# 2. Environment & safety #}
+    {% include "partials/_console_safety.html" %}
+  </div>
+
+  {# 3. Safe actions #}
+  {% include "partials/_console_actions.html" %}
+
+  <div class="console-row console-row-pair">
+    {# 4. Current activity #}
+    {% include "partials/_console_activity.html" %}
+
+    {# 5. Daily loop #}
+    {% include "partials/_console_quick_links.html" %}
+  </div>
+
+  {# 6. Needs attention #}
+  {% include "partials/_console_attention.html" %}
+
+  <div class="console-row console-row-pair console-row-support">
+    {% include "partials/_console_last_run.html" %}
+    {% include "partials/_console_service_summary.html" %}
+  </div>
+
+  {# 7. Canonical funnel configuration (supporting detail) #}
+  {% include "partials/_console_funnels.html" %}
+</section>
+{% endblock %}

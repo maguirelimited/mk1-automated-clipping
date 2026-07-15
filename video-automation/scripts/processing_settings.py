@@ -21,10 +21,16 @@ environment variable and then the default, so env-only setups keep working.
 
 from __future__ import annotations
 
-import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
+
+_SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from shared.controls_file import read_controls_json, resolve_controls_path  # noqa: E402
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off"}
@@ -34,24 +40,11 @@ DEFAULT_PIPELINE_MODE = "legacy"
 
 
 def controls_file_path() -> Path:
-    raw = os.environ.get("MK04_CONTROLS_FILE", "").strip()
-    if raw:
-        return Path(raw).expanduser()
-    # video-automation/scripts/processing_settings.py -> repo root is parents[2].
-    repo_root = Path(__file__).resolve().parents[2]
-    return repo_root / "ops-ui" / "data" / "controls.json"
+    return resolve_controls_path()
 
 
 def _read_block(block_key: str) -> dict[str, Any]:
-    path = controls_file_path()
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
+    data = read_controls_json()
     block = data.get(block_key)
     return block if isinstance(block, dict) else {}
 
@@ -151,7 +144,7 @@ def resolve_sectioning_config() -> dict[str, Any]:
             saved, "section_max_duration_sec", "PROCESSING_SECTION_MAX_DURATION_SEC", 420.0
         ),
         "overlap_sec": _resolve_float(
-            saved, "section_overlap_sec", "PROCESSING_SECTION_OVERLAP_SEC", 30.0
+            saved, "section_overlap_sec", "PROCESSING_SECTION_OVERLAP_SEC", 60.0
         ),
         "min_section_duration_sec": _resolve_float(
             saved, "section_min_duration_sec", "PROCESSING_SECTION_MIN_DURATION_SEC", 60.0
@@ -164,7 +157,7 @@ def resolve_discovery_config() -> dict[str, Any]:
     saved = read_processing_config()
     return {
         "max_candidates_per_section": _resolve_int(
-            saved, "max_candidates_per_section", "PROCESSING_MAX_CANDIDATES_PER_SECTION", 3
+            saved, "max_candidates_per_section", "PROCESSING_MAX_CANDIDATES_PER_SECTION", 5
         ),
         "min_candidate_duration_sec": _resolve_float(
             saved, "min_candidate_duration_sec", "PROCESSING_MIN_CANDIDATE_DURATION_SEC", 15.0
@@ -231,6 +224,7 @@ def resolve_selection_config() -> dict[str, Any]:
 
 
 _BACKGROUND_MODES = ("blurred", "solid")
+_REFRAME_MODES = ("blur_background", "auto", "face_track")
 
 
 def resolve_conveyor_config() -> dict[str, Any]:
@@ -258,6 +252,19 @@ def resolve_conveyor_config() -> dict[str, Any]:
         ),
         "background_blur": _resolve_str(
             saved, "format_background_blur", "POST_PROCESSING_FORMAT_BACKGROUND_BLUR", "20:1"
+        ),
+        "reframe_mode": _resolve_choice(
+            saved,
+            "format_reframe_mode",
+            "POST_PROCESSING_FORMAT_REFRAME_MODE",
+            _REFRAME_MODES,
+            "blur_background",
+        ),
+        "face_track_test_enabled": _resolve_bool(
+            saved,
+            "format_face_track_test_enabled",
+            "POST_PROCESSING_FACE_TRACK_TEST_ENABLED",
+            False,
         ),
         "ffmpeg_preset": _resolve_str(
             saved, "format_ffmpeg_preset", "POST_PROCESSING_FORMAT_FFMPEG_PRESET", "veryfast"

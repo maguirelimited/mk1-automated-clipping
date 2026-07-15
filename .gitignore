@@ -1,10 +1,12 @@
-
-.DS_Store
 .DS_Store
 *.log
+runs/
 .env
 **/.env
 **/.DS_Store
+.mk04_locks/
+.tmp_promote_tests/
+.tmp_operator_tests/
 video-automation/context/n8n-context/n8n/n8n/n8n_data/
 video-automation/jobs/
 video-automation/input/
@@ -13,3 +15,16 @@ video-automation/temp/
 source-input/input_service/data/tmp/
 source-input/input_service/data/inputs/ready/
 source-input/input_service/data/inputs/rejected/
+
+# Python bytecode and interpreter caches
+__pycache__/
+*.pyc
+
+# MK04 mutable runtime state
+/ops-ui/data/controls.json
+/ops-ui/data/*.sqlite3
+/ops-ui/data/*.sqlite3-wal
+/ops-ui/data/*.sqlite3-shm
+/ops-ui/data/*.sqlite3-journal
+/source-input/input_service/data/state/
+/video-automation/analytics/events.jsonl

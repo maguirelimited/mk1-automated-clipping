@@ -38,66 +38,76 @@ the platform adapter.
 
 ## Canonical DEV → PROD Promotion
 
-Do not deploy production with a hand-typed raw `rsync`. Use the promotion script
-so dev artifacts are consistently excluded.
+Production code delivery is **only** through the atomic promoter:
+
+```bash
+./deploy/scripts/promote-to-prod.sh --dry-run
+./deploy/scripts/promote-to-prod.sh --no-restart   # first bootstrap / no systemd yet
+./deploy/scripts/promote-to-prod.sh                # normal: validate staging, switch, restart, health
+```
+
+Layout under `/opt/mk04/prod` (override with `MK04_PROD_BASE`):
+
+```text
+current -> releases/<UTC>_<shortcommit>[_dirty]
+previous -> releases/<previous>
+releases/
+dependency-bundles/<dependency_hash>/
+```
+
+Behaviour:
+
+- Snapshots into `releases/.staging-<id>`, validates **that** tree, then atomically
+  renames and switches the `current` symlink.
+- Dirty working trees are allowed by default (warned + recorded); `--require-clean`
+  refuses them.
+- Retains current, previous, and two older releases by default (`--retain-releases`).
+- Restart/health failure restores `previous` when available.
+- Never enables uploads, never installs cron, never runs a content pipeline.
+- Do **not** `git pull` or hand-edit `/opt/mk04/prod/current`.
+- Do **not** use a hand-typed raw `rsync` into `current`.
+
+Repo-root `./update.sh prod` validates/restarts the **already selected** current
+release. It refuses `--pull` for production.
+
+See [docs/operations/RUNBOOK.md](../docs/operations/RUNBOOK.md) for operator
+checks, flags, and dual config roots. For secure remote access, see
+[docs/operations/SSH_ACCESS.md](../docs/operations/SSH_ACCESS.md). To open the
+Operations UI from a laptop without public exposure, use an SSH local port
+forward — see [docs/operations/REMOTE_UI_ACCESS.md](../docs/operations/REMOTE_UI_ACCESS.md).
 
 1. Run DEV and verify the change:
 
 ```bash
-cd /Users/anthonymaguire/VAmk0.4
+cd /path/to/dev/checkout
 ./deploy/scripts/run-all-local.sh dev
 ./deploy/scripts/doctor.sh dev
 ```
 
-2. Preview the production copy:
+2. Preview / promote:
 
 ```bash
 ./deploy/scripts/promote-to-prod.sh --dry-run
-```
-
-3. Promote the code:
-
-```bash
+./deploy/scripts/promote-to-prod.sh --no-restart   # if services not installed yet
+# or:
 ./deploy/scripts/promote-to-prod.sh
 ```
 
-The promotion script copies code to `/opt/mk04/prod/current` and excludes local
-state such as `.git/`, `.cursor/`, `.env*`, `.venv/`, `__pycache__/`, SQLite
-files, repo-local data folders, logs, downloads, uploads, temp folders, and
-test/cache artifacts. Production config, credentials, DBs, controls, and logs
-remain outside the repo under `/etc/mk04/prod`, `/var/lib/mk04/prod`, and
-`/var/log/mk04/prod`.
-
-4. Run production preflight before starting or restarting services:
+3. First bootstrap (host not yet provisioned — separate from promotion):
 
 ```bash
-cd /opt/mk04/prod/current
+# After a --no-restart promotion created current -> releases/...
+sudo ./deploy/scripts/bootstrap.sh prod   # creates runtime dirs; deps come from dependency-bundles
 ./deploy/scripts/doctor.sh prod --preflight-only
 ```
 
-This validates environment resolution, path isolation, service URLs, DB paths,
-config roots, runtime roots, upload mode, credential path presence, port state,
-and excluded deploy artifacts. PROD startup uses the same preflight and fails if
-any resolved prod path points outside `/etc/mk04/prod`, `/var/lib/mk04/prod`,
-`/var/log/mk04/prod`, or `/opt/mk04/prod/current`, or if a dev URL/port/path is
-detected.
-
-5. Restart production through the supported scripts or systemd units:
-
-```bash
-./deploy/scripts/run-all-local.sh prod
-```
-
-For systemd deployments, restart the four `mk04-*` units after preflight passes.
 Keep `MK04_UPLOAD_MODE=dry_run` until the production UI banner, credentials,
 channels, controls, and queue state are verified. Only then switch
 `MK04_UPLOAD_MODE=real` in `/etc/mk04/prod/env` and restart output-funnel.
 
-Rollback expectation for the initial `/opt/mk04/prod/current` layout is manual:
-restore a previous known-good copy into `/opt/mk04/prod/current`, run
-`./deploy/scripts/doctor.sh prod --preflight-only`, then restart prod services.
-Full symlinked release rollback can be added later without changing the
-environment contract.
+If `current` is still a **legacy real directory** (pre-symlink layout), promotion
+refuses to overwrite or delete it. Migrate manually into `releases/<id>/` and
+point `current` at that release before using the promoter again.
 
 ## Services
 
@@ -115,7 +125,10 @@ environment contract.
   configured to and keep functioning if it is stopped or removed.
 - **ops-ui** (`127.0.0.1:5070` in prod, optional): read-mostly control
   panel. Not required for autonomous operation; pipeline services keep
-  functioning if it is stopped or removed.
+  functioning if it is stopped or removed. Binds to localhost only so it is
+  never publicly reachable. Operators access it remotely through an SSH tunnel
+  (`LocalForward` to `127.0.0.1:5070`); see
+  [docs/operations/REMOTE_UI_ACCESS.md](../docs/operations/REMOTE_UI_ACCESS.md).
 
 All services are intentionally independent. The expected autonomous flow is:
 
@@ -138,10 +151,11 @@ sudo apt-get install -y \
   python3 python3-venv python3-pip \
   ffmpeg curl git
 
-sudo mkdir -p /opt/mk04/prod
-./deploy/scripts/promote-to-prod.sh
-cd /opt/mk04/prod/current
+sudo mkdir -p /opt/mk04/prod /var/lib/mk04/locks
+./deploy/scripts/promote-to-prod.sh --no-restart
+# dependency-bundles are prepared during promotion; bootstrap seeds runtime dirs:
 sudo ./deploy/scripts/bootstrap.sh prod
+./deploy/scripts/doctor.sh prod --preflight-only
 ```
 
 `ffmpeg` packages usually include `ffprobe`; confirm both resolve on `PATH`.
@@ -311,6 +325,22 @@ Defaults:
 
 - DEV binds source-input `5160`, video-automation `5150`, output-funnel `5155`, ai-service `5175`, ops-ui `5170`.
 - PROD binds source-input `5060`, video-automation `5050`, output-funnel `5055`, ai-service `5075`, ops-ui `5070`.
+- All of the above bind to `127.0.0.1` by default (`*_HOST` / `OPS_UI_HOST`).
+
+### Operations UI remote access (standard production setup)
+
+The Operations UI must remain **private-by-default**:
+
+- `OPS_UI_HOST=127.0.0.1` (default in `deploy/scripts/run-ops-ui.sh` and env examples)
+- Do **not** open the Ops UI port in the host firewall
+- Do **not** put the UI on a public reverse proxy or cloud tunnel for operator access
+
+Remote operators use **SSH local port forwarding**. SSH authenticates the
+operator and encrypts the session; the browser on the client talks to
+`http://localhost:<ops-ui-port>`, which is forwarded to the server’s loopback.
+Full alias configuration, verification, and troubleshooting:
+
+[docs/operations/REMOTE_UI_ACCESS.md](../docs/operations/REMOTE_UI_ACCESS.md)
 
 If callers are remote, open firewall/security-group access only for the ports
 they need. Keep source-input bound to localhost unless a remote orchestrator
@@ -318,6 +348,8 @@ must call it, and use `INPUT_SERVICE_SECRET` if it is exposed beyond localhost.
 Likewise, keep video-automation and output-funnel private unless a trusted
 caller requires remote access, and set `VIDEO_AUTOMATION_SECRET` /
 `OUTPUT_FUNNEL_SECRET` when they are reachable beyond the local host.
+**Never** treat the Operations UI as a public caller — use the SSH tunnel path
+above instead.
 Manual logs go to the terminal. Under a process manager, logs go to that
 manager's stdout/stderr collection, such as `journalctl` for systemd.
 

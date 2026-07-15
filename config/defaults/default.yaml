@@ -1,0 +1,39 @@
+# config/defaults/default.yaml
+#
+# Shared defaults that apply across all environments unless overridden.
+# Later layers (environment, system, funnel, platform, preset) override these.
+# Do not put secrets here. Do not put environment-specific paths here.
+
+version: 1
+
+selection:
+  mode: balanced
+  max_clips: 6
+  min_overall_potential: 7
+  min_confidence: 0.6
+  exploration_ratio: 0.15
+
+posting:
+  uploads_per_day: 4
+
+uploading:
+  # Uploads are disabled in defaults. Each environment overrides this explicitly.
+  # An emergency runtime kill switch (data/<env>/control_state.json) always
+  # overrides this value immediately regardless of what config says.
+  enabled: false
+
+logging:
+  level: INFO
+
+captions:
+  safe_zone:
+    top_px: 180
+    bottom_px: 320
+    left_px: 80
+    right_px: 80
+  layout:
+    font_family: Arial
+    font_size: 64
+    max_lines: 2
+    max_chars_per_line: 32
+    max_chars_per_caption: 42

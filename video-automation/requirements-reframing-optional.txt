@@ -1,0 +1,17 @@
+# Optional face-detection dependencies for reframing (Prompt 3).
+#
+# Not required for blur-background formatting. The detector uses import guards
+# and returns structured unavailable results when these packages are absent.
+#
+# Compatibility:
+#   - MediaPipe classifiers on PyPI currently target Python 3.9–3.12.
+#   - This project's video-automation venv uses Python 3.11.
+#   - Do not install on Python 3.13+ until MediaPipe publishes compatible wheels.
+#
+# Install manually when working on face-track crop:
+#   pip install -r requirements-reframing-optional.txt
+#
+# The BlazeFace short-range model ships in video-automation/models/.
+# Override with MK1_FACE_DETECTOR_MODEL if needed.
+
+mediapipe>=0.10.9,<0.11

@@ -15,6 +15,8 @@ def build_processing_diagnostics_report(
     transcript_warnings: list[Any] | None = None,
     processing_warnings: list[Any] | None = None,
     created_at: str | None = None,
+    execution_context: dict[str, Any] | None = None,
+    candidate_processing_strategy: str | None = None,
 ) -> dict[str, Any]:
     section_results = _list_of_dicts(discovery_batch.get("section_results"))
     failed_sections = _list_of_dicts(discovery_batch.get("failed_sections"))
@@ -39,9 +41,10 @@ def build_processing_diagnostics_report(
         *_string_list(processing_warnings),
     ]
 
-    return build_processing_report(
+    report = build_processing_report(
         job_id=job_id,
         processing_version=PROCESSING_VERSION,
+        execution_context=execution_context,
         funnel_id=_resolve_funnel_id(funnel_id, section_results),
         sections_analysed=_non_negative_int_or_default(
             discovery_batch.get("sections_received"),
@@ -63,6 +66,9 @@ def build_processing_diagnostics_report(
         prompt_metadata=_prompt_metadata(section_results),
         created_at=created_at,
     )
+    if candidate_processing_strategy:
+        report["candidate_processing_strategy"] = candidate_processing_strategy
+    return report
 
 
 def _list_of_dicts(value: Any) -> list[dict[str, Any]]:

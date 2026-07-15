@@ -385,5 +385,19 @@ def _internal_error_payload(exc: Exception) -> dict:
 
 
 if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parent
+    for candidate in (here, *here.parents):
+        scripts_dir = candidate / "scripts"
+        if (scripts_dir / "http_access_log.py").is_file():
+            text = str(scripts_dir)
+            if text not in sys.path:
+                sys.path.insert(0, text)
+            break
+    from http_access_log import configure_quiet_http_access_logging
+
+    configure_quiet_http_access_logging(service_label="ai-service")
     settings = load_settings()
     app.run(host=settings.service_host, port=settings.service_port, debug=settings.service_debug)

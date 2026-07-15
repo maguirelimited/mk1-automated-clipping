@@ -31,13 +31,44 @@ from flask import Flask, jsonify, request
 from input_service import paths
 from input_service.funnel_loader import FunnelInvalidError, list_funnels
 from input_service.clipping_client import probe_clipping_health, video_automation_base_url
-from input_service.runner import emit_progress, run_funnel
+from input_service.runner import emit_stage, run_funnel
+from input_service.log_util import configure_service_logging, detail
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SCRIPTS_CONFIG = _REPO_ROOT / "scripts" / "config"
+_SCRIPTS_OPS = _REPO_ROOT / "scripts" / "ops"
+if str(_SCRIPTS_CONFIG) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_CONFIG))
+if str(_SCRIPTS_OPS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_OPS))
+
+from environment_names import is_production_env  # noqa: E402
+
+
+def _configure_http_access_logging() -> None:
+    import sys
+
+    here = Path(__file__).resolve().parent
+    for candidate in (here, *here.parents):
+        scripts_dir = candidate / "scripts"
+        if (scripts_dir / "http_access_log.py").is_file():
+            text = str(scripts_dir)
+            if text not in sys.path:
+                sys.path.insert(0, text)
+            break
+    else:
+        return
+    from http_access_log import configure_quiet_http_access_logging
+
+    configure_quiet_http_access_logging(service_label="source-input")
 
 
 logging.basicConfig(
     level=os.environ.get("INPUT_SERVICE_LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+_configure_http_access_logging()
+configure_service_logging()
 log = logging.getLogger("input_service.app")
 
 
@@ -46,7 +77,7 @@ _DEBUG_LOG_PATH = "/Users/anthonymaguire/VAmk0.4/.cursor/debug-8aae3e.log"
 
 
 def _assert_supported_prod_launch() -> None:
-    if os.environ.get("MK04_ENV", "dev").strip().lower() != "prod":
+    if not is_production_env(os.environ.get("MK04_ENV"), default="dev"):
         return
     required = {
         "MK04_ROOT": "/opt/mk04/prod/current",
@@ -350,9 +381,74 @@ def create_app() -> Flask:
             # #endregion
             return jsonify(_failed(None, "missing_funnel_id")), 400
 
+        # Orchestration context (canonical run_pipeline) or local gate admission.
+        orch: dict[str, Any] | None = None
+        raw_orch = data.get("orchestration_context")
+        if isinstance(raw_orch, dict) and str(raw_orch.get("run_id") or "").strip():
+            orch = {
+                "run_id": str(raw_orch.get("run_id")).strip(),
+                "environment": str(
+                    raw_orch.get("environment")
+                    or request.headers.get("X-MK04-Environment")
+                    or os.environ.get("MK04_ENV")
+                    or "dev"
+                ).strip(),
+                "trigger": str(raw_orch.get("trigger") or "run_funnel").strip(),
+            }
+        else:
+            header_run = str(request.headers.get("X-MK04-Run-Id") or "").strip()
+            if header_run:
+                orch = {
+                    "run_id": header_run,
+                    "environment": str(
+                        request.headers.get("X-MK04-Environment")
+                        or os.environ.get("MK04_ENV")
+                        or "dev"
+                    ).strip(),
+                    "trigger": "run_funnel",
+                }
+
+        admission = None
+        local_admission = False
+        if orch is None:
+            # Direct callers without run_pipeline must still honour production priority.
+            try:
+                from execution_gate import GateError, admit_orchestration  # noqa: PLC0415
+
+                env_token = str(os.environ.get("MK04_ENV") or "dev").strip()
+                run_id = f"direct-run-funnel-{int(time.time())}-{os.getpid()}"
+                admission = admit_orchestration(
+                    environment=env_token,
+                    run_id=run_id,
+                    trigger="direct_run_funnel",
+                )
+                orch = {
+                    "run_id": run_id,
+                    "environment": env_token,
+                    "trigger": "direct_run_funnel",
+                }
+                local_admission = True
+            except GateError as exc:
+                return (
+                    jsonify(
+                        _failed(
+                            funnel_id,
+                            f"execution_gate_refused: {exc}",
+                        )
+                    ),
+                    409,
+                )
+            except Exception as exc:
+                return (
+                    jsonify(_failed(funnel_id, f"execution_gate_error: {exc}")),
+                    500,
+                )
+
         # Single-run lock
         acquired = _RUN_LOCK.acquire(blocking=False)
         if not acquired:
+            if admission is not None:
+                admission.release()
             return (
                 jsonify(
                     {
@@ -366,14 +462,22 @@ def create_app() -> Flask:
             )
 
         try:
-            log.info("run_funnel start funnel_id=%s", funnel_id)
-            emit_progress("POST /run-funnel accepted", funnel_id=funnel_id)
-            result = run_funnel(funnel_id)
-            emit_progress(
-                f"Run finished — status={result.get('status')}",
+            detail(log, "run_funnel start funnel_id=%s", funnel_id)
+            result = run_funnel(funnel_id, orchestration_context=orch)
+            # Dev turnstile can drop after enqueue so production may wait.
+            if local_admission and admission is not None and not admission.production_priority:
+                admission.release_turnstile()
+            emit_stage(
+                "finished",
                 funnel_id=funnel_id,
+                note=str(result.get("status") or "unknown"),
             )
-            log.info("run_funnel end funnel_id=%s status=%s", funnel_id, result.get("status"))
+            detail(log, "run_funnel end funnel_id=%s status=%s", funnel_id, result.get("status"))
+            if orch:
+                result = dict(result)
+                result["orchestration_context"] = orch
+                if result.get("clipping_job") and result["clipping_job"].get("job_id"):
+                    result["job_ids"] = [result["clipping_job"]["job_id"]]
             http_code = 200 if result.get("success") else 500
             # For "no_input_available" we still return 200 (success=true).
             return jsonify(result), http_code
@@ -381,6 +485,11 @@ def create_app() -> Flask:
             log.exception("run_funnel crashed")
             return jsonify(_failed(funnel_id, f"unexpected_error: {exc}")), 500
         finally:
+            if admission is not None:
+                try:
+                    admission.release()
+                except Exception:
+                    pass
             _RUN_LOCK.release()
 
     return app

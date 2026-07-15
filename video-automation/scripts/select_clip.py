@@ -354,10 +354,10 @@ Transcript:
 def _resolve_selection_backend(selection_options: dict) -> str:
     """Resolve which clip-selection judgement backend to use.
 
-    Default is the existing ``openai`` inline path. Set ``ai_service`` to route
-    the judgement call through the local ``ai-service`` instead. Resolution
-    order: per-run ``selection_backend`` option -> Ops UI saved setting
-    (controls.json) -> ``CLIP_SELECTION_BACKEND`` env var -> default ``openai``.
+    Default is ``ai_service`` (local ai-service via Ollama). Set ``openai`` to
+    use the legacy inline OpenAI path instead. Resolution order: per-run
+    ``selection_backend`` option -> Ops UI saved setting (controls.json) ->
+    ``CLIP_SELECTION_BACKEND`` env var -> default ``ai_service``.
     There is no cloud fallback in MK1: when ``ai_service`` is selected, OpenAI is
     not used.
     """

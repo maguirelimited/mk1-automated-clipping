@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+_SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from shared.controls_file import read_controls_json_at  # noqa: E402
 
 INGESTION_PAUSED = "ingestion_paused"
 UPLOADS_PAUSED = "uploads_paused"
@@ -40,10 +47,4 @@ def export_control_flags(
 
 
 def read_controls_file(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return read_controls_json_at(path)

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from .ai_config import AI_CONFIG_STORE_PREFIX
 from .control_export import INGESTION_PAUSED, UPLOADS_PAUSED, export_control_flags
@@ -17,7 +18,9 @@ class ControlStore:
         self.db_path = db_path
         self.controls_file = controls_file
 
-    def connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        """Open a SQLite connection that is always closed on context exit."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
@@ -27,7 +30,14 @@ class ControlStore:
         # write volume.
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def init_db(self) -> None:
         with self.connect() as conn:
@@ -150,28 +160,42 @@ class ControlStore:
         )
 
     def get_clip_review(self, job_id: str, clip_id: str) -> dict[str, Any] | None:
-        key = f"{job_id}::{clip_id}"
+        return self.get_clip_reviews([(job_id, clip_id)]).get(self._clip_key(job_id, clip_id))
+
+    def get_clip_reviews(
+        self, pairs: list[tuple[str, str]]
+    ) -> dict[str, dict[str, Any]]:
+        """Return legacy Clip Review metadata keyed by clip_key (not a publishing gate)."""
+        if not pairs:
+            return {}
+        keys = [self._clip_key(job_id, clip_id) for job_id, clip_id in pairs]
         with self.connect() as conn:
-            row = conn.execute(
-                """
+            placeholders = ",".join("?" * len(keys))
+            rows = conn.execute(
+                f"""
                 SELECT clip_key, job_id, clip_id, status, flagged_high_quality,
                        feedback_notes, updated_at
                 FROM clip_reviews
-                WHERE clip_key = ?
+                WHERE clip_key IN ({placeholders})
                 """,
-                (key,),
-            ).fetchone()
-        if row is None:
-            return None
-        return {
-            "clip_key": str(row["clip_key"]),
-            "job_id": str(row["job_id"]),
-            "clip_id": str(row["clip_id"]),
-            "status": str(row["status"]),
-            "flagged_high_quality": bool(row["flagged_high_quality"]),
-            "feedback_notes": str(row["feedback_notes"]),
-            "updated_at": str(row["updated_at"]),
-        }
+                keys,
+            ).fetchall()
+        out: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            out[str(row["clip_key"])] = {
+                "clip_key": str(row["clip_key"]),
+                "job_id": str(row["job_id"]),
+                "clip_id": str(row["clip_id"]),
+                "status": str(row["status"]),
+                "flagged_high_quality": bool(row["flagged_high_quality"]),
+                "feedback_notes": str(row["feedback_notes"]),
+                "updated_at": str(row["updated_at"]),
+            }
+        return out
+
+    @staticmethod
+    def _clip_key(job_id: str, clip_id: str) -> str:
+        return f"{job_id}::{clip_id}"
 
     def set_clip_review(
         self,
@@ -182,7 +206,7 @@ class ControlStore:
         flagged_high_quality: bool | None = None,
         feedback_notes: str | None = None,
     ) -> dict[str, Any]:
-        key = f"{job_id}::{clip_id}"
+        key = self._clip_key(job_id, clip_id)
         existing = self.get_clip_review(job_id, clip_id)
         flagged = (
             flagged_high_quality

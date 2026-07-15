@@ -1,8 +1,16 @@
-"""Section-level raw candidate discovery helpers.
+"""MK1 recall-oriented candidate discovery helpers.
 
-This module discovers raw clip opportunities inside transcript sections. It does
-not score candidates, choose final clips, render media, or register output-funnel
-artifacts.
+This module discovers raw clip opportunities inside transcript sections. Discovery
+identifies candidate moments with genuine short-form potential; it does not make
+final render decisions, rank globally, or act as Evaluation.
+
+Prompt construction for production MK1 runs is owned by ``ai-service`` (see
+``ai-service/tasks/section_candidate_discovery.py``). video-automation sends
+structured section/config input via :class:`AiServiceSectionDiscoveryClient` and
+handles orchestration, validation, and artifact writing on the returned results.
+
+Boundary sanity and overlap/dedupe control are owned by
+``candidate_processing.py`` (Candidate Processing stage).
 """
 
 from __future__ import annotations
@@ -12,18 +20,8 @@ import math
 import os
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-from candidate_boundary_sanity import (
-    BoundarySanityConfig,
-    apply_boundary_sanity,
-    rejected_candidate_record,
-)
-from candidate_overlap_control import (
-    CandidateOverlapControlError,
-    control_candidate_overlap,
-)
 from ai_service_client import (
     Transport,
     _TransportError,
@@ -42,12 +40,15 @@ from processing_contracts import (
 SECTION_DISCOVERY_SCHEMA_VERSION = "section_candidate_discovery_v1"
 SECTION_DISCOVERY_BATCH_SCHEMA_VERSION = "section_candidate_discovery_batch_v1"
 SECTION_DISCOVERY_ARTIFACT_FILENAME = "section_candidate_discovery.json"
+MK1_DISCOVERY_STRATEGY = "mk1_recall_oriented_discovery_v1"
 DEFAULT_PROMPT_VERSION = "section_candidate_discovery_base_v1"
 DEFAULT_SCHEMA_VERSION = "section_candidate_discovery_v1"
 DEFAULT_FUNNEL_ID = "business"
 
 DEFAULT_FAIL_FAST = False
-DEFAULT_MAX_CANDIDATES_PER_SECTION = 3
+# Safety/output bound per section — not a final selection limit. Tunable default;
+# not benchmarked. Prefer recall: downstream Evaluation filters false positives.
+DEFAULT_MAX_CANDIDATES_PER_SECTION = 5
 DEFAULT_MIN_CANDIDATE_DURATION_SEC = 15.0
 DEFAULT_MAX_CANDIDATE_DURATION_SEC = 120.0
 TIMESTAMP_TOLERANCE_SEC = 0.001
@@ -133,6 +134,8 @@ class SectionCandidateDiscoveryError(RuntimeError):
 
 @dataclass(frozen=True)
 class CandidateDiscoveryConfig:
+    """MK1 recall-oriented discovery settings for one transcript section."""
+
     fail_fast: bool = DEFAULT_FAIL_FAST
     max_candidates_per_section: int = DEFAULT_MAX_CANDIDATES_PER_SECTION
     min_candidate_duration_sec: float = DEFAULT_MIN_CANDIDATE_DURATION_SEC
@@ -308,78 +311,28 @@ def section_candidate_discovery_path(job_dir: str) -> str:
     return os.path.join(job_dir, SECTION_DISCOVERY_ARTIFACT_FILENAME)
 
 
-def load_default_discovery_prompt() -> str:
-    prompt_path = (
-        Path(__file__).resolve().parents[2]
-        / "ai-service"
-        / "prompts"
-        / "section_candidate_discovery_v1.txt"
-    )
-    return prompt_path.read_text(encoding="utf-8")
-
-
-def build_section_discovery_prompt(
-    section: dict[str, Any],
-    *,
-    config: dict[str, Any] | CandidateDiscoveryConfig | None = None,
-    prompt_template: str | None = None,
-) -> str:
-    resolved_config = apply_default_discovery_config(config)
-    prompt = prompt_template if prompt_template is not None else load_default_discovery_prompt()
-    context = {
-        "section": section,
-        "config": resolved_config.as_dict(),
-    }
-    return "\n\n".join(
-        [
-            prompt.strip(),
-            "REQUEST CONTEXT - JSON:",
-            json.dumps(context, indent=2, sort_keys=True),
-            "Return strict JSON only.",
-        ]
-    )
-
-
 def discover_candidates_for_section(
     section: dict[str, Any],
     *,
     ai_client: Any | None = None,
     config: dict[str, Any] | CandidateDiscoveryConfig | None = None,
-    prompt_template: str | None = None,
     funnel_id: str | None = None,
 ) -> dict[str, Any]:
     resolved_config = apply_default_discovery_config(config)
     effective_funnel_id = funnel_id or resolved_config.funnel_id
     client = ai_client or AiServiceSectionDiscoveryClient(funnel_id=effective_funnel_id)
-    if hasattr(client, "discover_section"):
-        result = client.discover_section(section, config=resolved_config)
-    else:
-        prompt_config = {
-            **resolved_config.as_dict(),
-            "funnel_id": effective_funnel_id or DEFAULT_FUNNEL_ID,
-        }
-        prompt = build_section_discovery_prompt(
-            section,
-            config=prompt_config,
-            prompt_template=prompt_template,
+    if not hasattr(client, "discover_section"):
+        raise SectionCandidateDiscoveryError(
+            "UNSUPPORTED_AI_CLIENT",
+            "Section discovery requires an ai_client with discover_section(); "
+            "prompt construction is owned by ai-service.",
         )
-        response = client.generate(prompt)
-        result = parse_section_discovery_model_response(response)
+    result = client.discover_section(section, config=resolved_config)
 
     capped = _apply_candidate_cap(result, resolved_config)
     with_section_ids = _attach_source_section_ids(capped, section)
-    boundary_checked = _apply_boundary_sanity_to_result(
-        with_section_ids,
-        section=section,
-        config=resolved_config,
-    )
-    if resolved_config.fail_fast and boundary_checked.get("rejected_candidates"):
-        raise SectionCandidateDiscoveryError(
-            "BOUNDARY_SANITY_FAILED",
-            "Candidate failed boundary sanity.",
-        )
-    validate_section_discovery_result(boundary_checked, section=section, config=resolved_config)
-    return boundary_checked
+    validate_section_discovery_result(with_section_ids, section=section, config=resolved_config, stage="discovery")
+    return with_section_ids
 
 
 def discover_candidates_for_sections(
@@ -387,7 +340,6 @@ def discover_candidates_for_sections(
     *,
     ai_client: Any | None = None,
     config: dict[str, Any] | CandidateDiscoveryConfig | None = None,
-    prompt_template: str | None = None,
     funnel_id: str | None = None,
 ) -> dict[str, Any]:
     resolved_config = apply_default_discovery_config(config)
@@ -401,7 +353,6 @@ def discover_candidates_for_sections(
                 section,
                 ai_client=ai_client,
                 config=resolved_config,
-                prompt_template=prompt_template,
                 funnel_id=funnel_id,
             )
             section_results.append(result)
@@ -422,18 +373,12 @@ def discover_candidates_for_sections(
         ),
         "duplicates_removed": 0,
         "section_results": section_results,
-        "rejected_candidates": [
-            rejected
-            for result in section_results
-            for rejected in (result.get("rejected_candidates") or [])
-            if isinstance(rejected, dict)
-        ],
+        "rejected_candidates": [],
         "duplicate_removals": [],
         "warnings": warnings,
         "failed_sections": failed_sections,
     }
-    batch = _apply_overlap_control_to_batch(batch)
-    validate_section_discovery_batch(batch)
+    validate_section_discovery_batch(batch, stage="discovery")
     return batch
 
 
@@ -473,9 +418,11 @@ def validate_section_discovery_result(
     *,
     section: dict[str, Any],
     config: dict[str, Any] | CandidateDiscoveryConfig | None = None,
+    stage: str = "processed",
 ) -> None:
     errors: list[str] = []
     resolved_config = apply_default_discovery_config(config)
+    discovery_stage = stage == "discovery"
     if not isinstance(result, dict):
         raise SectionCandidateDiscoveryError(
             "INVALID_SECTION_DISCOVERY_RESULT",
@@ -515,6 +462,7 @@ def validate_section_discovery_result(
                 section=section,
                 config=resolved_config,
                 errors=errors,
+                skip_boundary_constraints=discovery_stage,
             )
     if result.get("usable") is False and isinstance(candidates, list) and candidates:
         errors.append("result.candidates must be empty when usable is false")
@@ -536,7 +484,7 @@ def validate_section_discovery_result(
         )
 
 
-def validate_section_discovery_batch(batch: Any) -> None:
+def validate_section_discovery_batch(batch: Any, *, stage: str = "processed") -> None:
     errors: list[str] = []
     if not isinstance(batch, dict):
         raise SectionCandidateDiscoveryError(
@@ -577,7 +525,7 @@ def build_section_candidate_discovery_artifact(
     config: dict[str, Any] | CandidateDiscoveryConfig | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
-    validate_section_discovery_batch(batch_result)
+    validate_section_discovery_batch(batch_result, stage="discovery")
     resolved_config = apply_default_discovery_config(config)
     payload = {
         "schema_version": SECTION_DISCOVERY_BATCH_SCHEMA_VERSION,
@@ -585,6 +533,10 @@ def build_section_candidate_discovery_artifact(
         "source_transcript_sections_path": source_transcript_sections_path,
         "created_at": created_at or now_iso(),
         "discovery_version": SECTION_DISCOVERY_SCHEMA_VERSION,
+        "discovery": {
+            "strategy": MK1_DISCOVERY_STRATEGY,
+            "max_candidates_per_section": resolved_config.max_candidates_per_section,
+        },
         "config": resolved_config.as_dict(),
         "sections_received": batch_result["sections_received"],
         "sections_processed": batch_result["sections_processed"],
@@ -648,7 +600,8 @@ def validate_section_candidate_discovery_artifact(payload: Any) -> None:
     if not errors:
         try:
             validate_section_discovery_batch(
-                {field: payload[field] for field in BATCH_REQUIRED_FIELDS}
+                {field: payload[field] for field in BATCH_REQUIRED_FIELDS},
+                stage="discovery",
             )
         except SectionCandidateDiscoveryError as exc:
             errors.extend(exc.errors or [exc.message])
@@ -664,6 +617,7 @@ def _apply_candidate_cap(
     result: dict[str, Any],
     config: CandidateDiscoveryConfig,
 ) -> dict[str, Any]:
+    """Apply per-section safety cap (order-preserving). Not a final selection limit."""
     out = dict(result)
     candidates = out.get("candidates")
     if not isinstance(candidates, list):
@@ -679,129 +633,6 @@ def _apply_candidate_cap(
     return out
 
 
-def _apply_boundary_sanity_to_result(
-    result: dict[str, Any],
-    *,
-    section: dict[str, Any],
-    config: CandidateDiscoveryConfig,
-) -> dict[str, Any]:
-    candidates = result.get("candidates")
-    if not isinstance(candidates, list):
-        return result
-
-    boundary_config = BoundarySanityConfig(
-        min_candidate_duration_sec=config.min_candidate_duration_sec,
-        max_candidate_duration_sec=config.max_candidate_duration_sec,
-        transcript_start_sec=config.transcript_start_sec,
-        transcript_end_sec=config.transcript_end_sec,
-        video_duration_sec=config.video_duration_sec,
-    )
-    accepted_candidates: list[dict[str, Any]] = []
-    rejected_candidates: list[dict[str, Any]] = []
-
-    for candidate in candidates:
-        if not isinstance(candidate, dict):
-            rejected_candidates.append(
-                {
-                    "source_section_id": str(section.get("section_id") or ""),
-                    "candidate_local_id": "",
-                    "start_sec": None,
-                    "end_sec": None,
-                    "rejection_reasons": ["invalid_timestamp"],
-                }
-            )
-            continue
-        sanity = apply_boundary_sanity(candidate, section, boundary_config)
-        if sanity.accepted:
-            accepted_candidates.append(sanity.candidate)
-        else:
-            rejected_candidates.append(rejected_candidate_record(candidate, sanity))
-
-    out = dict(result)
-    out["candidates"] = accepted_candidates
-    if rejected_candidates:
-        out["rejected_candidates"] = [
-            *(item for item in (result.get("rejected_candidates") or []) if isinstance(item, dict)),
-            *rejected_candidates,
-        ]
-        if result.get("usable") is True and not accepted_candidates:
-            out["usable"] = False
-            out["warnings"] = _merge_string_warnings(
-                out.get("warnings"),
-                ["all_candidates_rejected_by_boundary_sanity"],
-            )
-    else:
-        out.setdefault("rejected_candidates", [])
-    return out
-
-
-def _apply_overlap_control_to_batch(batch: dict[str, Any]) -> dict[str, Any]:
-    section_results = batch.get("section_results")
-    if not isinstance(section_results, list):
-        return batch
-
-    accepted_candidates: list[dict[str, Any]] = []
-    for result in section_results:
-        if not isinstance(result, dict):
-            continue
-        for candidate in result.get("candidates") or []:
-            if isinstance(candidate, dict):
-                accepted_candidates.append(candidate)
-
-    try:
-        overlap_result = control_candidate_overlap(accepted_candidates)
-    except CandidateOverlapControlError as exc:
-        raise SectionCandidateDiscoveryError(
-            "OVERLAP_CONTROL_FAILED",
-            f"Candidate overlap control failed: {exc}",
-        ) from exc
-
-    kept_ids = {_candidate_identifier(candidate) for candidate in overlap_result.kept_candidates}
-    next_section_results: list[dict[str, Any]] = []
-    for result in section_results:
-        if not isinstance(result, dict):
-            next_section_results.append(result)
-            continue
-        original_candidates = [
-            candidate for candidate in (result.get("candidates") or []) if isinstance(candidate, dict)
-        ]
-        kept_candidates = [
-            candidate
-            for candidate in original_candidates
-            if _candidate_identifier(candidate) in kept_ids
-        ]
-        updated = dict(result)
-        updated["candidates"] = kept_candidates
-        if result.get("usable") is True and original_candidates and not kept_candidates:
-            updated["usable"] = False
-            updated["warnings"] = _merge_string_warnings(
-                updated.get("warnings"),
-                ["all_candidates_removed_as_timestamp_duplicates"],
-            )
-        next_section_results.append(updated)
-
-    out = dict(batch)
-    out["section_results"] = next_section_results
-    out["duplicate_removals"] = [dict(item) for item in overlap_result.duplicate_removals]
-    out["duplicates_removed"] = len(overlap_result.duplicate_removals)
-    out["usable_sections"] = sum(
-        1 for result in next_section_results if isinstance(result, dict) and result.get("usable") is True
-    )
-    out["rejected_sections"] = sum(
-        1 for result in next_section_results if isinstance(result, dict) and result.get("usable") is False
-    )
-    out["candidates_discovered"] = sum(
-        len(result.get("candidates") or [])
-        for result in next_section_results
-        if isinstance(result, dict)
-    )
-    return out
-
-
-def _candidate_identifier(candidate: dict[str, Any]) -> str:
-    return str(candidate.get("candidate_id") or candidate.get("candidate_local_id") or "")
-
-
 def _validate_discovered_candidate(
     candidate: Any,
     path: str,
@@ -809,6 +640,7 @@ def _validate_discovered_candidate(
     section: dict[str, Any],
     config: CandidateDiscoveryConfig,
     errors: list[str],
+    skip_boundary_constraints: bool = False,
 ) -> None:
     if not isinstance(candidate, dict):
         errors.append(f"{path} must be an object")
@@ -825,35 +657,36 @@ def _validate_discovered_candidate(
     start = candidate.get("start_sec")
     end = candidate.get("end_sec")
     duration = candidate.get("duration_sec")
-    start_ok = _is_number(start)
-    end_ok = _is_number(end)
-    duration_ok = _is_number(duration)
-    if not start_ok:
-        errors.append(f"{path}.start_sec must be numeric")
-    if not end_ok:
-        errors.append(f"{path}.end_sec must be numeric")
-    if start_ok and end_ok and float(end) <= float(start):
-        errors.append(f"{path}.end_sec must be greater than start_sec")
-    if not duration_ok:
-        errors.append(f"{path}.duration_sec must be numeric")
-    if start_ok and end_ok and duration_ok:
-        expected_duration = float(end) - float(start)
-        if abs(float(duration) - expected_duration) > TIMESTAMP_TOLERANCE_SEC:
-            errors.append(
-                f"{path}.duration_sec must match end_sec - start_sec within "
-                f"{TIMESTAMP_TOLERANCE_SEC:g}s"
-            )
-        if float(duration) < config.min_candidate_duration_sec - TIMESTAMP_TOLERANCE_SEC:
-            errors.append(f"{path}.duration_sec must be >= min_candidate_duration_sec")
-        if float(duration) > config.max_candidate_duration_sec + TIMESTAMP_TOLERANCE_SEC:
-            errors.append(f"{path}.duration_sec must be <= max_candidate_duration_sec")
-    if start_ok and end_ok:
-        section_start = section.get("start_sec")
-        section_end = section.get("end_sec")
-        if _is_number(section_start) and float(start) < float(section_start) - TIMESTAMP_TOLERANCE_SEC:
-            errors.append(f"{path}.start_sec must stay inside section bounds")
-        if _is_number(section_end) and float(end) > float(section_end) + TIMESTAMP_TOLERANCE_SEC:
-            errors.append(f"{path}.end_sec must stay inside section bounds")
+    if not skip_boundary_constraints:
+        start_ok = _is_number(start)
+        end_ok = _is_number(end)
+        duration_ok = _is_number(duration)
+        if not start_ok:
+            errors.append(f"{path}.start_sec must be numeric")
+        if not end_ok:
+            errors.append(f"{path}.end_sec must be numeric")
+        if start_ok and end_ok and float(end) <= float(start):
+            errors.append(f"{path}.end_sec must be greater than start_sec")
+        if not duration_ok:
+            errors.append(f"{path}.duration_sec must be numeric")
+        if start_ok and end_ok and duration_ok:
+            expected_duration = float(end) - float(start)
+            if abs(float(duration) - expected_duration) > TIMESTAMP_TOLERANCE_SEC:
+                errors.append(
+                    f"{path}.duration_sec must match end_sec - start_sec within "
+                    f"{TIMESTAMP_TOLERANCE_SEC:g}s"
+                )
+            if float(duration) < config.min_candidate_duration_sec - TIMESTAMP_TOLERANCE_SEC:
+                errors.append(f"{path}.duration_sec must be >= min_candidate_duration_sec")
+            if float(duration) > config.max_candidate_duration_sec + TIMESTAMP_TOLERANCE_SEC:
+                errors.append(f"{path}.duration_sec must be <= max_candidate_duration_sec")
+        if start_ok and end_ok:
+            section_start = section.get("start_sec")
+            section_end = section.get("end_sec")
+            if _is_number(section_start) and float(start) < float(section_start) - TIMESTAMP_TOLERANCE_SEC:
+                errors.append(f"{path}.start_sec must stay inside section bounds")
+            if _is_number(section_end) and float(end) > float(section_end) + TIMESTAMP_TOLERANCE_SEC:
+                errors.append(f"{path}.end_sec must stay inside section bounds")
 
     for field in CANDIDATE_EVIDENCE_TEXT_FIELDS:
         if field in candidate:

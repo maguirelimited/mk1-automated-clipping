@@ -1,34 +1,44 @@
-# mk0.4 autonomous mode cron table
-# Install for the mk04 service user:
+# mk0.4 autonomous mode cron table (Reliability & Recovery Phase 9)
+#
+# Install (survives reboot; cron starts with the system):
 #   sudo -u mk04 crontab /opt/mk04/prod/current/deploy/cron/mk04.crontab
-# Or system-wide drop-in at /etc/cron.d/mk04 (uncomment the user column).
+# Or system-wide drop-in:
+#   sudo cp /opt/mk04/prod/current/deploy/cron/mk04.cron.d /etc/cron.d/mk04
+#
+# Pipeline scheduling is intentionally thin:
+#   cron → scripts/ops/run-scheduled.sh → scripts/ops/run-pipeline.sh
+#
+# run-pipeline enforces config validation, boot readiness, execution lock,
+# run records, and runtime scheduler enable/disable. Do not call /run-funnel
+# or Python pipeline modules directly from cron.
 #
 # Times are UTC unless the host crond is configured otherwise.
+# One pipeline line per active source-input funnel_id (stagger if multiple).
+
 MK04_ENV=prod
 
-# --- Daily ingestion trigger (one line per active funnel_id) -----------------
-# Stagger funnels by a few minutes so concurrent yt-dlp scans do not collide.
-0 8 * * * /opt/mk04/prod/current/deploy/scripts/run-funnel-daily.sh prod mfm_business_ai_001 >/dev/null 2>&1
+# --- Scheduled pipeline (shared entrypoint) ----------------------------------
+0 8 * * * /opt/mk04/prod/current/scripts/ops/run-scheduled.sh prod mfm_business_ai_001 >/dev/null 2>&1
 
 # --- Handoff retry sweeper ---------------------------------------------------
-# The video-automation -> output-funnel handoff is one-shot. If it fails once,
-# this sweeper re-POSTs from report.json so the clip is not orphaned.
-# Self-contained (stdlib only); does not need the video-automation venv.
+# video-automation → output-funnel registration retry (not pipeline scheduling).
 */10 * * * * MK04_ENV=prod PIPELINE_CONFIG_PATH=/etc/mk04/prod/video-automation/pipeline_config.json OUTPUT_FUNNEL_URL=http://127.0.0.1:5055 VIDEO_AUTOMATION_JOBS_DIR=/var/lib/mk04/prod/video-automation/jobs /usr/bin/python3 /opt/mk04/prod/current/video-automation/scripts/handoff_sweeper.py --quiet >/dev/null 2>&1
 
-# --- Retention sweeper -------------------------------------------------------
-# Tiered cleanup so disk does not fill on a long unattended run: large media is
-# removed at MEDIA_RETENTION_DAYS (default 5), whole job folders incl. metadata
-# at RETENTION_DAYS (default 14). Tune via /etc/mk04/prod/env or --media-days /
-# --days flags.
-30 3 * * * /opt/mk04/prod/current/deploy/scripts/retention-sweeper.sh prod >/dev/null 2>&1
+# --- Database backup (Storage Phase 10) --------------------------------------
+# SQLite snapshot only. Expired backups use retention (database_backups_days).
+0 3 * * * /opt/mk04/prod/current/scripts/ops/run-database-backup.sh prod >/dev/null 2>&1
 
-# --- Retention sweeper (DEV, optional) ---------------------------------------
-# Dev runs are manual; uncomment on a dev box that should self-clean. Otherwise
-# run on demand: deploy/scripts/retention-sweeper.sh dev --dry-run
-# 30 4 * * * MK04_ENV=dev /home/maguireltd/mk1-automated-clipping/deploy/scripts/retention-sweeper.sh dev >/dev/null 2>&1
+# --- Log rotation (Storage Phase 9) ------------------------------------------
+# Bounds active project logs. Expired rotated logs use retention (logs_days).
+15 3 * * * /opt/mk04/prod/current/scripts/ops/run-log-rotation.sh prod >/dev/null 2>&1
+
+# --- Scheduled retention (Storage Phase 8) -----------------------------------
+# Thin trigger only. Mode/enablement come from storage.schedule in config.
+# Production defaults to dry_run. Does not call the legacy retention-sweeper.
+30 3 * * * /opt/mk04/prod/current/scripts/ops/run-scheduled-retention.sh prod >/dev/null 2>&1
+
+# --- Scheduled retention (DEV, optional) -------------------------------------
+# 30 4 * * * /home/maguireltd/mk1-automated-clipping/scripts/ops/run-scheduled-retention.sh dev >/dev/null 2>&1
 
 # --- Health watchdog ---------------------------------------------------------
-# Calls doctor.sh; on non-zero exit, watchdog.sh delivers a notification
-# (configure via WATCHDOG_NOTIFY in the script).
 */15 * * * * /opt/mk04/prod/current/deploy/scripts/watchdog.sh prod >/dev/null 2>&1

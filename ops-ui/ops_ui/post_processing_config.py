@@ -37,6 +37,7 @@ SELECTION_MODES = (
 )
 
 BACKGROUND_MODES = ("blurred", "solid")
+REFRAME_MODES = ("blur_background", "auto", "face_track")
 
 
 POST_PROCESSING_CONFIG_FIELDS: tuple[ConfigField, ...] = (
@@ -202,6 +203,33 @@ POST_PROCESSING_CONFIG_FIELDS: tuple[ConfigField, ...] = (
         env_var="POST_PROCESSING_FORMAT_BACKGROUND_BLUR",
         group="Platform-safe format",
         help="ffmpeg boxblur strength (luma:chroma) for the blurred background.",
+    ),
+    ConfigField(
+        name="format_reframe_mode",
+        label="Reframe mode",
+        kind="choice",
+        default="blur_background",
+        env_var="POST_PROCESSING_FORMAT_REFRAME_MODE",
+        choices=REFRAME_MODES,
+        group="Platform-safe format",
+        help=(
+            "How 9:16 framing is produced. blur_background uses the current "
+            "blurred-background method. auto will try face-tracked crop when "
+            "face-track test mode is enabled and eligibility passes. face_track "
+            "requires face-tracked crop only."
+        ),
+    ),
+    ConfigField(
+        name="format_face_track_test_enabled",
+        label="Face-track test mode",
+        kind="bool",
+        default=False,
+        env_var="POST_PROCESSING_FACE_TRACK_TEST_ENABLED",
+        group="Platform-safe format",
+        help=(
+            "Allows eligible clips to use face-tracked reframing in auto mode. "
+            "Production default should remain off."
+        ),
     ),
     ConfigField(
         name="format_ffmpeg_preset",

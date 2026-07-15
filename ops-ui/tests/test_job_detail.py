@@ -34,4 +34,4 @@ def test_video_job_detail_redirects_when_offline(tmp_path: Path) -> None:
     app = create_app(_settings(tmp_path))
     response = app.test_client().get("/jobs/video/job_20260512T140000Z_abcdef12", follow_redirects=True)
     assert response.status_code == 200
-    assert b"Failed Jobs" in response.data or b"not available" in response.data.lower()
+    assert b"Legacy failed jobs" in response.data or b"not available" in response.data.lower()
