@@ -28,3 +28,6 @@ __pycache__/
 /ops-ui/data/*.sqlite3-journal
 /source-input/input_service/data/state/
 /video-automation/analytics/events.jsonl
+
+# Redundant generated source archive
+/output-funnel/context/output-funnel-python-scripts.zip
