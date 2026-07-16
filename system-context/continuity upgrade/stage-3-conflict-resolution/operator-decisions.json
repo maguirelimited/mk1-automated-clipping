@@ -1,0 +1,176 @@
+{
+  "approval_mode": "RECORD_ONLY",
+  "decisions": [
+    {
+      "approval_status": "OPERATOR_APPROVED_RECORD_ONLY",
+      "authorization_boundary": {
+        "authorizes_archive_move": false,
+        "authorizes_continuity_roots": false,
+        "authorizes_control_mutation": false,
+        "authorizes_credential_copy_or_enablement": false,
+        "authorizes_database_migration": false,
+        "authorizes_duplicate_deletion": false,
+        "authorizes_live_state_change": false,
+        "authorizes_physical_action": false,
+        "authorizes_stage_3_5": false,
+        "authorizes_stage_4": false
+      },
+      "decision_id": "DEC-23acccc00f9d602b",
+      "decision_key": "credential_treatments",
+      "observed_at_utc": "2026-07-16T16:13:05Z",
+      "rationale": "Operator approved metadata-only credential treatments; no enablement or secret materialization.",
+      "scope": "credentials",
+      "title": "Protected live-preparation and protected archive credential slots"
+    },
+    {
+      "approval_status": "OPERATOR_APPROVED_RECORD_ONLY",
+      "authorization_boundary": {
+        "authorizes_archive_move": false,
+        "authorizes_continuity_roots": false,
+        "authorizes_control_mutation": false,
+        "authorizes_credential_copy_or_enablement": false,
+        "authorizes_database_migration": false,
+        "authorizes_duplicate_deletion": false,
+        "authorizes_live_state_change": false,
+        "authorizes_physical_action": false,
+        "authorizes_stage_3_5": false,
+        "authorizes_stage_4": false
+      },
+      "decision_id": "DEC-3311b4e765cff392",
+      "decision_key": "persistent_controls",
+      "observed_at_utc": "2026-07-16T16:13:05Z",
+      "rationale": "Operator approved persistent safety control values from prod control_state and controls.json.",
+      "scope": "controls",
+      "title": "Select uploads_disabled/scheduler_disabled true and uploads_paused false"
+    },
+    {
+      "approval_status": "OPERATOR_APPROVED_RECORD_ONLY",
+      "authorization_boundary": {
+        "authorizes_archive_move": false,
+        "authorizes_continuity_roots": false,
+        "authorizes_control_mutation": false,
+        "authorizes_credential_copy_or_enablement": false,
+        "authorizes_database_migration": false,
+        "authorizes_duplicate_deletion": false,
+        "authorizes_live_state_change": false,
+        "authorizes_physical_action": false,
+        "authorizes_stage_3_5": false,
+        "authorizes_stage_4": false
+      },
+      "decision_id": "DEC-5332a1a13b786734",
+      "decision_key": "job_media_history",
+      "observed_at_utc": "2026-07-16T16:13:05Z",
+      "rationale": "Operator approved history treatments; no initial-live jobs/media; no disposable duplicates.",
+      "scope": "history",
+      "title": "Archive workspace jobs; preserve unresolved varlib/handoff/ledger history"
+    },
+    {
+      "approval_status": "OPERATOR_APPROVED_RECORD_ONLY",
+      "authorization_boundary": {
+        "authorizes_archive_move": false,
+        "authorizes_continuity_roots": false,
+        "authorizes_control_mutation": false,
+        "authorizes_credential_copy_or_enablement": false,
+        "authorizes_database_migration": false,
+        "authorizes_duplicate_deletion": false,
+        "authorizes_live_state_change": false,
+        "authorizes_physical_action": false,
+        "authorizes_stage_3_5": false,
+        "authorizes_stage_4": false
+      },
+      "decision_id": "DEC-7137b5c52fdde487",
+      "decision_key": "database_authorities",
+      "observed_at_utc": "2026-07-16T16:13:05Z",
+      "rationale": "Operator approved prod-bound live DBs by binding not label; archive histories; no merges.",
+      "scope": "database",
+      "title": "Ops UI and Output Funnel initial-live DBs; ConfigManager no active DB"
+    },
+    {
+      "approval_status": "OPERATOR_APPROVED_RECORD_ONLY",
+      "authorization_boundary": {
+        "authorizes_archive_move": false,
+        "authorizes_continuity_roots": false,
+        "authorizes_control_mutation": false,
+        "authorizes_credential_copy_or_enablement": false,
+        "authorizes_database_migration": false,
+        "authorizes_duplicate_deletion": false,
+        "authorizes_live_state_change": false,
+        "authorizes_physical_action": false,
+        "authorizes_stage_3_5": false,
+        "authorizes_stage_4": false
+      },
+      "decision_id": "DEC-a55537d43caaf5b9",
+      "decision_key": "configuration_field_sources",
+      "observed_at_utc": "2026-07-16T16:13:05Z",
+      "rationale": "Operator approved I1A-proven field sources and explicit non-normalization of unresolved mappings.",
+      "scope": "configuration",
+      "title": "Component-specific value sources and unresolved field preservation"
+    },
+    {
+      "approval_status": "OPERATOR_APPROVED_RECORD_ONLY",
+      "authorization_boundary": {
+        "authorizes_archive_move": false,
+        "authorizes_continuity_roots": false,
+        "authorizes_control_mutation": false,
+        "authorizes_credential_copy_or_enablement": false,
+        "authorizes_database_migration": false,
+        "authorizes_duplicate_deletion": false,
+        "authorizes_live_state_change": false,
+        "authorizes_physical_action": false,
+        "authorizes_stage_3_5": false,
+        "authorizes_stage_4": false
+      },
+      "decision_id": "DEC-a9be6e0fb45b1a97",
+      "decision_key": "seven_stage34_recommendations",
+      "observed_at_utc": "2026-07-16T16:13:05Z",
+      "rationale": "Operator approved the full Stage 3.4 recommendation set as record-only decisions.",
+      "scope": "stage_3_4",
+      "title": "Approve all seven Stage 3.4 recommendations"
+    },
+    {
+      "approval_status": "OPERATOR_APPROVED_RECORD_ONLY",
+      "authorization_boundary": {
+        "authorizes_archive_move": false,
+        "authorizes_continuity_roots": false,
+        "authorizes_control_mutation": false,
+        "authorizes_credential_copy_or_enablement": false,
+        "authorizes_database_migration": false,
+        "authorizes_duplicate_deletion": false,
+        "authorizes_live_state_change": false,
+        "authorizes_physical_action": false,
+        "authorizes_stage_3_5": false,
+        "authorizes_stage_4": false
+      },
+      "decision_id": "DEC-ad057570509d65b3",
+      "decision_key": "seen_urls_authority",
+      "observed_at_utc": "2026-07-16T16:13:05Z",
+      "rationale": "Operator approved additional seen_urls recommendation: only populated dedup history (20 records).",
+      "scope": "operational_memory",
+      "title": "Select populated seen_urls as initial-live operational memory"
+    },
+    {
+      "approval_status": "OPERATOR_APPROVED_RECORD_ONLY",
+      "authorization_boundary": {
+        "authorizes_archive_move": false,
+        "authorizes_continuity_roots": false,
+        "authorizes_control_mutation": false,
+        "authorizes_credential_copy_or_enablement": false,
+        "authorizes_database_migration": false,
+        "authorizes_duplicate_deletion": false,
+        "authorizes_live_state_change": false,
+        "authorizes_physical_action": false,
+        "authorizes_stage_3_5": false,
+        "authorizes_stage_4": false
+      },
+      "decision_id": "DEC-b04f0bf112d33885",
+      "decision_key": "funnel_core_gta_clips_002",
+      "observed_at_utc": "2026-07-16T16:13:05Z",
+      "rationale": "Operator approved recommendation: one logical funnel-core authority; equivalent registry copies are evidence only.",
+      "scope": "configuration",
+      "title": "Select gta_clips_002 funnel-core authority from byte-identical Ops UI registries"
+    }
+  ],
+  "note": "Approval does not authorize physical action, credential enablement, migration, or Stage 3.5/4.",
+  "observed_at_utc": "2026-07-16T16:13:05Z",
+  "stage": "3.4-M1A"
+}

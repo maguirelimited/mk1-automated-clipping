@@ -1,0 +1,47 @@
+{
+  "aggregate_excludes": [
+    "conflict-resolution-manifest.json"
+  ],
+  "aggregate_exclusion_rule": "Aggregate hashes all candidate files except conflict-resolution-manifest.json via sorted relative_path + NUL + file_sha256 + LF",
+  "authorization_boundary": "record_only_no_physical_action",
+  "created_at_utc": "2026-07-16T16:13:05Z",
+  "id_prefixes": [
+    "RES",
+    "AUTH",
+    "FSEL",
+    "DBSEL",
+    "CTLSEL",
+    "CREDSEL",
+    "ALT",
+    "UNRES",
+    "REVID",
+    "RCOV",
+    "DEC"
+  ],
+  "m1b_review": {
+    "corrections": [
+      "oauth_missing_slots_do_not_block_stage_3_5"
+    ],
+    "parent_m1a_aggregate_sha256": "0cdcf178cf0c945cb71b4e08d8475df0822aefa68004f0bdcbad51f85ae472ff",
+    "reviewed_at_utc": "2026-07-16T16:45:40Z"
+  },
+  "secret_policy": "metadata_only_no_secret_values_hashes_fragments_lengths_or_equality_claims",
+  "stage": "3.4-M1B",
+  "stage_3_5_begun": false,
+  "stage_4_authorized": false,
+  "title": "conflict-resolution",
+  "treatments": [
+    "ARCHIVE_SEPARATELY",
+    "EXACT_EQUIVALENT_SOURCE",
+    "HISTORICAL_MIRROR",
+    "INFRASTRUCTURE_SECRET_OUTSIDE_APPLICATION_SCOPE",
+    "MISSING_SLOT_NO_ARTIFACT",
+    "NON_AUTHORITY_DERIVED_PROJECTION",
+    "PRESERVE_UNRESOLVED_NO_AUTHORITY",
+    "PROTECTED_ARCHIVE",
+    "PROTECTED_LIVE_PREPARATION",
+    "SELECTED_INITIAL_LIVE_AUTHORITY",
+    "SELECTED_INITIAL_LIVE_VALUE_SOURCE"
+  ],
+  "version": "1.0"
+}

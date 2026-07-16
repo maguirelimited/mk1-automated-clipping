@@ -1,0 +1,224 @@
+{
+  "aggregate_dataset_sha256": "0e2d1ea45bf3bf703ba3adf4bc90e12a455f344724bcdb4b2d6dd0dde5eac32e",
+  "aggregate_excludes": [
+    "conflict-resolution-manifest.json"
+  ],
+  "aggregate_exclusion_rule": "Aggregate hashes all candidate files except conflict-resolution-manifest.json via sorted relative_path + NUL + file_sha256 + LF",
+  "alternative_treatment_count": 1776,
+  "artifact_treatment_totals": {
+    "ARCHIVE_SEPARATELY": 1603,
+    "EXACT_EQUIVALENT_SOURCE": 114,
+    "HISTORICAL_MIRROR": 1,
+    "NON_AUTHORITY_DERIVED_PROJECTION": 15,
+    "PRESERVE_UNRESOLVED_NO_AUTHORITY": 1188,
+    "PROTECTED_ARCHIVE": 28,
+    "PROTECTED_LIVE_PREPARATION": 7,
+    "SELECTED_INITIAL_LIVE_AUTHORITY": 4,
+    "SELECTED_INITIAL_LIVE_VALUE_SOURCE": 1
+  },
+  "authority_counts": {
+    "DATABASE": 2,
+    "FUNNEL_CORE": 1,
+    "OPERATIONAL_MEMORY": 1,
+    "PERSISTENT_CONTROLS": 1
+  },
+  "candidate_path": "/tmp/mk1_34m1b_candidate_20260716T164414Z",
+  "created_at_utc": "2026-07-16T16:13:05Z",
+  "evidence_cutoff_utc": "2026-07-16T16:13:05Z",
+  "files": {
+    "alternative-copy-treatments.jsonl": {
+      "bytes": 799059,
+      "rows": 1776,
+      "sha256": "ddf2e0614fbe4537d8e27ed43d6b8af74805b32e31cd3e4c4521af44180419f0"
+    },
+    "authority-selections.jsonl": {
+      "bytes": 2471,
+      "rows": 5,
+      "sha256": "06611cce9e7884f46dde5a9b836606c1361902d19c5f748999802af2d408613e"
+    },
+    "configuration-field-selections.jsonl": {
+      "bytes": 3808,
+      "rows": 9,
+      "sha256": "41658be07d54c4bb83a7f708542c56d88fac8cc3a7ed94a736fe87554219193b"
+    },
+    "conflict-resolution-ledger.jsonl": {
+      "bytes": 383685,
+      "rows": 761,
+      "sha256": "1902e81bad60eb24279a7885e12a8e61fb24202eb12407625331bb4ad52ae775"
+    },
+    "conflict-resolution-schema.json": {
+      "bytes": 1395,
+      "sha256": "fded2540e38e25854a0cc641a8a1cbeb6d3f94b241509ed6059581305e7eb0d9"
+    },
+    "control-value-selections.jsonl": {
+      "bytes": 3629,
+      "rows": 8,
+      "sha256": "04a19c241f247e8845ac8e13d8395e893e53e77ec0ddaba9c453de3e5a32d595"
+    },
+    "credential-treatment-selections.jsonl": {
+      "bytes": 3997,
+      "rows": 9,
+      "sha256": "8df2e733e7a80bab629307d4e3c8a9d8058866e30bebff66c1377a49190ea278"
+    },
+    "database-authority-selections.jsonl": {
+      "bytes": 4681,
+      "rows": 8,
+      "sha256": "d28fca5624111ac348348c07b4862e6b62fc39c1e100e054cb617cc96cf6be7d"
+    },
+    "operator-decisions.json": {
+      "bytes": 7783,
+      "sha256": "3122a4eeb9bd613aff964eeeecf5cd92a59f741618a9a5ed4be5830e97dcbd82"
+    },
+    "resolution-coverage.jsonl": {
+      "bytes": 1604195,
+      "rows": 3610,
+      "sha256": "b3fdd0fe42210399dcfdab2b78ef52f88a0565875e6dcf11e67bf0843ed9fd9b"
+    },
+    "resolution-evidence.jsonl": {
+      "bytes": 353764,
+      "rows": 779,
+      "sha256": "fa1581ca1fe200be0048eb746eff63571967e487bea472c83fbf37e33cb22f9a"
+    },
+    "stage-3.4-conflict-resolution-summary.md": {
+      "bytes": 2820,
+      "sha256": "3b84e6bfe51161f8812858ab64744ddbe0fb8821be504ef540686c1398cb6189"
+    },
+    "unresolved-conflicts.jsonl": {
+      "bytes": 63411,
+      "rows": 103,
+      "sha256": "35c0f18229af5b8e4a73457a9ceb4090590e5eec7ba2df401b5fbf4b20079c2d"
+    }
+  },
+  "m1b_corrections": [
+    {
+      "field": "blocks_stage_3_5_mapping",
+      "from": true,
+      "ids": [
+        "UNRES-633270be150272ce",
+        "UNRES-f8547d11aed9e3a9"
+      ],
+      "reason": "Missing OAuth/client-secret material must not block Stage 3.5 or Continuity infrastructure.",
+      "to": false
+    }
+  ],
+  "m1b_reviewed_at_utc": "2026-07-16T16:45:40Z",
+  "observation_coverage": 13,
+  "operator_decisions_approved": [
+    "funnel_core_gta_clips_002",
+    "configuration_field_sources",
+    "database_authorities",
+    "seen_urls_authority",
+    "persistent_controls",
+    "credential_treatments",
+    "job_media_history",
+    "seven_stage34_recommendations"
+  ],
+  "parent_m1a_aggregate_sha256": "0cdcf178cf0c945cb71b4e08d8475df0822aefa68004f0bdcbad51f85ae472ff",
+  "parent_m1a_candidate_path": "/tmp/mk1_34m1a_candidate_20260716T160903Z",
+  "parent_m1a_manifest_sha256": "6ad4e80de1a9e95bc50543ef2216e00d4cdde3c7fda3a29c27a5466b3e04db01",
+  "physical_actions_performed": false,
+  "published_inputs": {
+    "classification_aggregate_sha256": "61350ebd4513c0cf811ae4e385b83fcf30546ac98492056008215677c3ca85b7",
+    "classification_manifest_sha256": "ecbf344c2c5b48094ab00c18ea100791793e0b69baf6e8154dee1061b33ca070",
+    "git_head": "60552cfb438ce6af9c22b94feadd8d350d26f802",
+    "git_tree": "17de8b762ffd2c70c54126f8d25743ebe7835a36",
+    "inventory_aggregate_sha256": "f9449841af022f358d2b839cc0c28dcb278b0edd7165cf29a2ba3d8118b88ab1",
+    "stage33_unresolved_artifacts": 2961,
+    "stage33_unresolved_groups": 429
+  },
+  "row_counts": {
+    "alternative-copy-treatments.jsonl": 1776,
+    "authority-selections.jsonl": 5,
+    "configuration-field-selections.jsonl": 9,
+    "conflict-resolution-ledger.jsonl": 761,
+    "conflict-resolution-schema.json": 1,
+    "control-value-selections.jsonl": 8,
+    "credential-treatment-selections.jsonl": 9,
+    "database-authority-selections.jsonl": 8,
+    "operator-decisions.json": 1,
+    "resolution-coverage.jsonl": 3610,
+    "resolution-evidence.jsonl": 779,
+    "stage-3.4-conflict-resolution-summary.md": 1,
+    "unresolved-conflicts.jsonl": 103
+  },
+  "secret_scan_hits": [],
+  "self_containment": {
+    "category_4_count": 0,
+    "category_counts": {
+      "1": 2,
+      "2": 663,
+      "3": 114
+    }
+  },
+  "source_candidates": {
+    "I1A": {
+      "aggregate": "c5057cfbd1f6b275714c6caf121b6f4928488c8663dc1fced6f9c360ac83adb4",
+      "manifest": "dea12e11a28cca9945d1f8aee5e0eaaa4cce4157b09e454bd35674acdd6364ac",
+      "path": "/tmp/mk1_34i1a_candidate_20260716T133837Z"
+    },
+    "I2A": {
+      "aggregate": "4db204959391a93a637bbcf17fe8cc0d77915728c7eb2c3f54a4d61fc8e27e07",
+      "manifest": "bd1292b1357dfe9736677dc7a0a1204c5b6fe93724dcfa64e9ab8af8949f1ad9",
+      "path": "/tmp/mk1_34i2a_candidate_20260716T135309Z"
+    },
+    "I3": {
+      "aggregate": "dcd9b328308998ae82924aa4189a6f94aa69a363823c9cd33c077a9cf6fbfe67",
+      "manifest": "cb43f2bcff6c765d34f828c8fafe5a3375dc3d5a931732488077aa8b7234624e",
+      "path": "/tmp/mk1_34i3_candidate_20260716T140139Z"
+    },
+    "I4A": {
+      "aggregate": "05b87486bd52f44174dd02e9af141c56348fc1df6043225d59aa08154e6ba9ed",
+      "manifest": "b963bb74a158d46d0dcca0e632571250d617b002b7396fd7ff4ad772553ebf35",
+      "path": "/tmp/mk1_34i4a_candidate_20260716T141729Z"
+    },
+    "I5B": {
+      "aggregate": "257faad6cfd440e212048d0637e419cfe926085d4255d1f84a03373c6ffd782d",
+      "manifest": "600b122c3e63d76d5cf1127abc2164ad388da37f1834266bb273d9eb80b7c0bc",
+      "path": "/tmp/mk1_34i5b_candidate_20260716T144419Z"
+    },
+    "I6A": {
+      "aggregate": "8a6042abbe762552ccaf59c77b59c6053385055c557d657019d6a1771817f287",
+      "manifest": "82fead63a46b724b96b28b96ece26579c5d84814a7d554c35bbe01c635da00c9",
+      "path": "/tmp/mk1_34i6a_candidate_20260716T151533Z"
+    }
+  },
+  "source_conflict_coverage": 207,
+  "stage": "3.4-M1B",
+  "stage33_artifact_coverage": 2961,
+  "stage33_group_coverage": 429,
+  "stage_3_5_begun": false,
+  "stage_4_authorized": false,
+  "unresolved_conflict_count": 103,
+  "unresolved_group_treatment_totals": {
+    "ARCHIVE_SEPARATELY": 11,
+    "HISTORICAL_MIRROR": 3,
+    "PRESERVE_UNRESOLVED_NO_AUTHORITY": 379,
+    "PROTECTED_ARCHIVE": 23,
+    "PROTECTED_LIVE_PREPARATION": 8,
+    "SELECTED_INITIAL_LIVE_AUTHORITY": 4,
+    "SELECTED_INITIAL_LIVE_VALUE_SOURCE": 1
+  },
+  "unresolved_register_count": 103,
+  "validation": {
+    "classifications_unchanged": true,
+    "config_authority_label_independent": true,
+    "credential_metadata_only": true,
+    "exactly_one_treatment_per_artifact": true,
+    "no_configmanager_active_db": true,
+    "no_incompatible_dual_db_authority": true,
+    "no_job_or_job_media_initial_live": true,
+    "no_physical_action_true": true,
+    "no_silent_merge": true,
+    "observations_covered": true,
+    "one_ops_ui_live_db": true,
+    "one_output_funnel_live_db": true,
+    "persistent_controls_match_approved": true,
+    "secret_scan_clear": true,
+    "seen_urls_selected_with_20_records": true,
+    "source_conflicts_covered": true,
+    "stage33_artifacts_covered": true,
+    "stage33_groups_covered": true,
+    "unique_stable_ids": true
+  },
+  "version": "1.0"
+}
