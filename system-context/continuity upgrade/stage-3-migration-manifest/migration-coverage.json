@@ -1,0 +1,77 @@
+{
+  "action_counts": {
+    "ACT_ARCHIVE_PRESERVE": 11596,
+    "ACT_CREATE_DIRECTORY_ONLY": 4805,
+    "ACT_NO_COPY_EXCLUDED": 3085,
+    "ACT_PRESERVE_UNRESOLVED_NO_AUTHORITY": 835,
+    "ACT_PROTECTED_CREDENTIAL_COPY": 47,
+    "ACT_RECORD_ABSENCE": 1326,
+    "ACT_RECREATE_SYMLINK": 134,
+    "ACT_RETAIN_VALIDATE_SHARED_ASSET": 42,
+    "ACT_SQLITE_FAMILY_SNAPSHOT": 6,
+    "ACT_TRANSFORMED_COPY": 1,
+    "ACT_VERBATIM_COPY": 2
+  },
+  "artifact_count": 21879,
+  "artifact_set_hash": "c6144b352ea5b3683723fd7e09b6b166c6077e13df340bfaf0d926fb60865fa6",
+  "authority_mapping_corrections_m1a": {
+    "controls_canonical_promoted_to_initial_live": "ART-a0bda5d988a22b4a",
+    "controls_uploads_paused_value_source": "ART-5fba92e5c8738b83",
+    "output_funnel_main_promoted_to_initial_live_with_gap26_block": "ART-99e7f31067f22cd1"
+  },
+  "cohort_count": 20488,
+  "cohort_set_hash": "7702c42d5e4892ea9dffe8936c3701d3cb2caac356ec6b222ac14ae395b13180",
+  "execution_blocked_count": 4,
+  "initial_live_count": 9,
+  "m1b_corrections": {
+    "ops_ui_sqlite_xform_none": [
+      "ART-12ec768cdc485ce0",
+      "ART-43822a8ba6e668fd",
+      "ART-5fc713dd6e0bf310"
+    ],
+    "verbatim_relocations_from_transformed": [
+      "ART-3d54d4611b5f00ac",
+      "ART-02d1a7ab8c80ef6a"
+    ]
+  },
+  "mixed_cohorts": 12,
+  "no_target_counts": {
+    "EXCLUDED_EPHEMERAL_OR_DISPOSABLE": 2679,
+    "MISSING_SLOT_OR_ABSENT_REFERENCE": 1326,
+    "RECONSTRUCT_FROM_ACCEPTED_GIT_STAGE4": 21,
+    "REPRODUCIBLE_ACQUISITION_NO_COPY": 385
+  },
+  "ordering_acyclic": true,
+  "ordering_layers": 3,
+  "physical_target_count": 17468,
+  "ready_nocopy_count": 3085,
+  "record_absence_count": 1326,
+  "shared_asset_discrimination": {
+    "archived_shared_classified": 1792,
+    "archived_shared_classified_set_hash": "7ee4f97a3a35dab9da35361ba629018cb7c9020ce36c273ced9bf018ed62907d",
+    "mapped_shared_assets": 42,
+    "mapped_shared_assets_set_hash": "6607a91920af82e07d21b02d7bdda27e1d59d1b46aaef4de2783e5d9920e643b",
+    "nocopy_reproducible_shared": 406,
+    "nocopy_reproducible_shared_set_hash": "0671f3a20f1f8a16f70269fd3dbe77d9f288af072b14d40878afa2380898fb35",
+    "unresolved_shared_classified": 0,
+    "unresolved_shared_classified_set_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "target_root_counts": {
+    "archive": 17410,
+    "assets": 42,
+    "live": 16
+  },
+  "target_treatment_counts": {
+    "ARCHIVE_PRESERVE": 16273,
+    "ARCHIVE_VALUE_SOURCE": 2,
+    "INITIAL_LIVE": 9,
+    "NO_TARGET_ABSENCE": 1326,
+    "NO_TARGET_EXCLUDED": 2679,
+    "NO_TARGET_RECONSTRUCT_STAGE4": 21,
+    "NO_TARGET_REPRODUCIBLE": 385,
+    "PRESERVE_UNRESOLVED_NO_AUTHORITY": 1088,
+    "PROTECTED_ARCHIVE_CREDENTIAL": 47,
+    "PROTECTED_LIVE_CREDENTIAL": 7,
+    "SHARED_ASSET_RETAIN": 42
+  }
+}

@@ -1,0 +1,12 @@
+{"check":"post_copy_content_hash_or_inventory_hash","rule_id":"VAL-POST-HASH"}
+{"check":"member_counts_match_cohort","rule_id":"VAL-COUNT"}
+{"check":"sqlite_family_integrity_after_snapshot","rule_id":"VAL-SQLITE-INTEGRITY"}
+{"check":"credential_slot_presence_metadata_secret_safe","rule_id":"VAL-CRED-METADATA"}
+{"check":"symbolic_owner_group_mode_match_policy","rule_id":"VAL-OWNER-MODE"}
+{"check":"test_cannot_access_live_or_live_credentials","rule_id":"VAL-NO-TEST-LIVE"}
+{"check":"references_and_endpoints_resolve_together","rule_id":"VAL-REFS"}
+{"check":"controls_remain_fail_closed_uploads_scheduler_disabled","rule_id":"VAL-CONTROLS"}
+{"check":"archive_not_writable_by_ordinary_live_test","rule_id":"VAL-ARCHIVE-NONAUTH"}
+{"check":"excluded_material_not_copied_into_brain","rule_id":"VAL-NO-COPY-EXCLUSION"}
+{"check":"absence_or_missing_slot_recorded_universe_unchanged","rule_id":"VAL-ABSENCE-RECORDED"}
+{"applies_to_actions":["ACT_SQLITE_FAMILY_SNAPSHOT"],"description":"Validate SQLite main/WAL/SHM consistency unit integrity after coordinated snapshot; secret-safe; no live activation.","rule_id":"VAL-SQLITE-FAMILY"}

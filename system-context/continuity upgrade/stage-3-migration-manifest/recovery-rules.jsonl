@@ -1,0 +1,6 @@
+{"instruction":"Restore from original source identity; do not auto-delete sources.","rule_id":"REC-RESTORE-FROM-SOURCE"}
+{"instruction":"Restore from pre-action recovery checkpoint when one exists in Stage 3.6; M1A creates none.","rule_id":"REC-RESTORE-CHECKPOINT"}
+{"instruction":"Restore entire SQLite family together from checkpoint/source.","rule_id":"REC-SQLITE-FAMILY"}
+{"instruction":"Keep unresolved/non-authoritative; do not promote to live.","rule_id":"REC-FAIL-CLOSED-NO-PROMOTE"}
+{"instruction":"No recovery copy required; regenerate ephemeral/disposable at runtime.","rule_id":"REC-NONE-NO-COPY"}
+{"instruction":"Do not invent missing bytes; fail closed if required for live.","rule_id":"REC-ABSENCE-NO-CREATE"}

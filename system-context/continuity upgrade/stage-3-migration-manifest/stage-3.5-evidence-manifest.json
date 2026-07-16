@@ -1,0 +1,172 @@
+{
+  "aggregate_algorithm": "sha256(sorted(name+NUL+file_sha256+LF for 16 non-manifest deliverables)); evidence manifest excluded",
+  "aggregate_dataset_sha256": "8cd902958a1fc01a8dd2999fb82df7fc81de981c85fc829ba8d6d904ced19771",
+  "candidate": "/tmp/mk1_35m1a_candidate_20260716T193823Z",
+  "created_utc": "2026-07-16T19:39:31Z",
+  "credential_enablement_authorized": false,
+  "deletion_authorized": false,
+  "files": {
+    "migration-action-rules.jsonl": {
+      "bytes": 5013,
+      "mode": "0600",
+      "sha256": "a031709a4a9d33c566270e069aac0db92e02872785c7344eb366af87feec6493"
+    },
+    "migration-cohorts.jsonl": {
+      "bytes": 15681462,
+      "mode": "0600",
+      "sha256": "6bedef8ada8a90b0dfc7055d694aff666b9ee78952a199bed84edf3d79205200"
+    },
+    "migration-coverage.json": {
+      "bytes": 2782,
+      "mode": "0600",
+      "sha256": "f4f5390a86a31912cf32226d96d85658d63a121dfcd75e125cbeda9851490cb7"
+    },
+    "migration-manifest.jsonl": {
+      "bytes": 47226284,
+      "mode": "0600",
+      "sha256": "b23a504710ef22b8f362353274a9cf359da2560bd7ab93e90aa672237565c9d1"
+    },
+    "migration-manifest.schema.json": {
+      "bytes": 1771,
+      "mode": "0600",
+      "sha256": "fcaf067317de6a1be6c9550a73a1cd077c81d9b2197e417028843f744fa9eba2"
+    },
+    "migration-order.jsonl": {
+      "bytes": 5091656,
+      "mode": "0600",
+      "sha256": "3d57a6ba23989a0494f46fb0e8f4940b9beeaa03ba31fb4c0332e1c17e232ce2"
+    },
+    "operator-decisions.json": {
+      "bytes": 18874,
+      "mode": "0600",
+      "sha256": "4cddf2aa90ba69da36c7780d80ed836763d863fe12ec0a210aace7684f00c048"
+    },
+    "ownership-permission-rules.jsonl": {
+      "bytes": 1633,
+      "mode": "0600",
+      "sha256": "a0b35f94ca418d881ecd8013802dc5146caef8638cc97f1bf62487a4d365080e"
+    },
+    "precondition-rules.jsonl": {
+      "bytes": 871,
+      "mode": "0600",
+      "sha256": "2a95f4b7ee23e698bcaa93049aad084e8b9ec56e9f23d9d1f04d750614e9d092"
+    },
+    "recovery-rules.jsonl": {
+      "bytes": 725,
+      "mode": "0600",
+      "sha256": "468e0b071c2ea5b97c3db99444deaae37b5d3af83c866388a37ed8dc9dee905c"
+    },
+    "stage-3.5-migration-manifest-summary.md": {
+      "bytes": 2903,
+      "mode": "0600",
+      "sha256": "7553c7594d18c844bd7f6652199885a6edfdadc32e0a4e13628f3fb53bae71de"
+    },
+    "target-path-rules.jsonl": {
+      "bytes": 1066,
+      "mode": "0600",
+      "sha256": "5d055c76c194982d59ed66d6215f466a6f4a9fb4cee2e2334f3e96bb155d72f4"
+    },
+    "transformation-rules.jsonl": {
+      "bytes": 2685,
+      "mode": "0600",
+      "sha256": "28e4fdaa49ae85d5cc48003daaa0e2f4ee5814b178aabdf653b5f4ca1edafb9d"
+    },
+    "unresolved-execution-blockers.jsonl": {
+      "bytes": 237881,
+      "mode": "0600",
+      "sha256": "c3094c903f2a90072c7c3ac1d17dc148d63d7bd6b3cd079bd059801fe443a63e"
+    },
+    "validate-migration-manifest.py": {
+      "bytes": 11889,
+      "mode": "0600",
+      "sha256": "311ae45779a8c0d9ae52fb1b6cf2ccf24c3d509315f9dc0282608428f8a4ba23"
+    },
+    "validation-rules.jsonl": {
+      "bytes": 1129,
+      "mode": "0600",
+      "sha256": "0112c1d83ff6199b5530ada6e2b9db2dbff469c84ac1799be30cc68ee86139a6"
+    }
+  },
+  "generation_timestamp_utc": "20260716T195347Z",
+  "m1a_aggregate_sha256": "cca2cdcefb1ddf473effbbad522174a2197b5c08197a5901f34bd25b92a2f8d1",
+  "m1a_candidate_preserved": "/tmp/mk1_35m1a_candidate_20260716T193823Z",
+  "m1a_evidence_manifest_sha256": "55dd33018a023b090add95b8e617d7e2a505716cd7df03c9962500770c0a6be3",
+  "m1b_correction_boundary": [
+    {
+      "artifact_id": "ART-3d54d4611b5f00ac",
+      "field": "migration_action/transformation_rule_id",
+      "from": [
+        "ACT_TRANSFORMED_COPY",
+        "XFORM-LIVE-EXPLICIT-REWRITE"
+      ],
+      "reason": "seen_urls relocation is not content transformation",
+      "to": [
+        "ACT_VERBATIM_COPY",
+        "XFORM-NONE"
+      ]
+    },
+    {
+      "artifact_id": "ART-02d1a7ab8c80ef6a",
+      "field": "migration_action/transformation_rule_id",
+      "from": [
+        "ACT_TRANSFORMED_COPY",
+        "XFORM-LIVE-EXPLICIT-REWRITE"
+      ],
+      "reason": "funnel file has no absolute paths; content transform not evidenced",
+      "to": [
+        "ACT_VERBATIM_COPY",
+        "XFORM-NONE"
+      ]
+    },
+    {
+      "artifact_id": "ART-12ec768cdc485ce0",
+      "field": "transformation_rule_id",
+      "from": "XFORM-LIVE-EXPLICIT-REWRITE",
+      "reason": "no evidenced content rewrite for ops-ui sqlite snapshot",
+      "to": "XFORM-NONE"
+    },
+    {
+      "artifact_id": "ART-43822a8ba6e668fd",
+      "field": "transformation_rule_id",
+      "from": "XFORM-LIVE-EXPLICIT-REWRITE",
+      "reason": "no evidenced content rewrite for ops-ui sqlite snapshot",
+      "to": "XFORM-NONE"
+    },
+    {
+      "artifact_id": "ART-5fc713dd6e0bf310",
+      "field": "transformation_rule_id",
+      "from": "XFORM-LIVE-EXPLICIT-REWRITE",
+      "reason": "no evidenced content rewrite for ops-ui sqlite snapshot",
+      "to": "XFORM-NONE"
+    },
+    {
+      "change": "explicit_field_provenance_list",
+      "rule_id": "XFORM-CONTROLS-CANONICAL-FAILCLOSED"
+    },
+    {
+      "change": "reject_transformed_with_XFORM-NONE",
+      "file": "validate-migration-manifest.py"
+    }
+  ],
+  "migration_executed": false,
+  "migration_manifest_generated": true,
+  "operator_decision_identity": {
+    "decision_count": 13,
+    "instruction": "Approve all 13 D1B recommendations.",
+    "status": "OPERATOR_APPROVED_RECORD_ONLY"
+  },
+  "physical_action_performed": false,
+  "preservation_set_created": false,
+  "source_evidence": {
+    "d1b_aggregate": "9283b4012c93f09725a4047852f713ec5c0330895cc91dce13701632059d018d",
+    "d1b_manifest": "d9eb23343a4dab44b50df5e315d7492bfcddc36c71e64286bbe08d1d4814b660",
+    "i1b_aggregate": "120ff074fcd57e996a69e6bc5f53374557a60607494f75380a6a69a3e5eba379",
+    "i2b_aggregate": "1743e2f1e5e6f5a7d59205e801de01bfe91954019ea56a2659d2f9d4e43ecec6",
+    "i3b_aggregate": "ed459fd6c479561243c34a0abcd65027bfee94872dc6767e8efa6193da38e0c1",
+    "i4b_aggregate": "7c883875a9e911818bc238f88e3120c2e4fed9ffdbf41fed692a0de32348bcdf",
+    "i5b_aggregate": "06e4021f6b72c63e427722a0bbe9c9e317ba004448ca196be22292b8002bfde8"
+  },
+  "stage": "3.5-M1A",
+  "stage_3_6_begun": false,
+  "stage_4_begun": false
+}

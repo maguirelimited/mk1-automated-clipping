@@ -1,0 +1,71 @@
+{
+  "decision_provenance_required": true,
+  "enums": {
+    "acl_policy": [
+      "NONE_EXCEPTIONAL",
+      "NOT_APPLICABLE"
+    ],
+    "migration_action": [
+      "ACT_CREATE_DIRECTORY_ONLY",
+      "ACT_VERBATIM_COPY",
+      "ACT_PROTECTED_CREDENTIAL_COPY",
+      "ACT_SQLITE_FAMILY_SNAPSHOT",
+      "ACT_RECREATE_SYMLINK",
+      "ACT_ARCHIVE_PRESERVE",
+      "ACT_TRANSFORMED_COPY",
+      "ACT_RETAIN_VALIDATE_SHARED_ASSET",
+      "ACT_NO_COPY_EXCLUDED",
+      "ACT_RECORD_ABSENCE",
+      "ACT_PRESERVE_UNRESOLVED_NO_AUTHORITY"
+    ],
+    "no_target_reason": [
+      "EXCLUDED_EPHEMERAL_OR_DISPOSABLE",
+      "MISSING_SLOT_OR_ABSENT_REFERENCE",
+      "REPRODUCIBLE_ACQUISITION_NO_COPY",
+      "RECONSTRUCT_FROM_ACCEPTED_GIT_STAGE4"
+    ],
+    "target_root_class": [
+      "live",
+      "test",
+      "archive",
+      "assets",
+      "logs",
+      "scratch"
+    ]
+  },
+  "files": {
+    "migration-cohorts.jsonl": {
+      "count": 20488,
+      "record": "cohort_mapping"
+    },
+    "migration-manifest.jsonl": {
+      "count": 21879,
+      "record": "artifact_mapping"
+    }
+  },
+  "rules": {
+    "forbidden": [
+      "deletion_authorized=true",
+      "credential_enablement_authorized=true",
+      "archive_under_live_or_test",
+      "credential_under_git_assets_or_test",
+      "unresolved_marked_authoritative",
+      "physical_action_performed=true"
+    ],
+    "no_target_requires": [
+      "no_target_reason",
+      "migration_action"
+    ],
+    "physical_target_requires": [
+      "migration_action",
+      "expected_owner",
+      "expected_group",
+      "expected_mode",
+      "validation_rule_ids",
+      "recovery_rule_ids",
+      "exact_target_path"
+    ]
+  },
+  "schema_id": "mk1.stage35.migration-manifest.v1.schema",
+  "stage_boundary_flags_required": true
+}

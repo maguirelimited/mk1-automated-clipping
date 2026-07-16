@@ -1,0 +1,7 @@
+{"decision_ids":["DEC-TARGET-OWNERS-GROUPS"],"root":"/var/lib/mk04/live/","rule_id":"TPR-LIVE","target_root_class":"live"}
+{"decision_ids":["DEC-ARCHIVE-SUBLAYOUT"],"layout":"category/source_root_id/stable_relpath","root":"/var/lib/mk04/archive/","rule_id":"TPR-ARCHIVE","target_root_class":"archive"}
+{"decision_ids":["DEC-SHARED-ASSET-DISCRIMINATION"],"root":"/var/lib/mk04/assets/","rule_id":"TPR-ASSETS","target_root_class":"assets"}
+{"decision_ids":["DEC-LOG-SCRATCH-ROOTS"],"root":"/var/log/mk04/","rule_id":"TPR-LOGS","target_root_class":"logs"}
+{"decision_ids":["DEC-LOG-SCRATCH-ROOTS"],"root":"/var/tmp/mk04/","rule_id":"TPR-SCRATCH","target_root_class":"scratch"}
+{"decision_ids":["DEC-CREDENTIAL-STORAGE-NAMES"],"layout":"execution_class/connection_or_slot_id/role","root":"/var/lib/mk04/live/credentials/","rule_id":"TPR-CRED-LIVE","target_root_class":"live"}
+{"note":"Test state independently created in Stage 4; no live/archive mapped into test merely to populate.","root":"/var/lib/mk04/test/default/","rule_id":"TPR-TEST","target_root_class":"test"}

@@ -1,0 +1,10 @@
+{"check":"source_artifact_identity_and_hash_match_inventory","rule_id":"PRE-SOURCE-IDENTITY"}
+{"check":"destination_has_sufficient_free_space","rule_id":"PRE-FREE-SPACE"}
+{"check":"target_path_under_declared_root_no_dotdot","rule_id":"PRE-TARGET-ROOT"}
+{"check":"no_conflicting_target_collision","rule_id":"PRE-NO-COLLISION"}
+{"check":"authority_identity_matches_stage34_selection_where_applicable","rule_id":"PRE-AUTHORITY"}
+{"check":"writers_paused_or_coordinated_for_sqlite_family","rule_id":"PRE-WRITER-COORD"}
+{"check":"symlink_endpoint_exists_or_recorded","rule_id":"PRE-ENDPOINT-BEFORE-LINK"}
+{"check":"parent_directory_created_before_child_placement","rule_id":"PRE-DIR-BEFORE-CHILD"}
+{"check":"uploads_disabled_and_scheduler_disabled","rule_id":"PRE-CONTROLS-FAILCLOSED"}
+{"check":"mk04_test_denied_live_state_and_live_credentials","rule_id":"PRE-NO-TEST-LIVE"}
